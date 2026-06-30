@@ -48,6 +48,11 @@ config.yml
 *.log
 logs/
 
+# 运行时生成的缓存
+.price_cache.json
+*.glmocr.json
+*.sectors.json
+
 # OS
 .DS_Store
 Thumbs.db

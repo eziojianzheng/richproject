@@ -1,0 +1,427 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>热门股追踪</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+    background: #0f1115; color: #e6e6e6; padding: 16px;
+  }
+  .toolbar {
+    display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+    background: #1a1d24; padding: 14px 18px; border-radius: 10px;
+    margin-bottom: 16px; position: sticky; top: 0; z-index: 20;
+  }
+  .toolbar h1 { font-size: 18px; color: #fff; margin-right: 8px; }
+  .toolbar label { font-size: 13px; color: #9aa0a6; }
+  .toolbar input {
+    background: #0f1115; border: 1px solid #2c313a; color: #e6e6e6;
+    padding: 6px 10px; border-radius: 6px; font-size: 13px; width: 110px;
+  }
+  .toolbar button {
+    background: #e63946; color: #fff; border: none; padding: 7px 18px;
+    border-radius: 6px; font-size: 13px; cursor: pointer; font-weight: 600;
+  }
+  .toolbar button:hover { background: #d62839; }
+  .sort-tabs { display: flex; gap: 4px; }
+  .sort-tabs span {
+    padding: 6px 12px; font-size: 13px; border-radius: 6px; cursor: pointer;
+    border: 1px solid #2c313a; color: #9aa0a6;
+  }
+  .sort-tabs span.active { background: #2563eb; color: #fff; border-color: #2563eb; }
+  .meta { font-size: 12px; color: #6b7280; margin-bottom: 12px; }
+
+  /* 日期行 */
+  .date-row {
+    display: flex; align-items: stretch; gap: 12px; margin-bottom: 14px;
+    background: #14171d; border-radius: 10px; padding: 10px;
+  }
+  .date-head {
+    flex: 0 0 70px; display: flex; flex-direction: column; gap: 6px;
+    padding-right: 10px; border-right: 1px solid #252a33; justify-content: center;
+  }
+  .date-label { font-size: 15px; font-weight: 700; color: #ffd166; }
+  .date-sub { font-size: 11px; color: #6b7280; }
+
+  /* 板块横向滚动 */
+  .blocks-scroll {
+    flex: 1 1 auto; display: flex; gap: 12px; overflow-x: auto;
+    padding-bottom: 6px; align-items: flex-start; min-width: 0;
+  }
+  .blocks-scroll::-webkit-scrollbar { height: 9px; }
+  .blocks-scroll::-webkit-scrollbar-thumb { background: #2c313a; border-radius: 5px; }
+
+  .block-card {
+    flex: 0 0 auto; width: 286px; background: #1a1d24;
+    border: 1px solid #252a33; border-radius: 9px; overflow: hidden;
+  }
+  .block-head {
+    padding: 9px 12px; background: linear-gradient(135deg,#e63946,#b5179e);
+    display: flex; justify-content: space-between; align-items: center;
+  }
+  .block-head .bname { font-size: 15px; font-weight: 700; color: #fff; }
+  .block-head .bstat { font-size: 10px; color: #ffe; opacity: .92; text-align: right; }
+
+  /* 占位空列: 保持与板块卡片同宽, 使列纵向对齐 */
+  .block-card.placeholder {
+    background: transparent; border: 1px dashed #20242c;
+    display: flex; align-items: center; justify-content: center;
+    min-height: 46px; align-self: stretch;
+  }
+  .block-card.placeholder .ph-name { font-size: 12px; color: #3a4150; }
+  /* 当天该板块未在复盘中活跃, 卡片略微淡化 */
+  .block-card.inactive { opacity: .72; }
+
+  .stock { padding: 9px 12px; border-bottom: 1px solid #20242c; }
+  .stock:last-child { border-bottom: none; }
+  .stock-top { display: flex; justify-content: space-between; align-items: baseline; }
+  .stock-name { font-size: 13px; font-weight: 600; color: #fff; }
+  .stock-name .tag {
+    font-size: 9px; background:#2563eb; color:#fff; padding:1px 4px;
+    border-radius:4px; margin-left:5px; vertical-align: middle;
+  }
+  .stock-name .tag.new { background:#ff8c00; }
+  .stock.is-new { background:#1d2330; }
+  .stock-code { font-size: 11px; color: #6b7280; }
+
+  .track-row { display: flex; gap: 3px; margin-top: 6px; }
+  .track-cell {
+    display: inline-flex; align-items: baseline; gap: 6px;
+    border-radius: 4px; padding: 2px 8px;
+    border: 1px solid #20242c; background:#0f1115;
+  }
+  .track-cell .tp { font-size: 13px; font-weight: 700; }
+  .track-cell .tdesc { font-size: 10px; line-height:1.15; opacity:.85;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .track-cell.absent { opacity: 1; }
+
+  /* 涨跌幅分级配色 (文字颜色) */
+  .p-lr { color:#ff9a9a; }   /* 淡红  <5%  涨 */
+  .p-mr { color:#ff6b35; }   /* 橙红  5~7% 涨 */
+  .p-hr { color:#ff1e1e; }   /* 红    >=7% 涨 */
+  .p-lg { color:#9be3a0; }   /* 淡绿  <5%  跌 */
+  .p-mg { color:#4caf50; }   /* 绿    5~7% 跌 */
+  .p-hg { color:#1b5e20; }   /* 墨绿  >=7% 跌 */
+  .p-flat { color:#9aa0a6; }
+  .p-limit { color:#ffd60a; } /* 涨停: 黄色文字 */
+
+  /* 上下分屏 */
+  .split { display:flex; flex-direction:column; gap:10px; }
+  .pane { background:#0f1115; }
+  .pane-title { font-size:12px; color:#6b7280; margin:4px 0 8px; font-weight:600; }
+  .pane-top { max-height:54vh; overflow:auto; }
+  .pane-bottom { border-top:2px solid #252a33; padding-top:8px; }
+
+  /* 图表区: 与上方板块同宽同序, 横向滚动 */
+  .charts-scroll {
+    display:flex; gap:12px; overflow-x:auto; padding-bottom:10px; align-items:flex-start;
+  }
+  .charts-scroll::-webkit-scrollbar { height:9px; }
+  .charts-scroll::-webkit-scrollbar-thumb { background:#2c313a; border-radius:5px; }
+  .chart-card {
+    flex:0 0 auto; width:286px; background:#14171d;
+    border:1px solid #252a33; border-radius:9px; padding:10px 12px;
+  }
+  .chart-card.placeholder { background:transparent; border:1px dashed #20242c; }
+  .charts-offset { flex:0 0 auto; width:92px; }
+  .chart-card h4 { font-size:13px; color:#fff; margin-bottom:2px; }
+  .chart-card .csub { font-size:10px; color:#6b7280; margin-bottom:6px; }
+  .chart-card h5 { font-size:11px; color:#9aa0a6; margin:8px 0 2px; }
+  .legend { display:flex; flex-wrap:wrap; gap:6px; margin-top:6px; }
+  .legend span { font-size:9px; color:#9aa0a6; display:flex; align-items:center; gap:3px; }
+  .legend i { width:9px; height:3px; display:inline-block; border-radius:2px; }
+  svg text { fill:#9aa0a6; }
+  .chart-empty { color:#3a4150; font-size:11px; padding:18px; text-align:center; }
+
+  .empty { color:#6b7280; padding: 40px; text-align:center; }
+</style>
+</head>
+<body>
+  <div class="toolbar">
+    <h1>🔥 热门股追踪</h1>
+    <label>起始</label>
+    <input type="text" id="start" value="20260601" placeholder="YYYYMMDD">
+    <label>结束</label>
+    <input type="text" id="end" value="20260605" placeholder="YYYYMMDD">
+    <div class="sort-tabs">
+      <span data-sort="times" class="active">板块累计次数</span>
+      <span data-sort="total">板块累计票数</span>
+    </div>
+    <label><input type="checkbox" id="price" checked> 涨幅</label>
+    <button id="go">查询</button>
+  </div>
+
+  <div class="meta" id="meta"></div>
+
+  <div class="split">
+    <div class="pane pane-top">
+      <div class="pane-title">板块统计（最新 → 最早）</div>
+      <div id="rows"></div>
+    </div>
+    <div class="pane pane-bottom">
+      <div class="pane-title">板块图表（与上方板块对齐）</div>
+      <div id="charts"></div>
+    </div>
+  </div>
+
+<script>
+let DATA = null;
+let curSort = 'times';  // 'times'(累计次数) | 'total'(累计票数)
+
+document.querySelectorAll('.sort-tabs span').forEach(el => {
+  el.onclick = () => {
+    document.querySelectorAll('.sort-tabs span').forEach(s => s.classList.remove('active'));
+    el.classList.add('active');
+    curSort = el.dataset.sort;
+    render();
+  };
+});
+document.getElementById('go').onclick = load;
+
+function fmtDate(d){ return d.slice(4,6)+'/'+d.slice(6,8); }
+
+function pctClass(pct){
+  if(typeof pct !== 'number') return 'p-flat';
+  const a = Math.abs(pct);
+  if(pct > 0){
+    if(a >= 7) return 'p-hr';
+    if(a >= 5) return 'p-mr';
+    return 'p-lr';
+  } else if(pct < 0){
+    if(a >= 7) return 'p-hg';
+    if(a >= 5) return 'p-mg';
+    return 'p-lg';
+  }
+  return 'p-flat';
+}
+
+function trackCell(d, cell, isKcbCyb){
+  const pct = cell ? cell.pct : null;
+  let ptxt = '—';
+  if(typeof pct === 'number') ptxt = (pct>0?'+':'')+pct.toFixed(1)+'%';
+
+  // 涨停判定(区分创业板/科创板20cm), 仅用文字颜色, 不加框高亮
+  let limit = false;
+  if(typeof pct === 'number'){
+    if(isKcbCyb){ limit = pct >= 19.4; }
+    else { limit = pct >= 9.8 && pct <= 10.6; }
+  }
+  const desc = (cell && cell.present) ? (cell.desc||'') : '';
+  if(desc.includes('一字板')) limit = true;
+
+  const pcls = limit ? 'p-limit' : pctClass(pct);
+  const absent = (!cell || !cell.present) ? 'absent' : '';
+  return `<div class="track-cell ${absent}">
+    <div class="tp ${pcls}">${ptxt}</div>
+    <div class="tdesc">${desc || (cell&&!cell.present?'未入榜':'')}</div>
+  </div>`;
+}
+
+// 计算全局板块顺序(所有日期行共用同一顺序, 便于纵向对比强弱)
+function globalBlockOrder(){
+  const metric = {};  // block -> 排序值
+  DATA.by_date.forEach(day => day.blocks.forEach(b => {
+    metric[b.block] = (curSort === 'total') ? b.total_count : b.times_count;
+  }));
+  return Object.keys(metric).sort((a,b) =>
+    (metric[b]-metric[a]) || (a < b ? -1 : 1));
+}
+
+function renderRow(day, order){
+  const dates = DATA.dates;
+  const dayMap = {};
+  day.blocks.forEach(b => dayMap[b.block] = b);
+
+  // 按全局顺序遍历所有板块, 当天没有的渲染占位空列, 保证列位置纵向对齐
+  const cards = order.map(blk => {
+    const b = dayMap[blk];
+    if(!b || b.cum_count === 0){
+      // 该板块此日尚未入选(无累积阵容): 占位灰列, 保持列对齐
+      return `<div class="block-card placeholder"><div class="ph-name">${blk}</div></div>`;
+    }
+    return `
+      <div class="block-card${b.active?'':' inactive'}">
+        <div class="block-head">
+          <div class="bname">${b.block}</div>
+          <div class="bstat">当日 ${b.cum_count} 票${b.new_count?` (+${b.new_count})`:''}<br>累计次数${b.times_count} 票${b.total_count}</div>
+        </div>
+        ${b.stocks.map(s => `
+          <div class="stock ${s.first_date===day.date?'is-new':''}">
+            <div class="stock-top">
+              <span class="stock-name">${s.name}${s.is_kcb_cyb?'<span class="tag">创/科</span>':''}${s.first_date===day.date?'<span class="tag new">新</span>':''}</span>
+              <span class="stock-code">${s.code}</span>
+            </div>
+            <div class="track-row">
+              ${trackCell(day.date, s.track[day.date], s.is_kcb_cyb)}
+            </div>
+          </div>`).join('')}
+      </div>`;
+  }).join('');
+
+  return `<div class="date-row">
+    <div class="date-head">
+      <div class="date-label">${fmtDate(day.date)}</div>
+      <div class="date-sub">${day.blocks.length} 板块</div>
+    </div>
+    <div class="blocks-scroll">${cards}</div>
+  </div>`;
+}
+
+function render(){
+  if(!DATA) return;
+  const sortName = curSort==='total' ? '板块累计票数' : '板块累计次数';
+  document.getElementById('meta').textContent =
+    `区间 ${DATA.start} ~ ${DATA.end} | 交易日 ${DATA.dates.length} 天 | 入选板块 ${DATA.blocks_summary.length} 个 | 排序: ${sortName}(全局一致)`;
+  const wrap = document.getElementById('rows');
+  if(!DATA.by_date.length){ wrap.innerHTML='<div class="empty">该区间无符合条件的板块</div>'; }
+  else {
+    const order = globalBlockOrder();
+    // 板块统计: 按最新 -> 最早 日期排序
+    const rowsDesc = [...DATA.by_date].reverse();
+    wrap.innerHTML = rowsDesc.map(day => renderRow(day, order)).join('');
+  }
+  renderCharts();
+}
+
+// ============ SVG 折线图工具 ============
+function linePath(points){
+  return points.map((p,i)=>(i?'L':'M')+p.x.toFixed(1)+' '+p.y.toFixed(1)).join(' ');
+}
+
+// 平均涨幅折线: 分段着色(|v|<5 红绿, >=5 黄紫)
+function avgChart(dates, avg){
+  const W=440,H=160,padL=34,padR=12,padT=14,padB=22;
+  const iw=W-padL-padR, ih=H-padT-padB;
+  const vals=dates.map(d=>avg[d]).filter(v=>typeof v==='number');
+  if(!vals.length) return '<div class="chart-empty">无涨幅数据</div>';
+  const mx=Math.max(5,...vals.map(Math.abs));
+  const x=i=>padL+(dates.length<=1?iw/2:iw*i/(dates.length-1));
+  const y=v=>padT+ih/2-(v/mx)*(ih/2);
+  // 坐标点
+  const pts=dates.map((d,i)=>({i,d,v:avg[d],x:x(i),y:typeof avg[d]==='number'?y(avg[d]):null}));
+  const valid=pts.filter(p=>p.y!==null);
+  // 分段着色
+  let segs='';
+  for(let k=1;k<valid.length;k++){
+    const a=valid[k-1],b=valid[k];
+    // 线段颜色按终点(当前到达值)判断: 涨红/黄, 跌绿/紫
+    const v=b.v, mag=Math.abs(v);
+    let col;
+    if(mag>=5) col = (v>=0?'#ffd60a':'#b15cff');   // 涨>=5%黄 / 跌>=5%紫
+    else       col = (v>=0?'#ff4d4f':'#52c41a');   // 涨<5%红  / 跌<5%绿
+    segs+=`<path d="${linePath([a,b])}" stroke="${col}" stroke-width="2" fill="none"/>`;
+  }
+  const dots=valid.map(p=>{
+    const mag=Math.abs(p.v);
+    let col= mag>=5 ? (p.v>=0?'#ffd60a':'#b15cff') : (p.v>=0?'#ff4d4f':'#52c41a');
+    return `<circle cx="${p.x}" cy="${p.y}" r="2.5" fill="${col}"/>
+            <text x="${p.x}" y="${p.y-6}" font-size="9" text-anchor="middle">${p.v.toFixed(1)}</text>`;
+  }).join('');
+  const zeroY=padT+ih/2;
+  const xlabels=dates.map((d,i)=>`<text x="${x(i)}" y="${H-6}" font-size="9" text-anchor="middle">${d.slice(4,6)}/${d.slice(6,8)}</text>`).join('');
+  return `<svg width="100%" viewBox="0 0 ${W} ${H}">
+    <line x1="${padL}" y1="${zeroY}" x2="${W-padR}" y2="${zeroY}" stroke="#2c313a" stroke-dasharray="3 3"/>
+    <text x="4" y="${padT+4}" font-size="9">+${mx.toFixed(0)}</text>
+    <text x="4" y="${H-padB}" font-size="9">-${mx.toFixed(0)}</text>
+    ${segs}${dots}${xlabels}
+  </svg>`;
+}
+
+// 入选票涨幅叠加折线: 每只票一条线, 不同颜色
+const PALETTE=['#ff6b6b','#4dd0e1','#ffd166','#a78bfa','#06d6a0','#f78c6b','#5c9eff','#ff8fab','#b5e48c','#e0aaff','#ffba08','#90e0ef'];
+function stocksChart(dates, stocks){
+  const W=440,H=180,padL=34,padR=12,padT=14,padB=22;
+  const iw=W-padL-padR, ih=H-padT-padB;
+  let allv=[];
+  stocks.forEach(s=>dates.forEach(d=>{const v=s.pct[d]; if(typeof v==='number')allv.push(v);}));
+  if(!allv.length) return '<div class="chart-empty">无涨幅数据</div>';
+  const mx=Math.max(5,...allv.map(Math.abs));
+  const x=i=>padL+(dates.length<=1?iw/2:iw*i/(dates.length-1));
+  const y=v=>padT+ih/2-(v/mx)*(ih/2);
+  const zeroY=padT+ih/2;
+  let lines='', legend='';
+  stocks.forEach((s,si)=>{
+    const col=PALETTE[si%PALETTE.length];
+    const pts=dates.map((d,i)=>({x:x(i),y:typeof s.pct[d]==='number'?y(s.pct[d]):null}))
+                   .filter(p=>p.y!==null);
+    if(pts.length>=1){
+      lines+=`<path d="${linePath(pts)}" stroke="${col}" stroke-width="1.6" fill="none" opacity="0.9"/>`;
+      pts.forEach(p=>lines+=`<circle cx="${p.x}" cy="${p.y}" r="1.8" fill="${col}"/>`);
+      legend+=`<span><i style="background:${col}"></i>${s.name}</span>`;
+    }
+  });
+  const xlabels=dates.map((d,i)=>`<text x="${x(i)}" y="${H-6}" font-size="9" text-anchor="middle">${d.slice(4,6)}/${d.slice(6,8)}</text>`).join('');
+  return `<svg width="100%" viewBox="0 0 ${W} ${H}">
+    <line x1="${padL}" y1="${zeroY}" x2="${W-padR}" y2="${zeroY}" stroke="#2c313a" stroke-dasharray="3 3"/>
+    <text x="4" y="${padT+4}" font-size="9">+${mx.toFixed(0)}</text>
+    <text x="4" y="${H-padB}" font-size="9">-${mx.toFixed(0)}</text>
+    ${lines}${xlabels}
+  </svg><div class="legend">${legend}</div>`;
+}
+
+function renderCharts(){
+  const wrap=document.getElementById('charts');
+  if(!DATA.blocks_summary.length){ wrap.innerHTML='<div class="empty">无数据</div>'; return; }
+  const summary={}; DATA.blocks_summary.forEach(b=>summary[b.block]=b);
+  const order=globalBlockOrder();   // 与上方板块完全一致的顺序
+  const dates=DATA.dates;
+
+  // 左侧留出与日期行 date-head 等宽的占位(70px + 10px padding + 12px gap), 使图表列与板块列对齐
+  const cards = order.map(blk=>{
+    const b=summary[blk];
+    if(!b){ return `<div class="chart-card placeholder"><h4>${blk}</h4></div>`; }
+    return `
+      <div class="chart-card">
+        <h4>${b.block}</h4>
+        <div class="csub">累计次数 ${b.times_count} · 累计票 ${b.total_count}</div>
+        <h5>① 平均涨幅</h5>
+        ${avgChart(dates, b.avg_pct)}
+        <h5>② 累计入选票增减</h5>
+        <div class="chart-empty">暂无减少数据，待后续开发</div>
+        <h5>③ 入选票涨幅叠加</h5>
+        ${stocksChart(dates, b.stocks)}
+      </div>`;
+  }).join('');
+
+  wrap.innerHTML = `<div class="charts-scroll" id="chartsScroll">
+    <div class="charts-offset"></div>${cards}
+  </div>`;
+  syncScroll();
+}
+
+// 上下横向滚动联动 + 左侧偏移对齐
+function syncScroll(){
+  const cs=document.getElementById('chartsScroll');
+  if(!cs) return;
+  // 取一行的 blocks-scroll 作为主滚动源
+  const tops=document.querySelectorAll('.blocks-scroll');
+  if(!tops.length) return;
+  let lock=false;
+  const sync=(from,to)=>{ if(lock)return; lock=true; to.scrollLeft=from.scrollLeft; lock=false; };
+  tops.forEach(t=>{
+    t.addEventListener('scroll',()=>{ tops.forEach(o=>{if(o!==t)o.scrollLeft=t.scrollLeft;}); cs.scrollLeft=t.scrollLeft; });
+  });
+  cs.addEventListener('scroll',()=>{ tops.forEach(t=>t.scrollLeft=cs.scrollLeft); });
+}
+
+async function load(){
+  const start=document.getElementById('start').value.trim();
+  const end=document.getElementById('end').value.trim();
+  const price=document.getElementById('price').checked?'1':'0';
+  document.getElementById('meta').textContent='加载中...';
+  try{
+    const r=await fetch(`/api/hot/track?start=${start}&end=${end}&price=${price}`);
+    const j=await r.json();
+    if(!j.success){ document.getElementById('meta').textContent='错误: '+j.error; return; }
+    DATA = j;
+    render();
+  }catch(e){ document.getElementById('meta').textContent='请求失败: '+e; }
+}
+
+load();
+</script>
+</body>
+</html>
