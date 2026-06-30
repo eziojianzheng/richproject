@@ -5,6 +5,14 @@
 提供按日期范围下载湖南人涨停复盘图片的接口
 """
 
+# 启动时自动检测并安装缺失依赖
+from bootstrap import ensure_dependencies
+ensure_dependencies({
+    'flask': 'flask>=3.0.0',
+    'requests': 'requests>=2.31.0',
+    'bs4': 'beautifulsoup4>=4.12.0',
+})
+
 from flask import Flask, request, jsonify
 import requests
 from bs4 import BeautifulSoup
@@ -35,6 +43,55 @@ HEADERS = {
 IMG_HEADERS = HEADERS.copy()
 IMG_HEADERS['Accept'] = 'image/webp,image/apng,image/*,*/*;q=0.8'
 
+# 重试配置
+MAX_RETRIES = 3        # 最大尝试次数（含首次）
+RETRY_BACKOFF = 1.0    # 退避基数（秒），按 1s -> 2s -> 4s 递增
+REQUEST_TIMEOUT = 30   # 单次请求超时（秒）
+
+# 需要重试的网络类异常
+_RETRYABLE_EXC = (
+    requests.exceptions.Timeout,
+    requests.exceptions.ConnectionError,
+    requests.exceptions.ChunkedEncodingError,
+)
+
+
+class NetworkError(Exception):
+    """网络请求在多次重试后仍失败时抛出"""
+    pass
+
+
+def request_with_retry(url, headers, max_retries=MAX_RETRIES, backoff=RETRY_BACKOFF):
+    """
+    带指数退避重试的 GET 请求
+
+    - 仅对网络类异常（超时/连接错误）重试，HTTP 状态码错误不在此处重试
+    - 重试间隔按指数递增: backoff * 2^(n-1)
+
+    返回:
+        requests.Response
+
+    异常:
+        NetworkError: 所有重试均失败时抛出
+    """
+    last_exc = None
+    for attempt in range(1, max_retries + 1):
+        try:
+            return requests.get(
+                url, cookies=COOKIES, headers=headers, timeout=REQUEST_TIMEOUT
+            )
+        except _RETRYABLE_EXC as e:
+            last_exc = e
+            if attempt < max_retries:
+                wait = backoff * (2 ** (attempt - 1))
+                print(f"    网络异常({type(e).__name__})，{wait:.0f}s 后重试 "
+                      f"[{attempt}/{max_retries - 1}]...")
+                time.sleep(wait)
+            else:
+                print(f"    已重试 {max_retries} 次仍失败: {type(e).__name__}")
+    raise NetworkError(str(last_exc))
+
+
 # 下载任务状态
 download_tasks = {}
 
@@ -42,94 +99,103 @@ download_tasks = {}
 def get_article_list(user_id='444409'):
     """获取博客文章列表"""
     url = f'https://www.tgb.cn/blog/{user_id}'
-    
+
     try:
-        response = requests.get(url, cookies=COOKIES, headers=HEADERS, timeout=30)
-        response.encoding = 'utf-8'
-        
-        if response.status_code == 200:
-            soup = BeautifulSoup(response.text, 'html.parser')
-            articles = soup.find_all('div', class_='article_tittle')
-            
-            article_list = []
-            for article in articles:
-                title_tag = article.find('a')
-                if title_tag:
-                    title = title_tag.get('title', title_tag.text.strip())
-                    href = title_tag.get('href', '')
-                    link = f"https://www.tgb.cn{href}" if href.startswith('/') else href
-                    
-                    time_tag = article.find('div', class_='tittle_fbshijian')
-                    pub_time = time_tag.text.strip() if time_tag else ''
-                    date_folder = pub_time.replace('-', '') if pub_time else 'unknown'
-                    
-                    article_list.append({
-                        'title': title,
-                        'link': link,
-                        'pub_time': pub_time,
-                        'date_folder': date_folder
-                    })
-            
-            return article_list
-        else:
-            return []
-            
-    except Exception as e:
-        print(f"获取文章列表出错: {e}")
+        response = request_with_retry(url, HEADERS)
+    except NetworkError as e:
+        print(f"获取文章列表失败（网络）: {e}")
         return []
+
+    response.encoding = 'utf-8'
+
+    if response.status_code != 200:
+        print(f"获取文章列表失败（HTTP {response.status_code}）")
+        return []
+
+    soup = BeautifulSoup(response.text, 'html.parser')
+    articles = soup.find_all('div', class_='article_tittle')
+
+    article_list = []
+    for article in articles:
+        title_tag = article.find('a')
+        if title_tag:
+            title = title_tag.get('title', title_tag.text.strip())
+            href = title_tag.get('href', '')
+            link = f"https://www.tgb.cn{href}" if href.startswith('/') else href
+
+            time_tag = article.find('div', class_='tittle_fbshijian')
+            pub_time = time_tag.text.strip() if time_tag else ''
+            date_folder = pub_time.replace('-', '') if pub_time else 'unknown'
+
+            article_list.append({
+                'title': title,
+                'link': link,
+                'pub_time': pub_time,
+                'date_folder': date_folder
+            })
+
+    return article_list
 
 
 def get_article_images(url):
-    """获取文章正文中的图片URL"""
-    try:
-        response = requests.get(url, cookies=COOKIES, headers=HEADERS, timeout=30)
-        response.encoding = 'utf-8'
-        
-        if response.status_code == 200:
-            soup = BeautifulSoup(response.text, 'html.parser')
-            
-            content_div = soup.find('div', class_='content-left')
-            if not content_div:
-                content_div = soup
-            
-            images = []
-            content_imgs = content_div.find_all('img', attrs={'data-type': 'contentImage'})
-            
-            for img in content_imgs:
-                img_url = img.get('data-original') or img.get('src2') or img.get('src')
-                
-                if img_url and 'placeHolder' not in img_url:
-                    if img_url.startswith('//'):
-                        img_url = 'https:' + img_url
-                    elif img_url.startswith('/'):
-                        img_url = 'https://www.tgb.cn' + img_url
-                    
-                    images.append(img_url)
-            
-            images = list(dict.fromkeys(images))
-            return images
-        else:
-            return []
-            
-    except Exception as e:
-        print(f"获取图片出错: {e}")
+    """
+    获取文章正文中的图片URL
+
+    异常:
+        NetworkError: 网络请求重试后仍失败时抛出（由调用方区分"网络失败"与"无图片"）
+    """
+    response = request_with_retry(url, HEADERS)
+    response.encoding = 'utf-8'
+
+    if response.status_code != 200:
+        print(f"  获取图片失败（HTTP {response.status_code}）")
         return []
+
+    soup = BeautifulSoup(response.text, 'html.parser')
+
+    content_div = soup.find('div', class_='content-left')
+    if not content_div:
+        content_div = soup
+
+    images = []
+    content_imgs = content_div.find_all('img', attrs={'data-type': 'contentImage'})
+
+    for img in content_imgs:
+        img_url = img.get('data-original') or img.get('src2') or img.get('src')
+
+        if img_url and 'placeHolder' not in img_url:
+            if img_url.startswith('//'):
+                img_url = 'https:' + img_url
+            elif img_url.startswith('/'):
+                img_url = 'https://www.tgb.cn' + img_url
+
+            images.append(img_url)
+
+    images = list(dict.fromkeys(images))
+    return images
 
 
 def download_image(img_url, save_path):
-    """下载单张图片"""
+    """
+    下载单张图片
+
+    返回:
+        True  下载成功
+        False 下载失败（网络重试失败或HTTP错误）
+    """
     try:
-        response = requests.get(img_url, cookies=COOKIES, headers=IMG_HEADERS, timeout=30)
-        
-        if response.status_code == 200:
-            with open(save_path, 'wb') as f:
-                f.write(response.content)
-            return True
+        response = request_with_retry(img_url, IMG_HEADERS)
+    except NetworkError as e:
+        print(f"    下载失败（网络）: {e}")
         return False
-            
-    except Exception as e:
-        print(f"下载图片出错: {e}")
-        return False
+
+    if response.status_code == 200:
+        with open(save_path, 'wb') as f:
+            f.write(response.content)
+        return True
+
+    print(f"    下载失败（HTTP {response.status_code}）")
+    return False
 
 
 def check_folder_has_images(folder_path):
@@ -152,7 +218,8 @@ def download_task(task_id, articles, base_dir='dataresource', skip_existing=True
     total_images = 0
     success_images = 0
     skipped_folders = 0
-    
+    failed_dates = []
+
     for i, article in enumerate(articles):
         try:
             date_folder = article['date_folder']
@@ -173,13 +240,21 @@ def download_task(task_id, articles, base_dir='dataresource', skip_existing=True
             
             os.makedirs(save_dir, exist_ok=True)
             
-            # 获取图片列表
-            images = get_article_images(link)
+            # 获取图片列表（网络失败时标记该日期待重试）
+            try:
+                images = get_article_images(link)
+            except NetworkError as e:
+                print(f"获取图片列表失败（网络）: {date_folder} - {e}")
+                failed_dates.append(date_folder)
+                progress = int((i + 1) / len(articles) * 100)
+                download_tasks[task_id]['progress'] = progress
+                continue
             
             if not images:
                 continue
             
             # 下载图片
+            article_failed = False
             for j, img_url in enumerate(images, 1):
                 ext = '.png'
                 if '.jpg' in img_url.lower() or '.jpeg' in img_url.lower():
@@ -201,6 +276,12 @@ def download_task(task_id, articles, base_dir='dataresource', skip_existing=True
                 if download_image(img_url, save_path):
                     success_images += 1
                     time.sleep(0.2)
+                else:
+                    article_failed = True
+            
+            # 部分图片下载失败，标记该日期待重试
+            if article_failed and date_folder not in failed_dates:
+                failed_dates.append(date_folder)
             
             # 更新进度
             progress = int((i + 1) / len(articles) * 100)
@@ -209,11 +290,13 @@ def download_task(task_id, articles, base_dir='dataresource', skip_existing=True
             
         except Exception as e:
             print(f"处理文章出错: {e}")
+            failed_dates.append(article.get('date_folder', 'unknown'))
     
     download_tasks[task_id]['status'] = 'completed'
     download_tasks[task_id]['total'] = total_images
     download_tasks[task_id]['downloaded'] = success_images
     download_tasks[task_id]['skipped_folders'] = skipped_folders
+    download_tasks[task_id]['failed_dates'] = failed_dates
 
 
 # ============== API 接口 ==============
@@ -422,7 +505,16 @@ def download_sync():
         
         os.makedirs(save_dir, exist_ok=True)
         
-        images = get_article_images(link)
+        try:
+            images = get_article_images(link)
+        except NetworkError as e:
+            results.append({
+                'date': article['pub_time'],
+                'title': article['title'],
+                'status': 'failed',
+                'reason': f'网络请求失败: {e}'
+            })
+            continue
         
         if not images:
             continue
@@ -485,7 +577,8 @@ def get_status(task_id):
         'progress': task['progress'],
         'total': task['total'],
         'downloaded': task['downloaded'],
-        'articles_count': task['articles_count']
+        'articles_count': task['articles_count'],
+        'failed_dates': task.get('failed_dates', [])
     })
 
 

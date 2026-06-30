@@ -5,6 +5,16 @@
 从03、04图片中提取数据并生成Excel
 """
 
+# 启动时自动检测并安装缺失依赖
+from bootstrap import ensure_dependencies
+ensure_dependencies({
+    'flask': 'flask>=3.0.0',
+    'requests': 'requests>=2.31.0',
+    'bs4': 'beautifulsoup4>=4.12.0',
+    'yaml': 'PyYAML>=6.0',
+    'openpyxl': 'openpyxl>=3.1.0',
+})
+
 import os
 import re
 import json

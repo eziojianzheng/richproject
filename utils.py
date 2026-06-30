@@ -6,6 +6,7 @@
 """
 
 import os
+import json
 
 # 全局变量，缓存OCR reader
 _ocr_reader = None
@@ -26,21 +27,42 @@ def get_ocr_reader():
 
 def ocr_image(image_path):
     """
-    OCR识别图片文字
-    
+    OCR识别图片文字（带磁盘缓存）
+
+    缓存: 在图片旁生成同名 .ocr.json，避免对同一张图重复OCR。
+          缓存比图片新时直接复用。
+
     返回: 识别到的文字列表 [(text, confidence), ...]
     """
+    cache_path = image_path + '.ocr.json'
+
+    # 命中缓存（缓存不旧于图片）
+    if os.path.exists(cache_path):
+        try:
+            if os.path.getmtime(cache_path) >= os.path.getmtime(image_path):
+                with open(cache_path, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                return [(t, c) for t, c in data]
+        except Exception:
+            pass  # 缓存损坏则重新OCR
+
     reader = get_ocr_reader()
     if reader is None:
         return []
-    
+
     try:
         result, _ = reader(image_path)
-        if result:
-            # result格式: [[box, text, confidence], ...]
-            texts = [(item[1], item[2]) for item in result]
-            return texts
-        return []
+        # result格式: [[box, text, confidence], ...]
+        texts = [(item[1], float(item[2])) for item in result] if result else []
+
+        # 写缓存
+        try:
+            with open(cache_path, 'w', encoding='utf-8') as f:
+                json.dump(texts, f, ensure_ascii=False)
+        except Exception:
+            pass
+
+        return texts
     except Exception as e:
         print(f"OCR识别失败: {e}")
         return []

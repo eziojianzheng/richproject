@@ -5,8 +5,8 @@ ai:
     api_key: "YOUR_API_KEY_HERE"
     # 文本模型
     text_model: "GLM-4-Flash-250414"
-    # 视觉模型 (用于图像识别) - GLM-4.5V MOE架构，OCR效果更好
-    vision_model: "GLM-4.5V"
+    # 视觉模型 (用于识别板块红色标题) - GLM-4V-Plus 快速，识别单条标题足够
+    vision_model: "GLM-4V-Plus"
     base_url: "https://open.bigmodel.cn/api/paas/v4/"
     
   # 默认使用的模型提供商
