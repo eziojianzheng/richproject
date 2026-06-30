@@ -37,6 +37,13 @@ import base64
 import sys
 import time
 
+# Windows 控制台默认 GBK，强制 stdout/stderr 为 UTF-8，避免 ✓/✗ 等字符报错
+try:
+    sys.stdout.reconfigure(encoding='utf-8')
+    sys.stderr.reconfigure(encoding='utf-8')
+except Exception:
+    pass
+
 import yaml
 import requests
 from bs4 import BeautifulSoup
@@ -60,6 +67,9 @@ GLM_CHAT_URL = "https://open.bigmodel.cn/api/paas/v4/chat/completions"
 
 # 排除的板块
 EXCLUDED_SECTORS = ['其他', '涨停炸板', '其他热点', '其他个股', '首板']
+
+# 页面大标题（非板块，不吸收任何股票，强制数量0）
+PAGE_TITLES = ['湖南人涨停复盘', '涨停复盘']
 
 # 提取模板路径
 TEMPLATE_PATH = 'systemOriginalData/提取模板.xlsx'
@@ -224,8 +234,8 @@ def ensure_dependencies_extra():
 
 # 板块标题单条识别 prompt
 _TITLE_PROMPT = """这是从股票复盘图裁剪的一小条，最上方有一行红色文字的板块标题，格式为【板块名】N只 X亿。
-请只输出最上方那一行红色板块标题中的板块名称，去掉【】符号。
-只输出一个JSON对象，例如：{"板块":"半导体"}
+请输出最上方那一行红色板块标题中的板块名称（去掉【】符号）和"N只"中的数字N（该板块的个股数量）。
+只输出一个JSON对象，例如：{"板块":"半导体","数量":5}
 如果看不到红色板块标题，输出：{}"""
 
 
@@ -261,7 +271,7 @@ def _find_red_bands(arr, threshold=5, gap=15, min_height=8):
 
 
 def _call_title_vision(img_b64):
-    """识别单个红色条的板块名，返回 板块名str|None"""
+    """识别单个红色条的板块名和数量，返回 (板块名str, 数量int|None) | (None, None)"""
     api_key = get_api_key()
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
     payload = {
@@ -270,50 +280,69 @@ def _call_title_vision(img_b64):
             {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{img_b64}"}},
             {"type": "text", "text": _TITLE_PROMPT},
         ]}],
+        "thinking": {"type": "disabled"},
         "temperature": 0.01,
-        "max_tokens": 100,
+        "max_tokens": 1024,
     }
-    for attempt in range(1, 4):
+    for attempt in range(1, 6):
         try:
             resp = requests.post(GLM_CHAT_URL, headers=headers, json=payload, timeout=60)
             result = resp.json()
         except Exception:
-            if attempt < 3:
+            if attempt < 5:
                 time.sleep(2 ** (attempt - 1))
                 continue
-            return None
+            return None, None
         try:
-            content = result['choices'][0]['message']['content']
+            msg = result['choices'][0]['message']
+            content = msg.get('content')
             if isinstance(content, list):
                 content = ''.join(p.get('text', '') for p in content if isinstance(p, dict))
+            # content 为空时(推理模型把token耗在思考上)，回退到 reasoning_content
+            if not content:
+                content = msg.get('reasoning_content', '') or ''
         except (KeyError, IndexError, TypeError):
-            # 限速重试
-            if result.get('code') in (1302, 429):
-                time.sleep(30)
-                continue
-            return None
+            # 限速重试（智谱限流码 1302 / HTTP 429）
+            if result.get('code') in (1302, 429) or '429' in str(result):
+                if attempt < 5:
+                    time.sleep(10 * attempt)
+                    continue
+            return None, None
         # 解析 JSON 对象
         m = re.search(r'\{[^}]*\}', content)
         if m:
             try:
                 obj = json.loads(m.group(0))
                 name = str(obj.get('板块', '')).strip()
-                return name if name else None
+                count = obj.get('数量')
+                try:
+                    count = int(count)
+                except (TypeError, ValueError):
+                    count = None
+                if name:
+                    return name, count
             except Exception:
                 pass
-        return None
-    return None
+        # JSON 解析失败时，从文本中兜底提取（优先取带【】的真实标题，
+        # 取最后一个匹配，避开思考过程中复述 prompt 的示例文字）
+        matches = re.findall(r'【([^】\n]{1,12})】\s*(\d+)\s*只', content)
+        if matches:
+            name, cnt = matches[-1]
+            return name.strip(), int(cnt)
+        return None, None
+    return None, None
 
 
 def extract_sectors_by_red(image_path, layout_details, use_cache=True):
     """
-    板块识别主方案（红色定位 + 单条识别 + y坐标匹配）
+    板块识别主方案（红色定位标题+数量 + OCR按序切分）
 
     流程:
         1. 红色检测定位所有板块标题的 y 坐标
-        2. 裁剪每个红色条小图，Vision 识别板块名（小图准、省token）
-        3. 用板块标题 y 坐标 与 OCR 股票 y 坐标匹配，分配板块归属
-        4. 遇到"涨停炸板"标题后的股票全部丢弃
+        2. 裁剪每个红色条小图，Vision 识别板块名 + 数量N（小图准、省token）
+        3. OCR 按 y 顺序提取所有股票
+        4. 按每个板块声明的数量N顺序切分填充（绕开坐标匹配误差）
+        5. 遇到"涨停炸板"标题后的股票全部丢弃
 
     返回: (sectors: list, error: str|None)
     """
@@ -323,83 +352,130 @@ def extract_sectors_by_red(image_path, layout_details, use_cache=True):
 
     cache_path = image_path + '.sectors.json'
 
-    # 1. 红色检测板块标题 y 坐标 + 识别板块名（带缓存）
-    sector_titles = None  # [(y, 板块名), ...]
+    # 1. 红色检测板块标题 y 坐标 + 识别板块名和数量（带缓存）
+    # 缓存格式: [[y, 板块名, 数量], ...]
+    sector_titles = None
     if use_cache and os.path.exists(cache_path):
         try:
             if os.path.getmtime(cache_path) >= os.path.getmtime(image_path):
                 with open(cache_path, 'r', encoding='utf-8') as f:
-                    sector_titles = json.load(f)
+                    cached = json.load(f)
+                # 兼容旧缓存(无数量) -> 视为无效，重新识别
+                if cached and all(len(t) >= 3 for t in cached):
+                    sector_titles = cached
         except Exception:
             sector_titles = None
 
     im = Image.open(image_path).convert('RGB')
     w, h = im.size
 
+    # 校验元信息
+    meta = {'title_total': 0, 'title_fail': 0, 'issues': []}
+
     if sector_titles is None:
         arr = np.array(im)
         bands = _find_red_bands(arr)
         print(f"    红色检测: {len(bands)} 个板块标题")
         sector_titles = []
-        for (y0, y1) in bands:
+        fail_count = 0
+        for bi, (y0, y1) in enumerate(bands):
             crop = im.crop((0, max(0, y0 - 5), w, min(h, y1 + 5)))
             buf = io.BytesIO()
             crop.save(buf, format='PNG')
             b64 = base64.b64encode(buf.getvalue()).decode()
-            name = _call_title_vision(b64)
+            name, count = _call_title_vision(b64)
+            # 识别失败再重试一次（偶发输出异常）
+            if not name:
+                time.sleep(1.0)
+                name, count = _call_title_vision(b64)
             if name:
-                sector_titles.append([y0, name])
-        # 写缓存
-        try:
-            with open(cache_path, 'w', encoding='utf-8') as f:
-                json.dump(sector_titles, f, ensure_ascii=False)
-        except Exception:
-            pass
+                sector_titles.append([y0, name, count])
+            else:
+                # 仍失败：保留占位(板块名None)，避免打乱按数量切分的顺序
+                sector_titles.append([y0, None, None])
+                fail_count += 1
+            time.sleep(0.5)  # 节流，规避限速
+        # 仅当识别基本完整时才写缓存，避免坏结果被固化
+        if fail_count == 0:
+            try:
+                with open(cache_path, 'w', encoding='utf-8') as f:
+                    json.dump(sector_titles, f, ensure_ascii=False)
+            except Exception:
+                pass
+        else:
+            print(f"    警告: {fail_count} 个板块标题识别失败，未写缓存")
 
     if not sector_titles:
-        return None, "未检测到板块标题"
+        return None, "未检测到板块标题", meta
 
-    # 2. 提取所有股票（带 y 坐标）
+    # 标题识别失败数统计
+    meta['title_total'] = len(sector_titles)
+    meta['title_fail'] = sum(1 for t in sector_titles if t[1] is None)
+    if meta['title_fail'] > 0:
+        meta['issues'].append(
+            f"{meta['title_fail']}/{meta['title_total']} 个板块标题识别失败"
+            f"（板块名/数量缺失，相关股票归属可能不准）")
+
+    # 2. 提取所有股票（按 y 排序）
     stocks = _extract_stocks_with_y(layout_details)
     if not stocks:
-        return None, "未提取到股票"
+        return None, "未提取到股票", meta
 
-    # 3. 找"涨停炸板"标题 y，作为有效数据截止线
-    cutoff_y = h
-    for y, name in sector_titles:
-        if name in ('涨停炸板', '炸板'):
-            cutoff_y = y
+    # 3. 按 y 排序板块标题，找"涨停炸板"作为截止线
+    titles = sorted(sector_titles, key=lambda x: x[0])
+    cutoff_idx = len(titles)
+    for i, t in enumerate(titles):
+        if t[1] in ('涨停炸板', '炸板'):
+            cutoff_idx = i
             break
+    valid_titles = titles[:cutoff_idx]  # 炸板及之后的板块丢弃
 
-    # 4. 按 y 坐标分配板块
-    # 过滤掉非有效板块标题（图片标题等），保留在 cutoff 之前的
-    valid_titles = [(y, name) for y, name in sector_titles if y < cutoff_y]
-    valid_titles.sort(key=lambda x: x[0])
-
+    # 4. 按数量顺序切分填充股票
+    #    - tcount 已知: 直接取 tcount 只
+    #    - tcount 缺失(含识别失败占位): 用下一个标题 y 坐标界定该段范围
     results = []
-    for s in stocks:
-        sy = s['_y']
-        if sy >= cutoff_y:
-            continue  # 炸板数据，丢弃
-        # 找该股票所属板块：最后一个 y <= sy 的板块标题
-        sector = None
-        for ty, tname in valid_titles:
-            if ty <= sy:
-                sector = tname
-            else:
-                break
-        if sector is None or sector in EXCLUDED_SECTORS:
+    idx = 0
+    n_stocks = len(stocks)
+    for ti, (ty, tname, tcount) in enumerate(valid_titles):
+        # 页面大标题(如"湖南人涨停复盘")不是板块，不吸收任何股票
+        if tname in PAGE_TITLES:
             continue
-        results.append({
-            '概念板块': sector,
-            '代码': s['代码'],
-            '名称': s['名称'],
-            '末次时间': s['末次时间'],
-            '连扳数': s['连扳数'],
-            '原因': s['原因'],
-        })
+        # 数量缺失时，用下一个标题的 y 坐标界定本段股票数
+        if tcount is None:
+            next_y = valid_titles[ti + 1][0] if ti + 1 < len(valid_titles) else None
+            cnt = 0
+            j = idx
+            while j < n_stocks and (next_y is None or stocks[j]['_y'] < next_y):
+                cnt += 1
+                j += 1
+            tcount = cnt
+        seg = stocks[idx:idx + tcount]
+        # 板块声明数量与实际可取股票数不符（股票被截断）
+        if tname not in (None,) and tname not in EXCLUDED_SECTORS and len(seg) < tcount:
+            meta['issues'].append(
+                f"板块「{tname}」声明{tcount}只，实际仅{len(seg)}只（股票数量不足/被截断）")
+        idx += tcount
+        # 识别失败(tname=None)或排除板块: 仅推进索引，不写入结果
+        if tname is None or tname in EXCLUDED_SECTORS:
+            continue
+        for s in seg:
+            results.append({
+                '概念板块': tname,
+                '代码': s['代码'],
+                '名称': s['名称'],
+                '末次时间': s['末次时间'],
+                '连扳数': s['连扳数'],
+                '原因': s['原因'],
+            })
 
-    return results, None
+    # 剩余未分配股票（截止线之前但未被任何板块吸收）
+    leftover = sum(1 for s in stocks[idx:] if s['_y'] < (titles[cutoff_idx][0]
+                   if cutoff_idx < len(titles) else float('inf')))
+    if leftover > 3:
+        meta['issues'].append(
+            f"有 {leftover} 只股票未分配到板块（数量切分与实际不符）")
+
+    return results, None, meta
 
 
 def _extract_stocks_with_y(layout_details):
@@ -579,13 +655,17 @@ def validate_same_date(img_03, img_04):
 
 # ============== 单日提取 ==============
 
-def export_excel(date_folder, zhangdie, sectors, output_dir='excelDataSource'):
+def export_excel(date_folder, zhangdie, sectors, output_dir='excelDataSource',
+                 status='verified', issues=None):
     """
     基于提取模板生成Excel
     - 03提取 sheet: 上涨家数 | 下跌家数 | 总成交额
     - 04提取 sheet: 概念板块 | 代码 | 名称 | 末次时间 | 连扳数 | 原因
+    - 文件名按校验状态加后缀: _verified(通过) / _manualcheck(需人工复核)
+    - 04提取 sheet 末尾追加校验说明
     """
     os.makedirs(output_dir, exist_ok=True)
+    issues = issues or []
 
     # 以模板为基础（保留表头/样式）
     if os.path.exists(TEMPLATE_PATH):
@@ -618,7 +698,19 @@ def export_excel(date_folder, zhangdie, sectors, output_dir='excelDataSource'):
             s.get('原因', ''),
         ])
 
-    out_path = os.path.join(output_dir, f'{date_folder}_涨停复盘.xlsx')
+    # === 末尾追加校验说明 ===
+    ws04.append([])
+    if status == 'verified':
+        ws04.append(['【校验结果】', '通过 (verified)'])
+        ws04.append(['说明', '板块标题全部识别成功，各板块声明数量与提取股票数一致，自动校验通过。'])
+    else:
+        ws04.append(['【校验结果】', '需人工复核 (manualcheck)'])
+        for i, msg in enumerate(issues, 1):
+            ws04.append([f'问题{i}', msg])
+        ws04.append(['建议', '请对照原始04图片人工核对上述板块的股票归属与数量。'])
+
+    suffix = 'verified' if status == 'verified' else 'manualcheck'
+    out_path = os.path.join(output_dir, f'{date_folder}_涨停复盘_{suffix}.xlsx')
     wb.save(out_path)
     return out_path
 
@@ -668,7 +760,7 @@ def extract_date(date_folder, base_dir='dataresource', output_dir='excelDataSour
         print(f"✗ 04图OCR失败: {err04}")
         return False
 
-    sectors, errsec = extract_sectors_by_red(img_04, layout_04)
+    sectors, errsec, meta = extract_sectors_by_red(img_04, layout_04)
     if errsec:
         print(f"✗ 04图板块识别失败: {errsec}")
         return False
@@ -683,9 +775,26 @@ def extract_date(date_folder, base_dir='dataresource', output_dir='excelDataSour
     print(f"  板块个股(04): {len(sectors)} 条，{len(dist)} 个板块")
     print(f"  板块分布: {dict(dist)}")
 
+    # 汇总校验问题，判定状态
+    issues = list(meta.get('issues', []))
+    # 涨跌数据缺失也需复核
+    if zhangdie.get('上涨家数') is None or zhangdie.get('下跌家数') is None:
+        issues.append("03图涨跌家数提取不完整（上涨/下跌家数缺失）")
+    if zhangdie.get('总成交额') is None:
+        issues.append("03图总成交额未提取到")
+
+    status = 'verified' if not issues else 'manualcheck'
+    if issues:
+        print(f"  ⚠ 校验未通过 ({len(issues)} 项问题):")
+        for m in issues:
+            print(f"      - {m}")
+    else:
+        print(f"  ✓ 校验通过")
+
     # 4. 生成Excel
     print("[4/4] 生成Excel(按模板)...")
-    excel_path = export_excel(date_folder, zhangdie, sectors, output_dir)
+    excel_path = export_excel(date_folder, zhangdie, sectors, output_dir,
+                              status=status, issues=issues)
     print(f"✓ 已生成: {excel_path}")
     print("=" * 60)
     return True
@@ -708,9 +817,12 @@ def extract_batch(dates, base_dir='dataresource', output_dir='excelDataSource',
     ok, skipped, failed = [], [], []
     for i, d in enumerate(dates, 1):
         d = d.replace('-', '')
-        out = os.path.join(output_dir, f'{d}_涨停复盘.xlsx')
-        if skip_existing and os.path.exists(out):
-            print(f"[{i}/{len(dates)}] {d} 已存在Excel，跳过")
+        # 已存在任一后缀的导出文件则跳过
+        existing = [f for f in os.listdir(output_dir)
+                    if f.startswith(f'{d}_涨停复盘') and f.endswith('.xlsx')] \
+            if os.path.isdir(output_dir) else []
+        if skip_existing and existing:
+            print(f"[{i}/{len(dates)}] {d} 已存在Excel({existing[0]})，跳过")
             skipped.append(d)
             continue
         print(f"\n[{i}/{len(dates)}] 处理 {d}")
