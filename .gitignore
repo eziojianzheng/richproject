@@ -39,7 +39,6 @@ env/
 
 # Data files (large)
 dataresource/
-excelDataSource/
 
 # Config with sensitive data
 config.yml
