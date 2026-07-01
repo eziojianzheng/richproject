@@ -394,24 +394,36 @@ def prefetch_prices(codes, start, end):
     
     if not need_fetch:
         print(f"所有 {len(codes)} 只股票涨幅数据已缓存")
-        return
+        return {'success': len(codes), 'failed': [], 'total': len(codes)}
     
     print(f"需要获取 {len(need_fetch)} 只股票的涨幅数据...")
     import time
-    success = 0
+    success_list = []
+    failed_list = []
+    
     for i, c in enumerate(need_fetch):
         try:
             if fetch_range(c, start, end):
-                success += 1
+                success_list.append(c)
+            else:
+                failed_list.append({'code': c, 'reason': '无数据返回'})
             # 降低请求频率，避免被封IP
             time.sleep(0.5)
         except Exception as e:
             print(f"获取 {c} 失败: {e}")
+            failed_list.append({'code': c, 'reason': str(e)})
             time.sleep(1)  # 失败后多等一会
         if (i + 1) % 20 == 0:
-            print(f"已处理 {i + 1}/{len(need_fetch)}，成功 {success}")
+            print(f"已处理 {i + 1}/{len(need_fetch)}，成功 {len(success_list)}")
     
-    print(f"完成: 成功获取 {success}/{len(need_fetch)} 只股票数据")
+    print(f"完成: 成功获取 {len(success_list)}/{len(need_fetch)} 只股票数据")
+    
+    return {
+        'success': len(success_list),
+        'failed': failed_list,
+        'total': len(need_fetch),
+        'cached': len(codes) - len(need_fetch)
+    }
 
 
 # ============== 主统计逻辑 ==============
@@ -482,8 +494,10 @@ def track_hot_stocks(start, end, sort='stock_count', with_price=True,
                 for s in daily[d].get(blk, []):
                     if stock_qualifies(s):
                         all_codes.add(s['代码'])
+        
+        fetch_report = None
         if all_codes and dates:
-            prefetch_prices(all_codes, dates[0], dates[-1])
+            fetch_report = prefetch_prices(all_codes, dates[0], dates[-1])
 
     def build_track(blk, code):
         """构建某票在某板块下逐日跟踪"""
@@ -677,6 +691,7 @@ def track_hot_stocks(start, end, sort='stock_count', with_price=True,
         'dates': dates,
         'by_date': by_date,
         'blocks_summary': blocks_summary,
+        'fetch_report': fetch_report,
     }
 
 
