@@ -411,12 +411,14 @@ function toggleConsole() {
   dropdown.classList.toggle('show');
 }
 
-// 点击外部关闭控制台
-document.addEventListener('click', (e) => {
-  if (!e.target.closest('.console-panel')) {
-    document.querySelector('.console-btn')?.classList.remove('open');
-    document.getElementById('consoleDropdown')?.classList.remove('show');
-  }
+// 点击外部关闭控制台（DOM 加载完成后绑定）
+document.addEventListener('DOMContentLoaded', function() {
+  document.addEventListener('click', (e) => {
+    if (!e.target.closest('.console-panel')) {
+      document.querySelector('.console-btn')?.classList.remove('open');
+      document.getElementById('consoleDropdown')?.classList.remove('show');
+    }
+  });
 });
 
 // 下载图片
