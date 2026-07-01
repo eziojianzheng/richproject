@@ -403,6 +403,51 @@ function logToConsole(message, type = 'info') {
   logEl.scrollTop = logEl.scrollHeight;
 }
 
+// 记录 API 调用
+function logApiCall(method, url, params, result, duration) {
+  const logEl = document.getElementById('consoleLog');
+  const entry = document.createElement('div');
+  entry.className = 'log-entry';
+  
+  const status = result.success ? 'log-success' : 'log-error';
+  const statusIcon = result.success ? '✓' : '✗';
+  const durationStr = duration ? `(${duration}ms)` : '';
+  
+  entry.innerHTML = `
+    <div style="color: var(--text-secondary); font-size: 10px; margin-bottom: 2px;">
+      <span class="${status}">${statusIcon}</span>
+      ${method} ${url} ${durationStr}
+    </div>
+    <div style="color: ${result.success ? '#4ade80' : '#f87171'};">
+      ${result.message || result.error || JSON.stringify(result).slice(0, 100)}
+    </div>
+  `;
+  logEl.appendChild(entry);
+  logEl.scrollTop = logEl.scrollHeight;
+}
+
+// 封装 fetch 请求，自动记录日志
+async function fetchWithLog(url, options = {}) {
+  const startTime = Date.now();
+  const method = options.method || 'GET';
+  const params = options.body ? JSON.parse(options.body) : {};
+  
+  logToConsole(`→ ${method} ${url}`, 'info');
+  
+  try {
+    const response = await fetch(url, options);
+    const duration = Date.now() - startTime;
+    const result = await response.json();
+    
+    logApiCall(method, url, params, result, duration);
+    return result;
+  } catch (e) {
+    const duration = Date.now() - startTime;
+    logApiCall(method, url, params, { success: false, error: e.message }, duration);
+    throw e;
+  }
+}
+
 // 切换控制台面板
 function toggleConsole() {
   const btn = document.querySelector('.console-btn');
@@ -423,48 +468,28 @@ document.addEventListener('DOMContentLoaded', function() {
 
 // 下载图片
 async function downloadImages() {
-  const start = document.getElementById('downloadStart').value.replace(/-/g, '');
-  const end = document.getElementById('downloadEnd').value.replace(/-/g, '');
+  const start = document.getElementById('downloadStart').value;
+  const end = document.getElementById('downloadEnd').value;
   
-  logToConsole(`开始下载 ${start} ~ ${end}...`, 'info');
+  const result = await fetchWithLog('/api/download', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ start_date: start, end_date: end })
+  });
   
-  try {
-    const response = await fetch('/api/download', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ start_date: document.getElementById('downloadStart').value, end_date: document.getElementById('downloadEnd').value })
-    });
-    const result = await response.json();
-    
-    if (result.success) {
-      logToConsole(`下载任务已创建: ${result.articles_count} 篇文章`, 'success');
-      // 轮询任务状态
-      pollDownloadStatus(result.task_id);
-    } else {
-      logToConsole(`下载失败: ${result.error}`, 'error');
-    }
-  } catch (e) {
-    logToConsole(`请求失败: ${e}`, 'error');
+  if (result.success) {
+    pollDownloadStatus(result.task_id);
   }
 }
 
 // 轮询下载状态
 async function pollDownloadStatus(taskId) {
   const poll = async () => {
-    try {
-      const response = await fetch(`/api/status/${taskId}`);
-      const result = await response.json();
-      
-      if (result.status === 'completed') {
-        logToConsole(`下载完成: ${result.downloaded}/${result.total} 张图片`, 'success');
-      } else if (result.status === 'running') {
-        logToConsole(`下载进度: ${result.progress}%`, 'info');
-        setTimeout(poll, 2000);
-      } else {
-        logToConsole(`下载状态: ${result.status}`, 'info');
-      }
-    } catch (e) {
-      logToConsole(`查询状态失败: ${e}`, 'error');
+    const result = await fetchWithLog(`/api/status/${taskId}`);
+    if (result.status === 'running') {
+      setTimeout(poll, 2000);
+    } else if (result.status === 'completed') {
+      setTimeout(() => load(), 500);
     }
   };
   setTimeout(poll, 1000);
@@ -473,19 +498,7 @@ async function pollDownloadStatus(taskId) {
 // 清除涨幅缓存
 async function clearPriceCache() {
   if (!confirm('确定要清除所有涨幅缓存吗？')) return;
-  
-  try {
-    const response = await fetch('/api/hot/cache/clear', { method: 'POST' });
-    const result = await response.json();
-    
-    if (result.success) {
-      logToConsole('缓存已清除', 'success');
-    } else {
-      logToConsole(`清除失败: ${result.error}`, 'error');
-    }
-  } catch (e) {
-    logToConsole(`请求失败: ${e}`, 'error');
-  }
+  await fetchWithLog('/api/hot/cache/clear', { method: 'POST' });
 }
 
 // 重新获取所有涨幅
@@ -497,37 +510,24 @@ async function refetchAllPrices() {
   
   if (!confirm('确定要重新获取所有股票涨幅吗？可能需要较长时间。')) return;
   
-  logToConsole('开始重新获取涨幅数据...', 'info');
+  const start = DATA.dates[0];
+  const end = DATA.dates[DATA.dates.length - 1];
   
-  try {
-    const start = DATA.dates[0];
-    const end = DATA.dates[DATA.dates.length - 1];
-    
-    // 收集所有股票代码
-    const codes = new Set();
-    DATA.by_date.forEach(day => {
-      day.blocks.forEach(block => {
-        block.stocks.forEach(stock => codes.add(stock.code));
-      });
+  const codes = new Set();
+  DATA.by_date.forEach(day => {
+    day.blocks.forEach(block => {
+      block.stocks.forEach(stock => codes.add(stock.code));
     });
-    
-    logToConsole(`共 ${codes.size} 只股票需要获取`, 'info');
-    
-    const response = await fetch('/api/hot/refetch', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ codes: Array.from(codes), start, end })
-    });
-    const result = await response.json();
-    
-    if (result.success) {
-      logToConsole(result.message, 'success');
-      setTimeout(() => load(), 1000);
-    } else {
-      logToConsole(`获取失败: ${result.error}`, 'error');
-    }
-  } catch (e) {
-    logToConsole(`请求失败: ${e}`, 'error');
+  });
+  
+  const result = await fetchWithLog('/api/hot/refetch', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ codes: Array.from(codes), start, end })
+  });
+  
+  if (result.success) {
+    setTimeout(() => load(), 1000);
   }
 }
 
@@ -538,45 +538,33 @@ async function syncMissingData() {
     return;
   }
   
-  logToConsole('检查缺失数据...', 'info');
+  const latestDate = DATA.dates[DATA.dates.length - 1];
+  const codes = new Set();
   
-  try {
-    const latestDate = DATA.dates[DATA.dates.length - 1];
-    const codes = new Set();
-    
-    DATA.by_date.forEach(day => {
-      day.blocks.forEach(block => {
-        block.stocks.forEach(stock => {
-          const track = stock.track[latestDate];
-          if (!track || track.pct === null) {
-            codes.add(stock.code);
-          }
-        });
+  DATA.by_date.forEach(day => {
+    day.blocks.forEach(block => {
+      block.stocks.forEach(stock => {
+        const track = stock.track[latestDate];
+        if (!track || track.pct === null) {
+          codes.add(stock.code);
+        }
       });
     });
-    
-    if (codes.size === 0) {
-      logToConsole('没有缺失的数据', 'success');
-      return;
-    }
-    
-    logToConsole(`发现 ${codes.size} 只股票缺失数据，开始同步...`, 'info');
-    
-    const response = await fetch('/api/hot/sync', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ codes: Array.from(codes), date: latestDate })
-    });
-    const result = await response.json();
-    
-    if (result.success) {
-      logToConsole(result.message, 'success');
-      setTimeout(() => load(), 1000);
-    } else {
-      logToConsole(`同步失败: ${result.error}`, 'error');
-    }
-  } catch (e) {
-    logToConsole(`请求失败: ${e}`, 'error');
+  });
+  
+  if (codes.size === 0) {
+    logToConsole('没有缺失的数据', 'success');
+    return;
+  }
+  
+  const result = await fetchWithLog('/api/hot/sync', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ codes: Array.from(codes), date: latestDate })
+  });
+  
+  if (result.success) {
+    setTimeout(() => load(), 1000);
   }
 }
 
@@ -1079,31 +1067,23 @@ async function syncBlockStocks(btn, date, codes) {
   btn.textContent = '同步中';
   
   try {
-    const response = await fetch('/api/hot/sync', {
+    const result = await fetchWithLog('/api/hot/sync', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ codes, date })
     });
     
-    const result = await response.json();
-    
     if (result.success) {
       btn.textContent = '完成';
       btn.classList.remove('loading');
-      
-      // 重新加载数据以刷新显示
-      setTimeout(() => {
-        load();
-      }, 500);
+      setTimeout(() => load(), 500);
     } else {
       btn.textContent = '失败';
       btn.classList.remove('loading');
-      alert('同步失败: ' + result.error);
     }
   } catch (e) {
     btn.textContent = '错误';
     btn.classList.remove('loading');
-    alert('请求失败: ' + e);
   }
   
   // 3秒后恢复按钮文本
@@ -1127,8 +1107,7 @@ async function load(){
   chartsEl.innerHTML = '';
   
   try{
-    const r=await fetch(`/api/hot/track?start=${start}&end=${end}&price=${price}`);
-    const j=await r.json();
+    const j = await fetchWithLog(`/api/hot/track?start=${start}&end=${end}&price=${price}`);
     if(!j.success){ 
       metaEl.innerHTML = '<span class="error">❌ 错误: ' + j.error + '</span>'; 
       rowsEl.innerHTML = '';
