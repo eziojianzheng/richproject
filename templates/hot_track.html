@@ -400,6 +400,10 @@
           <label>同步当日缺失数据</label>
           <button onclick="syncMissingData()">同步</button>
         </div>
+        <div class="console-item">
+          <label>同步MA10数据(报告)</label>
+          <button onclick="syncMA10Data()">同步报告</button>
+        </div>
         <div class="console-log" id="consoleLog">
           <div class="log-entry log-info">控制台就绪</div>
         </div>
@@ -602,6 +606,47 @@ async function syncMissingData() {
   
   if (result.success) {
     setTimeout(() => load(), 1000);
+  }
+}
+
+// 同步MA10数据
+async function syncMA10Data() {
+  const start = document.getElementById('start').value.trim();
+  const end = document.getElementById('end').value.trim();
+  
+  logToConsole('开始同步MA10数据...', 'info');
+  
+  const result = await fetchWithLog('/api/hot/sync-ma10', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ start, end })
+  });
+  
+  if (result.success) {
+    const report = result.report;
+    logToConsole('=== MA10同步报告 ===', 'info');
+    logToConsole('总股票数: ' + report.total_stocks + ', 日期数: ' + report.total_dates, 'info');
+    logToConsole('同步前缺失MA10: ' + report.missing_before + ' 条', 'error');
+    logToConsole('成功获取: ' + report.fetched + ' 只股票', 'success');
+    
+    if (report.failed && report.failed.length > 0) {
+      logToConsole('失败: ' + report.failed.length + ' 只', 'error');
+      report.failed.slice(0, 5).forEach(function(f) {
+        logToConsole('  ' + f.code + ': ' + f.error, 'error');
+      });
+    }
+    
+    if (report.still_missing_count > 0) {
+      logToConsole('仍缺失: ' + report.still_missing_count + ' 条', 'error');
+      report.still_missing.slice(0, 5).forEach(function(m) {
+        logToConsole('  ' + m.code + ' (' + m.date + ')', 'error');
+      });
+    } else {
+      logToConsole('所有MA10数据已完整!', 'success');
+    }
+    
+    // 刷新数据
+    setTimeout(function() { load(); }, 1000);
   }
 }
 

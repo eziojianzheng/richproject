@@ -920,6 +920,104 @@ def api_hot_sync():
     })
 
 
+@app.route('/api/hot/sync-ma10', methods=['POST'])
+def api_hot_sync_ma10():
+    """
+    同步所有股票的MA10数据
+    
+    参数:
+        start: 开始日期 (YYYYMMDD)
+        end: 结束日期 (YYYYMMDD)
+    
+    返回:
+        同步报告，包含成功/失败列表
+    """
+    data = request.get_json() or {}
+    start = data.get('start', '')
+    end = data.get('end', '')
+    
+    if not start or not end:
+        return jsonify({'success': False, 'error': '缺少日期参数'}), 400
+    
+    # 获取该日期范围内的所有股票
+    try:
+        track_data = ht.track_hot_stocks(start, end, with_price=False)
+    except Exception as e:
+        return jsonify({'success': False, 'error': f'获取股票列表失败: {e}'}), 500
+    
+    # 收集所有股票代码和日期
+    codes = set()
+    dates = track_data.get('dates', [])
+    for day in track_data.get('by_date', []):
+        for block in day.get('blocks', []):
+            for stock in block.get('stocks', []):
+                codes.add(stock['code'])
+    
+    if not codes:
+        return jsonify({'success': True, 'message': '没有需要同步的股票', 'report': {}})
+    
+    # 检查缓存中缺少MA10的数据
+    cache = ht._load_price_cache()
+    missing_report = {
+        'total_stocks': len(codes),
+        'total_dates': len(dates),
+        'missing_ma10': [],
+        'missing_below': [],
+        'already_have': 0
+    }
+    
+    for code in codes:
+        for d in dates:
+            has_ma10 = f'{code}_{d}_ma10' in cache
+            has_below = f'{code}_{d}_below_ma10' in cache
+            
+            if not has_ma10:
+                missing_report['missing_ma10'].append({'code': code, 'date': d})
+            if not has_below:
+                missing_report['missing_below'].append({'code': code, 'date': d})
+            if has_ma10 and has_below:
+                missing_report['already_have'] += 1
+    
+    # 重新获取缺少MA10数据的股票
+    need_fetch = set(item['code'] for item in missing_report['missing_ma10'])
+    
+    import time
+    success = 0
+    failed = []
+    for i, code in enumerate(need_fetch):
+        try:
+            # 获取更长时间范围的数据以确保有足够历史数据计算MA10
+            if ht.fetch_range_akshare(code, start, end):
+                success += 1
+            time.sleep(0.5)
+            if (i + 1) % 10 == 0:
+                print(f"同步MA10进度: {i + 1}/{len(need_fetch)}")
+        except Exception as e:
+            failed.append({'code': code, 'error': str(e)})
+            time.sleep(1)
+    
+    # 重新检查
+    cache = ht._load_price_cache()
+    still_missing = []
+    for item in missing_report['missing_ma10']:
+        if f"{item['code']}_{item['date']}_ma10" not in cache:
+            still_missing.append(item)
+    
+    return jsonify({
+        'success': True,
+        'message': f'完成: 成功获取 {success}/{len(need_fetch)} 只股票MA10数据',
+        'report': {
+            'total_stocks': len(codes),
+            'total_dates': len(dates),
+            'missing_before': len(missing_report['missing_ma10']),
+            'fetched': success,
+            'failed': failed,
+            'still_missing': still_missing[:20],  # 只返回前20条
+            'still_missing_count': len(still_missing)
+        }
+    })
+
+
 @app.route('/api/hot/cache/clear', methods=['POST'])
 def api_hot_cache_clear():
     """
