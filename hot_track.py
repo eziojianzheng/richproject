@@ -572,11 +572,26 @@ def track_hot_stocks(start, end, sort='stock_count', with_price=True,
             for st in cum:
                 track = st['track'].get(d)
                 if track and track.get('below_ma10') == True:
-                    # 当天跌破10日线，记录移除日期（次日不再跟踪）
-                    if st['code'] not in block_removed_stocks[blk]:
-                        block_removed_stocks[blk][st['code']] = d
-                        st['remove_date'] = d
-                        st['remove_reason'] = '跌破10日线'
+                    # 检查是否涨停（涨停则不移除）
+                    pct = track.get('pct')
+                    is_limit_up = False
+                    if pct is not None:
+                        if st['is_kcb_cyb']:
+                            is_limit_up = pct >= 19.4  # 科创板/创业板涨停
+                        else:
+                            is_limit_up = pct >= 9.8   # 普通股票涨停
+                    
+                    # 检查是否一字板（9:25涨停）
+                    desc = track.get('desc', '')
+                    if '一字板' in desc:
+                        is_limit_up = True
+                    
+                    # 跌破10日线且未涨停，记录移除日期
+                    if not is_limit_up:
+                        if st['code'] not in block_removed_stocks[blk]:
+                            block_removed_stocks[blk][st['code']] = d
+                            st['remove_date'] = d
+                            st['remove_reason'] = '跌破10日线'
             
             # 计算当前仍在跟踪的股票（未被移除或在移除当天仍显示）
             active_stocks = []

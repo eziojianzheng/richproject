@@ -1182,6 +1182,28 @@ async function load(){
       return; 
     }
     DATA = j;
+    
+    // 检查数据完整性并提示
+    const integrity = j.data_integrity;
+    if (integrity && (integrity.pct > 0 || integrity.ma10 > 0)) {
+      const warnings = [];
+      if (integrity.pct > 0) warnings.push('缺少涨幅: ' + integrity.pct + '条');
+      if (integrity.ma10 > 0) warnings.push('缺少MA10: ' + integrity.ma10 + '条');
+      
+      logToConsole('数据完整性警告: ' + warnings.join(', '), 'error');
+      
+      if (integrity.details && integrity.details.length > 0) {
+        integrity.details.slice(0, 5).forEach(function(d) {
+          logToConsole('  ' + d.code + ' ' + d.name + ' (' + d.date + '): 缺少' + d.missing.join('/'), 'error');
+        });
+        if (integrity.details.length > 5) {
+          logToConsole('  ... 还有 ' + (integrity.details.length - 5) + ' 条', 'info');
+        }
+      }
+      
+      logToConsole('建议: 点击"同步当日缺失数据"或"重新获取所有涨幅"', 'info');
+    }
+    
     render();
   }catch(e){ 
     metaEl.innerHTML = '<span class="error">❌ 请求失败: ' + e + '</span>';

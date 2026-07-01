@@ -829,7 +829,46 @@ def api_hot_track():
     except Exception as e:
         return jsonify({'success': False, 'error': f'统计失败: {e}'}), 500
     
-    return jsonify({'success': True, **data})
+    # 检查数据完整性
+    missing_stats = {
+        'pct': 0,        # 缺少涨幅
+        'ma10': 0,       # 缺少MA10
+        'below_ma10': 0, # 缺少跌破状态
+        'details': []    # 详细信息
+    }
+    
+    if with_price:
+        for day in data.get('by_date', []):
+            for block in day.get('blocks', []):
+                for stock in block.get('stocks', []):
+                    track = stock.get('track', {}).get(day['date'], {})
+                    missing = []
+                    
+                    if track.get('pct') is None:
+                        missing_stats['pct'] += 1
+                        missing.append('涨幅')
+                    
+                    if track.get('ma10') is None:
+                        missing_stats['ma10'] += 1
+                        missing.append('MA10')
+                    
+                    if track.get('below_ma10') is None:
+                        missing_stats['below_ma10'] += 1
+                        missing.append('跌破状态')
+                    
+                    if missing and len(missing_stats['details']) < 10:
+                        missing_stats['details'].append({
+                            'code': stock['code'],
+                            'name': stock['name'],
+                            'date': day['date'],
+                            'missing': missing
+                        })
+    
+    return jsonify({
+        'success': True, 
+        **data,
+        'data_integrity': missing_stats
+    })
 
 
 @app.route('/api/hot/dates', methods=['GET'])
