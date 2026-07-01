@@ -13,7 +13,7 @@ ensure_dependencies({
     'bs4': 'beautifulsoup4>=4.12.0',
 })
 
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, render_template
 import requests
 from bs4 import BeautifulSoup
 import os
@@ -22,6 +22,9 @@ from datetime import datetime, timedelta
 import threading
 
 app = Flask(__name__)
+
+# 导入热门股追踪模块
+import hot_track as ht
 
 # Cookies
 COOKIES = {
@@ -304,19 +307,72 @@ def download_task(task_id, articles, base_dir='dataresource', skip_existing=True
 @app.route('/', methods=['GET'])
 def index():
     """API首页"""
-    return jsonify({
-        'name': '淘股吧图片下载API',
-        'version': '1.1.0',
-        'endpoints': {
-            'GET /api/articles': '获取文章列表',
-            'POST /api/download': '按日期范围下载图片 (参数: start_date, end_date, 格式: YYYY-MM-DD)',
-            'GET /api/status/<task_id>': '查询下载任务状态',
-            'GET /api/files': '查看已下载的文件列表',
-            'GET /api/files/<date>': '查看指定日期的文件列表',
-            'GET /api/ocr/title': '通过OCR查找"湖南人涨停复盘"标题图片 (参数: date, keyword)',
-            'POST /api/ocr/recognize': 'OCR识别图片文字 (参数: image_path)',
-        }
-    })
+    html = '''
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <meta charset="utf-8">
+        <title>淘股吧数据服务</title>
+        <style>
+            body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; max-width: 900px; margin: 50px auto; padding: 20px; }
+            h1 { color: #333; border-bottom: 2px solid #4CAF50; padding-bottom: 10px; }
+            .version { color: #666; font-size: 14px; }
+            .nav-links { margin: 30px 0; }
+            .nav-links a { display: inline-block; background: #4CAF50; color: white; padding: 12px 24px; margin-right: 10px; text-decoration: none; border-radius: 6px; font-weight: 600; }
+            .nav-links a:hover { background: #45a049; }
+            .nav-links a.secondary { background: #2196F3; }
+            .nav-links a.secondary:hover { background: #1976D2; }
+            table { width: 100%; border-collapse: collapse; margin-top: 20px; }
+            th, td { text-align: left; padding: 12px; border-bottom: 1px solid #ddd; }
+            th { background-color: #4CAF50; color: white; }
+            tr:hover { background-color: #f5f5f5; }
+            code { background-color: #f4f4f4; padding: 2px 6px; border-radius: 3px; color: #d63384; }
+            .method-get { color: #28a745; font-weight: bold; }
+            .method-post { color: #007bff; font-weight: bold; }
+        </style>
+    </head>
+    <body>
+        <h1>淘股吧数据服务</h1>
+        <p class="version">版本: 1.2.0</p>
+        
+        <div class="nav-links">
+            <a href="/hot">🔥 热门股追踪</a>
+            <a href="/api/files" class="secondary">📁 已下载文件</a>
+        </div>
+        
+        <h2>API接口</h2>
+        <table>
+            <tr><th>方法</th><th>路径</th><th>说明</th></tr>
+            <tr><td><span class="method-get">GET</span></td><td><code>/hot</code></td><td>热门股追踪页面</td></tr>
+            <tr><td><span class="method-get">GET</span></td><td><code>/api/articles</code></td><td>获取文章列表</td></tr>
+            <tr><td><span class="method-post">POST</span></td><td><code>/api/download</code></td><td>按日期范围下载图片<br><small>参数: start_date, end_date (格式: YYYY-MM-DD)</small></td></tr>
+            <tr><td><span class="method-post">POST</span></td><td><code>/api/download/sync</code></td><td>同步下载图片（阻塞式）</td></tr>
+            <tr><td><span class="method-get">GET</span></td><td><code>/api/status/&lt;task_id&gt;</code></td><td>查询下载任务状态</td></tr>
+            <tr><td><span class="method-get">GET</span></td><td><code>/api/files</code></td><td>查看已下载的文件列表</td></tr>
+            <tr><td><span class="method-get">GET</span></td><td><code>/api/files/&lt;date&gt;</code></td><td>查看指定日期的文件列表</td></tr>
+            <tr><td><span class="method-get">GET</span></td><td><code>/api/ocr/title</code></td><td>通过OCR查找"湖南人涨停复盘"标题图片<br><small>参数: date, keyword</small></td></tr>
+            <tr><td><span class="method-post">POST</span></td><td><code>/api/ocr/recognize</code></td><td>OCR识别图片文字<br><small>参数: image_path</small></td></tr>
+            <tr><td><span class="method-get">GET</span></td><td><code>/api/hot/track</code></td><td>热门股追踪数据<br><small>参数: start, end (格式: YYYYMMDD)</small></td></tr>
+            <tr><td><span class="method-get">GET</span></td><td><code>/api/hot/dates</code></td><td>获取已有数据的日期列表</td></tr>
+        </table>
+        
+        <h2>使用示例</h2>
+        <pre style="background:#f4f4f4;padding:15px;border-radius:5px;overflow-x:auto;">
+# 下载图片
+curl -X POST http://127.0.0.1:5000/api/download \\
+  -H "Content-Type: application/json" \\
+  -d '{"start_date":"2026-05-14","end_date":"2026-05-20"}'
+
+# 查询任务状态
+curl http://127.0.0.1:5000/api/status/abc123
+
+# 热门股追踪
+curl "http://127.0.0.1:5000/api/hot/track?start=20260601&end=20260605"
+        </pre>
+    </body>
+    </html>
+    '''
+    return html
 
 
 @app.route('/api/articles', methods=['GET'])
@@ -736,13 +792,192 @@ def ocr_recognize():
     })
 
 
+# ============== 热门股追踪页面 ==============
+
+@app.route('/hot', methods=['GET'])
+def hot_track_page():
+    """热门股追踪页面"""
+    return render_template('hot_track.html')
+
+
+@app.route('/api/hot/track', methods=['GET'])
+def api_hot_track():
+    """热门股追踪数据API"""
+    import re
+    
+    start = request.args.get('start', '')
+    end = request.args.get('end', '')
+    sort = request.args.get('sort', 'stock_count')
+    with_price = request.args.get('price', '1') not in ('0', 'false', 'no')
+    
+    # 验证日期格式
+    if not (start and re.match(r'^\d{8}$', start)) or not (end and re.match(r'^\d{8}$', end)):
+        return jsonify({'success': False, 'error': '日期格式错误, 请用 YYYYMMDD'}), 400
+    
+    if start > end:
+        start, end = end, start
+    
+    if sort not in ('stock_count', 'days', 'times', 'total'):
+        sort = 'stock_count'
+    
+    # 转换排序参数
+    sort_map = {'times': 'stock_count', 'total': 'days'}
+    actual_sort = sort_map.get(sort, sort)
+    
+    try:
+        data = ht.track_hot_stocks(start, end, sort=actual_sort, with_price=with_price)
+    except Exception as e:
+        return jsonify({'success': False, 'error': f'统计失败: {e}'}), 500
+    
+    return jsonify({'success': True, **data})
+
+
+@app.route('/api/hot/dates', methods=['GET'])
+def api_hot_dates():
+    """返回当前已有数据的所有日期"""
+    dates = sorted(ht.list_excel_dates().keys())
+    return jsonify({'success': True, 'dates': dates})
+
+
+@app.route('/api/hot/sync', methods=['POST'])
+def api_hot_sync():
+    """
+    同步指定板块的股票涨幅数据
+    
+    参数:
+        codes: 股票代码列表
+        date: 日期 (YYYYMMDD)
+    """
+    data = request.get_json() or {}
+    codes = data.get('codes', [])
+    date = data.get('date', '')
+    
+    if not codes or not date:
+        return jsonify({'success': False, 'error': '缺少参数'}), 400
+    
+    # 只获取缺失的股票数据
+    cache = ht._load_price_cache()
+    need_fetch = [c for c in codes if f'{c}_{date}' not in cache]
+    
+    if not need_fetch:
+        return jsonify({'success': True, 'message': '所有股票数据已存在', 'fetched': 0})
+    
+    # 同步获取
+    import time
+    success = 0
+    for c in need_fetch:
+        try:
+            if ht.fetch_range(c, date, date):
+                success += 1
+            time.sleep(0.5)
+        except Exception as e:
+            print(f"同步{c}失败: {e}")
+    
+    return jsonify({
+        'success': True,
+        'message': f'成功获取 {success}/{len(need_fetch)} 只股票数据',
+        'fetched': success,
+        'total': len(need_fetch)
+    })
+
+
+@app.route('/api/hot/cache/clear', methods=['POST'])
+def api_hot_cache_clear():
+    """
+    清除涨幅缓存
+    """
+    try:
+        cache_file = ht._PRICE_CACHE_FILE
+        if os.path.exists(cache_file):
+            os.remove(cache_file)
+            ht._price_cache = None  # 重置内存缓存
+            return jsonify({'success': True, 'message': '缓存已清除'})
+        else:
+            return jsonify({'success': True, 'message': '缓存文件不存在'})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/hot/refetch', methods=['POST'])
+def api_hot_refetch():
+    """
+    重新获取股票涨幅数据（仅获取缺失数据）
+    
+    参数:
+        codes: 股票代码列表
+        start: 开始日期 (YYYYMMDD)
+        end: 结束日期 (YYYYMMDD)
+    """
+    data = request.get_json() or {}
+    codes = data.get('codes', [])
+    start = data.get('start', '')
+    end = data.get('end', '')
+    
+    if not codes or not start or not end:
+        return jsonify({'success': False, 'error': '缺少参数'}), 400
+    
+    # 生成日期范围内所有交易日
+    from datetime import datetime, timedelta
+    try:
+        s_dt = datetime.strptime(start, '%Y%m%d')
+        e_dt = datetime.strptime(end, '%Y%m%d')
+    except:
+        return jsonify({'success': False, 'error': '日期格式错误'}), 400
+    
+    query_dates = []
+    current = s_dt
+    while current <= e_dt:
+        if current.weekday() < 5:  # 只统计工作日
+            query_dates.append(current.strftime('%Y%m%d'))
+        current += timedelta(days=1)
+    
+    # 检查缓存，只获取缺失数据的股票
+    cache = ht._load_price_cache()
+    need_fetch = []
+    for c in codes:
+        # 检查该股票是否有任意一天的涨幅数据
+        has_data = any(f'{c}_{d}' in cache for d in query_dates)
+        if not has_data:
+            need_fetch.append(c)
+    
+    if not need_fetch:
+        return jsonify({
+            'success': True, 
+            'message': f'所有 {len(codes)} 只股票数据已存在，无需重新获取',
+            'fetched': 0,
+            'skipped': len(codes)
+        })
+    
+    import time
+    success = 0
+    for i, c in enumerate(need_fetch):
+        try:
+            if ht.fetch_range(c, start, end):
+                success += 1
+            time.sleep(0.5)
+            if (i + 1) % 10 == 0:
+                print(f"已处理 {i + 1}/{len(need_fetch)}，成功 {success}")
+        except Exception as e:
+            print(f"获取 {c} 失败: {e}")
+            time.sleep(1)
+    
+    return jsonify({
+        'success': True,
+        'message': f'完成: 成功获取 {success}/{len(need_fetch)} 只股票数据（跳过 {len(codes) - len(need_fetch)} 只有数据）',
+        'fetched': success,
+        'skipped': len(codes) - len(need_fetch)
+    })
+
+
 if __name__ == '__main__':
     print("=" * 60)
-    print("淘股吧图片下载API服务")
+    print("淘股吧数据服务")
     print("=" * 60)
     print("\n启动服务: http://127.0.0.1:5000")
-    print("\nAPI接口:")
+    print("\n页面:")
     print("  GET  /                      - API首页")
+    print("  GET  /hot                   - 热门股追踪页面")
+    print("\nAPI接口:")
     print("  GET  /api/articles          - 获取文章列表")
     print("  POST /api/download          - 异步下载 (按日期范围)")
     print("  POST /api/download/sync     - 同步下载 (按日期范围)")
@@ -751,9 +986,11 @@ if __name__ == '__main__':
     print("  GET  /api/files/<date>      - 查看指定日期文件")
     print("  GET  /api/ocr/title         - OCR查找标题图片")
     print("  POST /api/ocr/recognize     - OCR识别图片文字")
+    print("  GET  /api/hot/track         - 热门股追踪数据")
+    print("  GET  /api/hot/dates         - 获取已有数据日期")
     print("\n示例:")
-    print('  curl -X POST http://127.0.0.1:5000/api/download -H "Content-Type: application/json" -d \'{"start_date":"2026-06-20","end_date":"2026-06-26"}\'')
-    print('  curl "http://127.0.0.1:5000/api/ocr/title?date=20260626"')
+    print('  curl -X POST http://127.0.0.1:5000/api/download -H "Content-Type: application/json" -d \'{"start_date":"2026-05-14","end_date":"2026-05-20"}\'')
+    print('  curl "http://127.0.0.1:5000/api/hot/track?start=20260601&end=20260605"')
     print("=" * 60)
     
     app.run(host='0.0.0.0', port=5000, debug=True)

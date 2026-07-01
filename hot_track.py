@@ -240,62 +240,74 @@ def _save_price_cache():
         pass
 
 
-def _tx_secid(code):
-    """股票代码 -> 腾讯行情 secid 前缀"""
-    if code.startswith(('6', '9', '5')):
-        return 'sh' + code
-    return 'sz' + code
+def fetch_range_akshare(code, start, end):
+    """
+    使用 akshare 获取个股历史数据，包括每日涨跌幅和20日/60日涨幅
+    
+    返回: True 成功 / False 失败
+    """
+    try:
+        import akshare as ak
+        from datetime import datetime, timedelta
+        
+        # 计算需要获取的起始日期（往前推70个交易日以确保有足够数据计算60日涨幅）
+        try:
+            s_dt = datetime.strptime(start, '%Y%m%d')
+            fetch_start = (s_dt - timedelta(days=100)).strftime('%Y%m%d')
+        except:
+            fetch_start = start
+        
+        # akshare 股票历史数据
+        df = ak.stock_zh_a_hist(symbol=code, period="daily", 
+                                start_date=fetch_start, end_date=end,
+                                adjust="qfq")
+        
+        if df is None or df.empty:
+            print(f"akshare {code} 无数据")
+            return False
+        
+        cache = _load_price_cache()
+        with _cache_lock:
+            # 存储每日涨跌幅和累计涨幅
+            for i in range(len(df)):
+                date_str = str(df.iloc[i]['日期']).replace('-', '')[:8]
+                pct = float(df.iloc[i]['涨跌幅'])
+                cache[f'{code}_{date_str}'] = round(pct, 2)
+                
+                # 计算20日涨幅（如果不足20日，从上市第一天算）
+                try:
+                    close_today = float(df.iloc[i]['收盘'])
+                    idx_20d = max(0, i - 19)  # 不足20天就从第0天算
+                    close_20d_ago = float(df.iloc[idx_20d]['收盘'])
+                    if close_20d_ago > 0 and i > 0:  # 排除第一天
+                        pct_20d = (close_today - close_20d_ago) / close_20d_ago * 100
+                        cache[f'{code}_{date_str}_20d'] = round(pct_20d, 2)
+                except:
+                    pass
+                
+                # 计算60日涨幅（如果不足60日，从上市第一天算）
+                try:
+                    close_today = float(df.iloc[i]['收盘'])
+                    idx_60d = max(0, i - 59)  # 不足60天就从第0天算
+                    close_60d_ago = float(df.iloc[idx_60d]['收盘'])
+                    if close_60d_ago > 0 and i > 0:  # 排除第一天
+                        pct_60d = (close_today - close_60d_ago) / close_60d_ago * 100
+                        cache[f'{code}_{date_str}_60d'] = round(pct_60d, 2)
+                except:
+                    pass
+            
+            _save_price_cache()
+        return True
+    except Exception as e:
+        print(f"akshare获取{code}失败: {e}")
+        return False
 
 
 def fetch_range(code, start, end):
     """
-    获取个股 [start,end] 区间每个交易日涨跌幅, 写入缓存
-    用腾讯行情日K(前复权), 多取前置交易日以计算首日涨幅
-
-    返回: True 成功(至少取到数据) / False 失败
+    获取个股涨幅数据，使用akshare
     """
-    import requests
-    from datetime import datetime, timedelta
-
-    cache = _load_price_cache()
-    # 起始日往前推 12 个自然日, 确保拿到 start 前一交易日用于算涨幅
-    try:
-        s_dt = datetime.strptime(start, '%Y%m%d')
-        fetch_start = (s_dt - timedelta(days=12)).strftime('%Y-%m-%d')
-    except Exception:
-        fetch_start = start[:4] + '-' + start[4:6] + '-' + start[6:8]
-    fetch_end = end[:4] + '-' + end[4:6] + '-' + end[6:8]
-
-    secid = _tx_secid(code)
-    url = (f'https://web.ifzq.gtimg.cn/appstock/app/fqkline/get'
-           f'?param={secid},day,{fetch_start},{fetch_end},640,qfq')
-    for attempt in range(2):
-        try:
-            r = requests.get(url, headers=_TX_HEADERS, timeout=10,
-                             proxies={'http': None, 'https': None})
-            j = r.json()
-            data = j.get('data', {}).get(secid, {})
-            kline = data.get('qfqday') or data.get('day') or []
-            if not kline:
-                return False
-            # kline: [日期, 开, 收, 高, 低, 成交量]; 按日期算环比涨跌幅
-            prev_close = None
-            with _cache_lock:
-                for row in kline:
-                    d = row[0].replace('-', '')   # 20260601
-                    close = float(row[2])
-                    if prev_close is not None and prev_close > 0:
-                        pct = round((close - prev_close) / prev_close * 100, 2)
-                        cache[f'{code}_{d}'] = pct
-                    prev_close = close
-                _save_price_cache()
-            return True
-        except Exception:
-            if attempt == 0:
-                import time
-                time.sleep(0.8)
-                continue
-    return False
+    return fetch_range_akshare(code, start, end)
 
 
 def get_pct_change(code, date):
@@ -304,21 +316,74 @@ def get_pct_change(code, date):
     return cache.get(f'{code}_{date}')
 
 
-def prefetch_prices(codes, start, end):
-    """批量预取涨幅: 并发请求(腾讯接口), 已有缓存的票跳过, 失败的串行补取一次"""
-    from concurrent.futures import ThreadPoolExecutor
+def get_pct_20d(code, date):
+    """从缓存读取某日20日涨幅, 未命中返回 None"""
     cache = _load_price_cache()
-    todo = [c for c in codes
-            if not any(k.startswith(f'{c}_') for k in cache)]
-    if not todo:
+    return cache.get(f'{code}_{date}_20d')
+
+
+def get_pct_60d(code, date):
+    """从缓存读取某日60日涨幅, 未命中返回 None"""
+    cache = _load_price_cache()
+    return cache.get(f'{code}_{date}_60d')
+
+
+def prefetch_prices(codes, start, end):
+    """批量预取涨幅: 使用akshare获取，检查查询日期范围内是否有数据"""
+    cache = _load_price_cache()
+    
+    # 生成查询范围内的所有日期
+    from datetime import datetime, timedelta
+    try:
+        s_dt = datetime.strptime(start, '%Y%m%d')
+        e_dt = datetime.strptime(end, '%Y%m%d')
+    except:
         return
-    # 并发拉取(限制并发数避免被限流)
-    with ThreadPoolExecutor(max_workers=8) as ex:
-        results = list(ex.map(lambda c: fetch_range(c, start, end), todo))
-    # 并发中失败的票, 串行补取一次(规避偶发限流)
-    failed = [c for c, ok in zip(todo, results) if not ok]
-    for c in failed:
-        fetch_range(c, start, end)
+    
+    query_dates = []
+    current = s_dt
+    while current <= e_dt:
+        # 只统计工作日（简单判断：周一到周五）
+        if current.weekday() < 5:
+            query_dates.append(current.strftime('%Y%m%d'))
+        current += timedelta(days=1)
+    
+    # 检查每只股票是否在查询范围内有足够数据
+    need_fetch = []
+    for c in codes:
+        # 检查是否有任意一天的日涨幅数据
+        has_any_data = any(f'{c}_{d}' in cache for d in query_dates)
+        
+        # 如果完全没有数据，需要获取
+        if not has_any_data:
+            need_fetch.append(c)
+            continue
+        
+        # 如果有数据，检查是否缺少20日/60日涨幅
+        missing_20d = any(f'{c}_{d}' in cache and f'{c}_{d}_20d' not in cache for d in query_dates)
+        if missing_20d:
+            need_fetch.append(c)
+    
+    if not need_fetch:
+        print(f"所有 {len(codes)} 只股票涨幅数据已缓存")
+        return
+    
+    print(f"需要获取 {len(need_fetch)} 只股票的涨幅数据...")
+    import time
+    success = 0
+    for i, c in enumerate(need_fetch):
+        try:
+            if fetch_range(c, start, end):
+                success += 1
+            # 降低请求频率，避免被封IP
+            time.sleep(0.5)
+        except Exception as e:
+            print(f"获取 {c} 失败: {e}")
+            time.sleep(1)  # 失败后多等一会
+        if (i + 1) % 20 == 0:
+            print(f"已处理 {i + 1}/{len(need_fetch)}，成功 {success}")
+    
+    print(f"完成: 成功获取 {success}/{len(need_fetch)} 只股票数据")
 
 
 # ============== 主统计逻辑 ==============
@@ -402,6 +467,8 @@ def track_hot_stocks(start, end, sort='stock_count', with_price=True,
                     rec = s
                     break
             pct = get_pct_change(code, d) if with_price else None
+            pct_20d = get_pct_20d(code, d) if with_price else None
+            pct_60d = get_pct_60d(code, d) if with_price else None
             if rec:
                 track[d] = {
                     'desc': make_desc(rec['连扳数'], rec['末次时间']),
@@ -409,10 +476,17 @@ def track_hot_stocks(start, end, sort='stock_count', with_price=True,
                     'time': rec['末次时间'],
                     'reason': rec['原因'],
                     'pct': pct,
+                    'pct_20d': pct_20d,
+                    'pct_60d': pct_60d,
                     'present': True,
                 }
             else:
-                track[d] = {'present': False, 'pct': pct}
+                track[d] = {
+                    'present': False, 
+                    'pct': pct,
+                    'pct_20d': pct_20d,
+                    'pct_60d': pct_60d
+                }
         return track
 
     # === 按日期分组: 每个日期显示截至当天累计入选的板块及其完整阵容 ===
@@ -471,21 +545,31 @@ def track_hot_stocks(start, end, sort='stock_count', with_price=True,
             by_date.append({'date': d, 'blocks': day_blocks})
 
     # === 板块图表汇总数据 ===
-    # 每个板块: 逐日平均涨幅 / 逐日累计入选票数 / 各入选票逐日涨幅序列
+    # 每个板块: 逐日平均涨幅 / 逐日累计平均涨幅 / 逐日累计入选票数 / 各入选票逐日涨幅序列
     blocks_summary = []
     for blk in selected_blocks:
         roster = block_cum_stocks[blk]
         if not roster:
             continue
-        avg_series = {}
+        avg_series = {}          # 单日平均涨幅
+        cum_avg_series = {}      # 累计平均涨幅
         cum_series = {}
         for d in dates:
             # 截至当天累计入选的票
             cum_stocks = [st for st in roster if st['first_date'] <= d]
             cum_series[d] = len(cum_stocks)
+            # 单日平均涨幅
             pcts = [st['track'][d].get('pct') for st in cum_stocks
                     if isinstance(st['track'][d].get('pct'), (int, float))]
             avg_series[d] = round(sum(pcts) / len(pcts), 2) if pcts else None
+        # 计算累计平均涨幅
+        cum_sum = 0
+        cum_count = 0
+        for d in dates:
+            if avg_series[d] is not None:
+                cum_sum += avg_series[d]
+                cum_count += 1
+            cum_avg_series[d] = round(cum_sum, 2) if cum_count > 0 else None
         stocks_series = [{
             'code': st['code'],
             'name': st['name'],
@@ -496,7 +580,8 @@ def track_hot_stocks(start, end, sort='stock_count', with_price=True,
             'block': blk,
             'times_count': block_times[blk],
             'total_count': block_total[blk],
-            'avg_pct': avg_series,
+            'avg_pct': cum_avg_series,   # 改为累计平均涨幅
+            'daily_avg_pct': avg_series, # 单日平均涨幅（保留）
             'cum_count': cum_series,
             'stocks': stocks_series,
         })
