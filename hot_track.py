@@ -295,6 +295,22 @@ def fetch_range_akshare(code, start, end):
                         cache[f'{code}_{date_str}_60d'] = round(pct_60d, 2)
                 except:
                     pass
+                
+                # 计算10日均线并判断是否跌破
+                # 需要 at least 10 天数据来计算均线
+                try:
+                    close_today = float(df.iloc[i]['收盘'])
+                    if i >= 9:  # 有足够数据计算10日均线
+                        ma10 = sum(float(df.iloc[j]['收盘']) for j in range(i-9, i+1)) / 10
+                        cache[f'{code}_{date_str}_ma10'] = round(ma10, 2)
+                        # 判断是否跌破10日线（收盘价 < 10日均线）
+                        below_ma10 = close_today < ma10
+                        cache[f'{code}_{date_str}_below_ma10'] = below_ma10
+                    else:
+                        # 数据不足10天，不判断
+                        cache[f'{code}_{date_str}_below_ma10'] = False
+                except:
+                    pass
             
             _save_price_cache()
         return True
@@ -326,6 +342,18 @@ def get_pct_60d(code, date):
     """从缓存读取某日60日涨幅, 未命中返回 None"""
     cache = _load_price_cache()
     return cache.get(f'{code}_{date}_60d')
+
+
+def get_ma10(code, date):
+    """从缓存读取某日10日均线, 未命中返回 None"""
+    cache = _load_price_cache()
+    return cache.get(f'{code}_{date}_ma10')
+
+
+def is_below_ma10(code, date):
+    """判断某日是否跌破10日线, 未命中返回 None"""
+    cache = _load_price_cache()
+    return cache.get(f'{code}_{date}_below_ma10')
 
 
 def prefetch_prices(codes, start, end):
@@ -469,6 +497,8 @@ def track_hot_stocks(start, end, sort='stock_count', with_price=True,
             pct = get_pct_change(code, d) if with_price else None
             pct_20d = get_pct_20d(code, d) if with_price else None
             pct_60d = get_pct_60d(code, d) if with_price else None
+            below_ma10 = is_below_ma10(code, d) if with_price else None
+            ma10 = get_ma10(code, d) if with_price else None
             if rec:
                 track[d] = {
                     'desc': make_desc(rec['连扳数'], rec['末次时间']),
@@ -478,6 +508,8 @@ def track_hot_stocks(start, end, sort='stock_count', with_price=True,
                     'pct': pct,
                     'pct_20d': pct_20d,
                     'pct_60d': pct_60d,
+                    'ma10': ma10,
+                    'below_ma10': below_ma10,
                     'present': True,
                 }
             else:
@@ -485,7 +517,9 @@ def track_hot_stocks(start, end, sort='stock_count', with_price=True,
                     'present': False, 
                     'pct': pct,
                     'pct_20d': pct_20d,
-                    'pct_60d': pct_60d
+                    'pct_60d': pct_60d,
+                    'ma10': ma10,
+                    'below_ma10': below_ma10
                 }
         return track
 
@@ -508,9 +542,11 @@ def track_hot_stocks(start, end, sort='stock_count', with_price=True,
     # 累积每个板块已入选的票(跨日累加), 实现"每天看完整阵容"
     block_cum_stocks = {}   # block -> list[stock_item] (按入选顺序)
     block_seen_codes = {}   # block -> set(code)
+    block_removed_stocks = {}  # block -> {code: remove_date} 被移除的股票及其移除日期
     for blk in selected_blocks:
         block_cum_stocks[blk] = []
         block_seen_codes[blk] = set()
+        block_removed_stocks[blk] = {}
 
     for d in dates:
         day_blocks = []
@@ -529,17 +565,50 @@ def track_hot_stocks(start, end, sort='stock_count', with_price=True,
                         'first_date': d,
                         'track': build_track(blk, code),
                     })
+            
             cum = block_cum_stocks[blk]
+            
+            # 检查每只股票是否跌破10日线，标记移除状态
+            for st in cum:
+                track = st['track'].get(d)
+                if track and track.get('below_ma10') == True:
+                    # 当天跌破10日线，记录移除日期（次日不再跟踪）
+                    if st['code'] not in block_removed_stocks[blk]:
+                        block_removed_stocks[blk][st['code']] = d
+                        st['remove_date'] = d
+                        st['remove_reason'] = '跌破10日线'
+            
+            # 计算当前仍在跟踪的股票（未被移除或在移除当天仍显示）
+            active_stocks = []
+            removed_today = []
+            for st in cum:
+                remove_date = st.get('remove_date')
+                if remove_date is None:
+                    # 未被移除，继续跟踪
+                    active_stocks.append(st)
+                elif remove_date == d:
+                    # 当天移除，仍然显示但标记为已移除
+                    active_stocks.append(st)
+                    removed_today.append(st['code'])
+                # else: 已移除且不是当天，不再显示
+            
+            # 计算板块是否即将移除（所有股票都已移除）
+            all_removed = len(cum) > 0 and len(active_stocks) == len([st for st in cum if st.get('remove_date')])
+            block_removing = all_removed and len(removed_today) > 0
+            
             # 任何入选过的板块每天都显示(含累积阵容为空的早期日期), 保证列纵向对齐
             new_today = sum(1 for st in cum if st['first_date'] == d)
             day_blocks.append({
                 'block': blk,
                 'cum_count': len(cum),               # 截至当天累计入选票数
+                'active_count': len(active_stocks),  # 当前仍在跟踪的票数
                 'new_count': new_today,              # 当天新入选票数
+                'removed_today': removed_today,      # 当天移除的股票代码列表
                 'times_count': block_times[blk],     # 板块累计出现次数(全局)
                 'total_count': block_total[blk],     # 板块累计票数(全局)
                 'active': blk in daily[d],           # 当天该板块是否在复盘中出现
-                'stocks': [dict(st) for st in cum],
+                'removing': block_removing,          # 板块是否即将移除
+                'stocks': [dict(st) for st in active_stocks],
             })
         if day_blocks:
             by_date.append({'date': d, 'blocks': day_blocks})

@@ -187,6 +187,43 @@
     40% { content: '..'; }
     60%, 100% { content: '...'; }
   }
+  
+  /* 板块即将移除状态 */
+  .block-card.removing {
+    border: 2px dashed #ff6b6b;
+    animation: pulse-remove 1.5s ease-in-out infinite;
+  }
+  .block-card.removing .block-head {
+    background: linear-gradient(135deg,#666,#999);
+  }
+  @keyframes pulse-remove {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.6; }
+  }
+  
+  /* 股票跌破10日线状态 */
+  .stock-thumb.below-ma10 {
+    position: relative;
+    background: rgba(100,100,100,0.3) !important;
+    color: #666 !important;
+  }
+  .stock-thumb.below-ma10::before {
+    content: '';
+    position: absolute;
+    left: 0; top: 50%;
+    width: 100%; height: 2px;
+    background: #ff4d4d;
+    transform: rotate(-5deg);
+  }
+  .stock-thumb.below-ma10::after {
+    content: '跌破10日线';
+    position: absolute;
+    bottom: -12px; left: 50%;
+    transform: translateX(-50%);
+    font-size: 7px;
+    color: #ff4d4d;
+    white-space: nowrap;
+  }
 
   /* 占位空列 */
   .block-card.placeholder {
@@ -779,7 +816,15 @@ function renderRow(day, order){
       const lastDate = day.date;
       const track = s.track[lastDate];
       const pct = track ? track.pct : null;
-      const thumbClass = getThumbClass(pct, s.is_kcb_cyb);
+      const belowMa10 = track ? track.below_ma10 : false;
+      const isRemoved = s.remove_date === lastDate;
+      
+      let thumbClass = getThumbClass(pct, s.is_kcb_cyb);
+      // 如果跌破10日线，添加特殊样式
+      if (belowMa10 || isRemoved) {
+        thumbClass = 'below-ma10';
+      }
+      
       const isNew = s.first_date === day.date;
       const kcbTag = s.is_kcb_cyb ? '<span class="tag">创</span>' : '';
       return `<div class="stock-thumb ${thumbClass}${isNew ? ' new-tag' : ''}" 
@@ -793,9 +838,19 @@ function renderRow(day, order){
       const lastDate = day.date;
       const track = s.track[lastDate];
       const pct = track ? track.pct : null;
-      const thumbClass = getThumbClass(pct, s.is_kcb_cyb);
+      const belowMa10 = track ? track.below_ma10 : false;
+      const ma10 = track ? track.ma10 : null;
+      const isRemoved = s.remove_date === lastDate;
+      
+      let thumbClass = getThumbClass(pct, s.is_kcb_cyb);
+      if (belowMa10 || isRemoved) {
+        thumbClass = 'below-ma10';
+      }
+      
       const pctText = pct !== null ? (pct > 0 ? '+' : '') + pct.toFixed(1) + '%' : '—';
       const desc = track && track.present ? (track.desc || '') : '';
+      const ma10Text = ma10 !== null ? `MA10: ${ma10.toFixed(2)}` : '';
+      const removeText = isRemoved ? ' ⚠️ 已跌破10日线，次日不再跟踪' : '';
       
       return `<div class="stock-expand" data-code="${s.code}">
         <div class="stock-expand-top">
@@ -807,6 +862,8 @@ function renderRow(day, order){
             <span class="tp ${thumbClass.replace('thumb-', 'p-')}">${pctText}</span>
             <span class="tdesc">${desc}</span>
           </div>
+          ${ma10Text ? `<div class="track-cell"><span class="tdesc">${ma10Text}</span></div>` : ''}
+          ${removeText ? `<div class="track-cell" style="border-color: #ff4d4d;"><span class="tdesc" style="color: #ff4d4d;">${removeText}</span></div>` : ''}
         </div>
       </div>`;
     }).join('');
@@ -814,11 +871,22 @@ function renderRow(day, order){
     // 收集该板块所有股票代码
     const allCodes = b.stocks.map(s => s.code);
     
+    // 板块状态类
+    let blockClass = 'block-card';
+    if (!b.active) blockClass += ' inactive';
+    if (b.removing) blockClass += ' removing';
+    
+    // 板块状态提示
+    let blockStatus = '';
+    if (b.removing) {
+      blockStatus = '<br><span style="color:#ff6b6b;">⚠️ 即将移除</span>';
+    }
+    
     return `
-      <div class="block-card${b.active?'':' inactive'}" data-block="${b.block}">
+      <div class="${blockClass}" data-block="${b.block}">
         <div class="block-head">
           <div class="bname">${b.block}</div>
-          <div class="bstat">当日 ${b.cum_count} 票${b.new_count?` (+${b.new_count})`:''}<br>累计${b.times_count}次 ${b.total_count}票</div>
+          <div class="bstat">跟踪 ${b.active_count || b.stocks.length} 票${b.new_count?` (+${b.new_count})`:''}${blockStatus}<br>累计${b.times_count}次 ${b.total_count}票</div>
           <button class="sync-btn" onclick="syncBlockStocks(this, '${day.date}', ${JSON.stringify(allCodes).replace(/"/g, '&quot;')})">同步</button>
         </div>
         <div class="stock-grid">${thumbs}</div>
