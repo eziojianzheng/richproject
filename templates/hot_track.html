@@ -351,15 +351,53 @@
     0%, 100% { opacity: 1; }
     50% { opacity: 0.5; }
   }
+
+  /* 计算执行框 */
+  .compute-modal {
+    position: fixed; inset: 0; background: rgba(0,0,0,.6);
+    display: none; align-items: center; justify-content: center; z-index: 200;
+  }
+  .compute-modal.show { display: flex; }
+  .compute-box {
+    width: min(700px, 92vw); max-height: 80vh; background: var(--bg-card);
+    border: 1px solid var(--border-color); border-radius: 12px;
+    padding: 18px 20px; display: flex; flex-direction: column;
+  }
+  .compute-head { display: flex; align-items: center; justify-content: space-between; font-size: 15px; font-weight: 600; margin-bottom: 12px; color: var(--text-primary); }
+  .compute-close { background: var(--border-color); color: var(--text-primary); border: none; padding: 6px 14px; border-radius: 6px; cursor: pointer; font-size: 13px; }
+  .compute-close:hover { background: #e63946; color: #fff; }
+  .compute-bar { height: 10px; background: var(--bg-body); border-radius: 5px; overflow: hidden; border: 1px solid var(--border-color); }
+  .compute-fill { height: 100%; width: 0%; background: linear-gradient(90deg,#e63946,#b5179e); transition: width .3s; }
+  .compute-stage { font-size: 12px; color: var(--text-secondary); margin: 8px 0; }
+  .compute-log { flex: 1; min-height: 200px; overflow: auto; background: var(--bg-body); border: 1px solid var(--border-color); border-radius: 8px; padding: 10px 12px; font-family: Consolas, monospace; font-size: 12px; line-height: 1.7; }
+  .compute-log div { white-space: pre-wrap; word-break: break-all; }
+  .lg-build { color: #5c9eff; }
+  .lg-price { color: #ffd166; }
+  .lg-remove { color: #a78bfa; }
+  .lg-done { color: #4ade80; font-weight: 600; }
+  .lg-error { color: #ff6b6b; font-weight: 600; }
+
+  .compute-report { margin-top: 10px; max-height: 34vh; overflow: auto; background: var(--bg-body); border: 1px solid var(--border-color); border-radius: 8px; padding: 10px 12px; font-size: 12px; }
+  .cr-day { color: #ffd166; font-weight: 600; margin: 8px 0 4px; }
+  .cr-day:first-child { margin-top: 0; }
+  .cr-block { color: var(--text-secondary); margin: 4px 0 2px 8px; }
+  .cr-stock { color: var(--text-primary); margin-left: 20px; }
+  .cr-miss { color: #ff6b6b; }
+  .compute-actions { display: flex; gap: 10px; margin-top: 12px; }
+  .compute-actions button { background: #e63946; color: #fff; border: none; padding: 8px 18px; border-radius: 6px; cursor: pointer; font-size: 13px; font-weight: 600; }
+  .compute-actions button:hover { background: #d62839; }
+  .compute-actions button:disabled { background: #555; cursor: not-allowed; }
+  .compute-actions .compute-skip { background: transparent; border: 1px solid var(--border-color); color: var(--text-secondary); }
+  .compute-actions .compute-skip:hover { background: var(--border-color); color: var(--text-primary); }
 </style>
 </head>
 <body>
   <div class="toolbar">
     <h1>🔥 热门股追踪</h1>
     <label>起始</label>
-    <input type="text" id="start" value="20260601" placeholder="YYYYMMDD">
+    <select id="start"><option value="">加载中…</option></select>
     <label>结束</label>
-    <input type="text" id="end" value="20260605" placeholder="YYYYMMDD">
+    <select id="end"><option value="">加载中…</option></select>
     <label>板块排序:</label>
     <div class="sort-tabs" id="block-sort">
       <span data-sort="times" class="active">累计次数</span>
@@ -372,7 +410,7 @@
       <span data-stocksort="60d">60日涨幅</span>
     </div>
     <label><input type="checkbox" id="price" checked> 涨幅</label>
-    <button id="go">查询</button>
+    <button id="go">计算</button>
     <div class="console-panel">
       <button class="console-btn" onclick="toggleConsole()">
         <span>控制台</span>
@@ -416,6 +454,24 @@
   </div>
 
   <div class="meta" id="meta"></div>
+
+  <!-- 计算执行框 -->
+  <div class="compute-modal" id="computeModal">
+    <div class="compute-box">
+      <div class="compute-head">
+        <span id="computeTitle">计算中…</span>
+        <button class="compute-close" id="computeClose" onclick="closeCompute()" style="display:none;">关闭</button>
+      </div>
+      <div class="compute-bar"><div class="compute-fill" id="computeFill"></div></div>
+      <div class="compute-stage" id="computeStage">准备中…</div>
+      <div class="compute-log" id="computeLog"></div>
+      <div class="compute-report" id="computeReport" style="display:none;"></div>
+      <div class="compute-actions" id="computeActions" style="display:none;">
+        <button id="btnResync" onclick="resyncMissing()">再次同步缺失</button>
+        <button class="compute-skip" onclick="skipAndShow()">跳过直接显示</button>
+      </div>
+    </div>
+  </div>
 
   <div class="split">
     <div class="pane pane-top">
@@ -750,7 +806,7 @@ document.querySelectorAll('#stock-sort span').forEach(el => {
 
 document.getElementById('go').onclick = () => {
   saveConfig();
-  load();
+  compute();
 };
 
 // 输入框变化时保存
@@ -829,8 +885,9 @@ function renderRow(day, order){
 
   const cards = order.map(blk => {
     const b = dayMap[blk];
-    if(!b || b.cum_count === 0){
-      return `<div class="block-card placeholder"><div class="ph-name">${blk}</div></div>`;
+    // 板块移除逻辑: 当天无活跃个股(未开始/已全部移除)则不显示该板块
+    if(!b || (b.active_count || 0) === 0){
+      return '';
     }
     
     // 按选择的排序方式排序股票（降序，涨幅高的在前，无数据的排后面）
@@ -940,10 +997,11 @@ function renderRow(day, order){
       </div>`;
   }).join('');
 
+  const activeBlocks = day.blocks.filter(b => (b.active_count || 0) > 0).length;
   return `<div class="date-row">
     <div class="date-head">
       <div class="date-label">${fmtDate(day.date)}</div>
-      <div class="date-sub">${day.blocks.length} 板块</div>
+      <div class="date-sub">${activeBlocks} 板块</div>
     </div>
     <div class="blocks-scroll">${cards}</div>
   </div>`;
@@ -1256,7 +1314,213 @@ async function load(){
   }
 }
 
-load();
+// ============== 日期范围(受数据库已入库日期约束) ==============
+async function populateDates(){
+  const startSel = document.getElementById('start');
+  const endSel = document.getElementById('end');
+  try{
+    const j = await fetchWithLog('/api/hot/dates');
+    const dates = j.dates || [];
+    if(!dates.length){
+      startSel.innerHTML = '<option value="">无数据</option>';
+      endSel.innerHTML = '<option value="">无数据</option>';
+      document.getElementById('meta').innerHTML =
+        '<span class="error">数据库暂无已入库数据，请先到「数据同步」页入库</span>';
+      return;
+    }
+    const opts = dates.map(d =>
+      `<option value="${d}">${d.slice(0,4)}-${d.slice(4,6)}-${d.slice(6,8)}</option>`).join('');
+    startSel.innerHTML = opts;
+    endSel.innerHTML = opts;
+    startSel.value = dates[0];
+    endSel.value = dates[dates.length-1];
+    // 恢复保存的选择(仅当仍在可选范围内)
+    try{
+      const saved = JSON.parse(localStorage.getItem('hotTrackConfig')||'{}');
+      if(saved.start && dates.includes(saved.start)) startSel.value = saved.start;
+      if(saved.end && dates.includes(saved.end)) endSel.value = saved.end;
+    }catch(e){}
+    // 尝试恢复上次计算结果(刷新后仍在); 恢复不到再显示提示
+    if(!restoreLastResult()){
+      document.getElementById('meta').innerHTML =
+        `<span style="color:var(--text-muted)">可选范围 ${dates[0]} ~ ${dates[dates.length-1]}，选择后点击「计算」</span>`;
+    }
+  }catch(e){
+    document.getElementById('meta').innerHTML = '<span class="error">获取日期失败: '+e+'</span>';
+  }
+}
+
+// 计算结果本地缓存(刷新后恢复)
+const RESULT_KEY = 'hotTrackResult';
+function saveResult(){
+  try{
+    localStorage.setItem(RESULT_KEY, JSON.stringify({
+      start: computeParams.start, end: computeParams.end,
+      savedAt: Date.now(), data: DATA }));
+  }catch(e){ /* 超出配额则不缓存 */ }
+}
+function restoreLastResult(){
+  try{
+    const raw = localStorage.getItem(RESULT_KEY);
+    if(!raw) return false;
+    const obj = JSON.parse(raw);
+    if(!obj || !obj.data || !obj.data.dates) return false;
+    DATA = obj.data;
+    const startSel = document.getElementById('start'), endSel = document.getElementById('end');
+    if(obj.start && [...startSel.options].some(o=>o.value===obj.start)) startSel.value = obj.start;
+    if(obj.end && [...endSel.options].some(o=>o.value===obj.end)) endSel.value = obj.end;
+    render();
+    const when = obj.savedAt ? new Date(obj.savedAt).toLocaleString() : '';
+    document.getElementById('meta').innerHTML =
+      `<span style="color:var(--text-muted)">已恢复上次计算结果 (${obj.start}~${obj.end}${when?'，'+when:''})，如需最新请点「计算」</span>`;
+    return true;
+  }catch(e){ return false; }
+}
+
+// ============== 计算(分阶段, 执行框实时显示) ==============
+let computeTimer = null, computeSince = 0;
+let computeParams = {start:'', end:''};
+let lastMissingCodes = [];
+let computeTaskId = null;
+
+function closeCompute(){
+  if(computeTimer) clearInterval(computeTimer);
+  document.getElementById('computeModal').classList.remove('show');
+}
+
+async function compute(){
+  const start = document.getElementById('start').value;
+  const end = document.getElementById('end').value;
+  const price = document.getElementById('price').checked;
+  if(!start || !end){ alert('请先选择日期范围'); return; }
+  computeParams = {start, end};
+
+  const modal = document.getElementById('computeModal');
+  document.getElementById('computeLog').innerHTML = '';
+  document.getElementById('computeReport').style.display = 'none';
+  document.getElementById('computeReport').innerHTML = '';
+  document.getElementById('computeActions').style.display = 'none';
+  computeSince = 0;
+  document.getElementById('computeFill').style.width = '0%';
+  document.getElementById('computeStage').textContent = '正在创建计算任务…';
+  document.getElementById('computeTitle').textContent = '计算中…';
+  document.getElementById('computeClose').style.display = 'inline-block';  // 始终可关闭
+  modal.classList.add('show');
+
+  try{
+    const r = await fetch('/api/hot/compute', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({start, end, price}) });
+    const d = await r.json();
+    if(!d.success){ appendComputeLog([{stage:'error', msg:d.error}]); computeDone(false); return; }
+    pollCompute(d.task_id);
+  }catch(e){ appendComputeLog([{stage:'error', msg:'请求异常: '+e}]); computeDone(false); }
+}
+
+function pollCompute(tid){
+  computeTaskId = tid;
+  if(computeTimer) clearInterval(computeTimer);
+  const stageName = {build:'阶段1/3 载入板块与个股', price:'阶段2/3 获取行情(通达信)',
+                     await:'⚠ 等待确认(数据缺失)', remove:'阶段3/3 应用移除规则', done:'完成'};
+  computeTimer = setInterval(async()=>{
+    try{
+      const s = await (await fetch(`/api/hot/compute/status/${tid}?since=${computeSince}`)).json();
+      if(!s.success) return;
+      if(s.logs && s.logs.length){ appendComputeLog(s.logs); computeSince = s.log_count; }
+      document.getElementById('computeFill').style.width = (s.progress||0)+'%';
+      document.getElementById('computeStage').textContent =
+        (stageName[s.stage]||s.stage||'') + ' · ' + (s.progress||0) + '%';
+      if(s.status==='awaiting'){
+        clearInterval(computeTimer);
+        lastMissingCodes = s.missing_codes || [];
+        showMissingReport(s.missing_report || []);  // 暂停: 移除规则未执行, 先询问
+      }
+      else if(s.status==='completed'){
+        clearInterval(computeTimer);
+        try{ DATA = s.result; render(); saveResult(); }
+        catch(err){ appendComputeLog([{stage:'error', msg:'结果渲染出错: '+err}]); }
+        computeDone(true);
+      }
+      else if(s.status==='failed'){ clearInterval(computeTimer); appendComputeLog([{stage:'error', msg:s.error||'计算失败'}]); computeDone(false); }
+    }catch(e){}
+  }, 800);
+}
+
+function appendComputeLog(logs){
+  const el = document.getElementById('computeLog');
+  logs.forEach(l=>{
+    const div = document.createElement('div');
+    div.className = 'lg-' + (l.stage || 'info');
+    div.textContent = l.msg || '';
+    el.appendChild(div);
+  });
+  el.scrollTop = el.scrollHeight;
+}
+
+function computeDone(ok){
+  document.getElementById('computeTitle').textContent = ok ? '✓ 计算完成' : '✗ 计算未成功';
+  document.getElementById('computeClose').style.display = 'inline-block';
+  if(ok) setTimeout(closeCompute, 1000);  // 成功后稍候自动关闭
+}
+
+// 展示"每日板块缺失数据"报告 + 再次同步/跳过
+function showMissingReport(missingByDate){
+  const el = document.getElementById('computeReport');
+  let n = 0;
+  let html = '';
+  missingByDate.forEach(day=>{
+    html += `<div class="cr-day">${day.date}</div>`;
+    day.blocks.forEach(b=>{
+      html += `<div class="cr-block">【${escapeHtmlHT(b.block)}】</div>`;
+      b.stocks.forEach(s=>{
+        n++;
+        html += `<div class="cr-stock">${escapeHtmlHT(s.name)}(${s.code}) `
+              + `<span class="cr-miss">缺: ${s.missing.join('、')}</span></div>`;
+      });
+    });
+  });
+  el.innerHTML = html || '<div style="color:var(--text-muted)">无</div>';
+  el.style.display = 'block';
+  document.getElementById('computeActions').style.display = 'flex';
+  document.getElementById('computeClose').style.display = 'inline-block';
+  document.getElementById('computeTitle').textContent = `⚠ 存在 ${n} 处缺失数据，移除规则未执行`;
+  document.getElementById('computeStage').textContent =
+    `涉及 ${lastMissingCodes.length} 只个股。数据不全无法可靠判断移除，请「再次同步」补数据，或「跳过」按现有数据执行。`;
+}
+
+// 再次同步: 唤醒后台任务重新拉取缺失并重新检查(不重新建任务)
+async function resyncMissing(){
+  const btn = document.getElementById('btnResync');
+  btn.disabled = true; btn.textContent = '同步中…';
+  document.getElementById('computeActions').style.display = 'none';
+  document.getElementById('computeReport').style.display = 'none';
+  try{
+    await fetch('/api/hot/compute/resolve', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({task_id: computeTaskId, action:'resync'}) });
+  }catch(e){}
+  btn.disabled = false; btn.textContent = '再次同步缺失';
+  pollCompute(computeTaskId);  // 恢复轮询, 后台会重取并再检查
+}
+
+// 跳过: 让后台按现有数据执行移除并出结果
+async function skipAndShow(){
+  document.getElementById('computeActions').style.display = 'none';
+  try{
+    await fetch('/api/hot/compute/resolve', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({task_id: computeTaskId, action:'skip'}) });
+  }catch(e){}
+  pollCompute(computeTaskId);  // 恢复轮询, 后台执行阶段3
+}
+
+function escapeHtmlHT(s){
+  return String(s==null?'':s).replace(/[&<>"']/g, c => (
+    {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+// 初始化: 载入可选日期(不自动计算)
+populateDates();
 </script>
 </body>
 </html>

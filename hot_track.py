@@ -97,6 +97,50 @@ def parse_excel_04(fp):
     return rows
 
 
+# ============== 数据库数据源 (PostgreSQL) ==============
+
+import db as _dbmod
+
+
+def list_db_dates():
+    """返回数据库中已入库的日期集合(YYYYMMDD)"""
+    try:
+        return set(_dbmod.get_submitted_dates())
+    except Exception as e:
+        print(f'读取数据库日期失败: {e}')
+        return set()
+
+
+def read_day_stocks_db(date8):
+    """
+    从 zt_stocks 读取某日个股, 返回与 parse_excel_04 相同结构的列表
+    [{概念板块, 代码, 名称, 末次时间, 连扳数, 原因}, ...]
+    """
+    d = f"{date8[:4]}-{date8[4:6]}-{date8[6:8]}"
+    conn = _dbmod.get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT block, code, name, last_time, lianban, reason "
+                "FROM zt_stocks WHERE trade_date = %s ORDER BY id", (d,))
+            rows = cur.fetchall()
+    finally:
+        conn.close()
+    out = []
+    for block, code, name, last_time, lianban, reason in rows:
+        if not code or not re.match(r'^\d{6}$', str(code)):
+            continue
+        out.append({
+            '概念板块': block or '',
+            '代码': str(code),
+            '名称': name or '',
+            '末次时间': last_time or '',
+            '连扳数': lianban or '',
+            '原因': reason or '',
+        })
+    return out
+
+
 # ============== 连扳数解析 ==============
 
 def parse_lianban(lianban):
@@ -319,11 +363,82 @@ def fetch_range_akshare(code, start, end):
         return False
 
 
+# ============== 通达信 mootdx 行情 (TCP, 替代易被封的 akshare) ==============
+_tdx_client = None
+
+
+def _get_tdx_client():
+    """获取(并复用)mootdx 标准行情客户端"""
+    global _tdx_client
+    if _tdx_client is None:
+        from mootdx.quotes import Quotes
+        _tdx_client = Quotes.factory(market='std')
+    return _tdx_client
+
+
+def _mootdx_offset(start):
+    """根据 start 到今天估算需要抓取的日线根数(含60日回看)"""
+    from datetime import datetime, date
+    try:
+        s = datetime.strptime(start, '%Y%m%d').date()
+    except Exception:
+        return 250
+    cal_days = (date.today() - s).days + 90  # 额外回看用于 20/60 日与 MA10
+    approx = int(cal_days * 5 / 7) + 15       # 折算交易日
+    return min(max(approx, 90), 800)
+
+
+def fetch_range_mootdx(code, start, end):
+    """
+    用通达信 mootdx 获取个股日线, 计算并缓存: 当日涨跌幅 / 20日 / 60日 / MA10 / 是否跌破MA10
+    涨跌幅 = (当日收盘 - 前一日收盘) / 前一日收盘 * 100  (未复权)
+    返回: True 成功 / False 失败
+    """
+    try:
+        client = _get_tdx_client()
+        offset = _mootdx_offset(start)
+        df = client.bars(symbol=code, frequency=9, offset=offset)  # 9=日线
+        if df is None or len(df) == 0:
+            print(f"mootdx {code} 无数据")
+            return False
+
+        df = df.sort_index()
+        closes = [float(x) for x in df['close'].tolist()]
+        dates = [str(idx)[:10].replace('-', '') for idx in df.index]
+
+        cache = _load_price_cache()
+        with _cache_lock:
+            n = len(closes)
+            for i in range(n):
+                dstr = dates[i]
+                # 当日涨跌幅
+                if i > 0 and closes[i - 1] > 0:
+                    cache[f'{code}_{dstr}'] = round((closes[i] - closes[i - 1]) / closes[i - 1] * 100, 2)
+                # 20 日涨幅
+                if i > 0:
+                    j20 = max(0, i - 19)
+                    if closes[j20] > 0:
+                        cache[f'{code}_{dstr}_20d'] = round((closes[i] - closes[j20]) / closes[j20] * 100, 2)
+                    j60 = max(0, i - 59)
+                    if closes[j60] > 0:
+                        cache[f'{code}_{dstr}_60d'] = round((closes[i] - closes[j60]) / closes[j60] * 100, 2)
+                # MA10 及是否跌破
+                if i >= 9:
+                    ma10 = sum(closes[i - 9:i + 1]) / 10
+                    cache[f'{code}_{dstr}_ma10'] = round(ma10, 2)
+                    cache[f'{code}_{dstr}_below_ma10'] = closes[i] < ma10
+                else:
+                    cache[f'{code}_{dstr}_below_ma10'] = False
+            _save_price_cache()
+        return True
+    except Exception as e:
+        print(f"mootdx获取{code}失败: {e}")
+        return False
+
+
 def fetch_range(code, start, end):
-    """
-    获取个股涨幅数据，使用akshare
-    """
-    return fetch_range_akshare(code, start, end)
+    """获取个股涨幅数据, 使用通达信 mootdx (TCP)"""
+    return fetch_range_mootdx(code, start, end)
 
 
 def get_pct_change(code, date):
@@ -356,63 +471,66 @@ def is_below_ma10(code, date):
     return cache.get(f'{code}_{date}_below_ma10')
 
 
-def prefetch_prices(codes, start, end):
-    """批量预取涨幅: 使用akshare获取，检查查询日期范围内是否有数据"""
+def prefetch_prices(codes, start, end, progress=None, check_dates=None):
+    """
+    批量预取涨幅(通达信 mootdx)。
+    check_dates: 实际交易日列表(YYYYMMDD)。提供时按逐日核对完整性——
+                 只要任一交易日缺 pct 或 MA10 就重取(mootdx 一次拉全, 能补齐个别缺失日)。
+                 不提供则回退到工作日估算。
+    """
+    _report = progress if callable(progress) else (lambda *a, **k: None)
     cache = _load_price_cache()
-    
-    # 生成查询范围内的所有日期
-    from datetime import datetime, timedelta
-    try:
-        s_dt = datetime.strptime(start, '%Y%m%d')
-        e_dt = datetime.strptime(end, '%Y%m%d')
-    except:
-        return
-    
-    query_dates = []
-    current = s_dt
-    while current <= e_dt:
-        # 只统计工作日（简单判断：周一到周五）
-        if current.weekday() < 5:
-            query_dates.append(current.strftime('%Y%m%d'))
-        current += timedelta(days=1)
-    
-    # 检查每只股票是否在查询范围内有足够数据
+
+    if check_dates:
+        query_dates = list(check_dates)
+    else:
+        # 回退: 生成查询范围内的工作日
+        from datetime import datetime, timedelta
+        try:
+            s_dt = datetime.strptime(start, '%Y%m%d')
+            e_dt = datetime.strptime(end, '%Y%m%d')
+        except Exception:
+            return
+        query_dates = []
+        current = s_dt
+        while current <= e_dt:
+            if current.weekday() < 5:
+                query_dates.append(current.strftime('%Y%m%d'))
+            current += timedelta(days=1)
+
+    # 逐个交易日核对: 任一交易日缺 pct 或 MA10 即需要重取
     need_fetch = []
     for c in codes:
-        # 检查是否有任意一天的日涨幅数据
-        has_any_data = any(f'{c}_{d}' in cache for d in query_dates)
-        
-        # 如果完全没有数据，需要获取
-        if not has_any_data:
-            need_fetch.append(c)
-            continue
-        
-        # 如果有数据，检查是否缺少20日/60日涨幅
-        missing_20d = any(f'{c}_{d}' in cache and f'{c}_{d}_20d' not in cache for d in query_dates)
-        if missing_20d:
+        incomplete = any((f'{c}_{d}' not in cache) or (f'{c}_{d}_ma10' not in cache)
+                         for d in query_dates)
+        if incomplete:
             need_fetch.append(c)
     
+    total_codes = len(codes)
+    cached_cnt = total_codes - len(need_fetch)
     if not need_fetch:
-        print(f"所有 {len(codes)} 只股票涨幅数据已缓存")
-        return {'success': len(codes), 'failed': [], 'total': len(codes)}
-    
+        print(f"所有 {total_codes} 只股票涨幅数据已缓存")
+        _report('price', f'行情已全部缓存 ({total_codes} 只)', total_codes, total_codes)
+        return {'success': total_codes, 'failed': [], 'total': total_codes}
+
     print(f"需要获取 {len(need_fetch)} 只股票的涨幅数据...")
     import time
     success_list = []
     failed_list = []
-    
+
     for i, c in enumerate(need_fetch):
         try:
             if fetch_range(c, start, end):
                 success_list.append(c)
             else:
                 failed_list.append({'code': c, 'reason': '无数据返回'})
-            # 降低请求频率，避免被封IP
-            time.sleep(0.5)
+            time.sleep(0.05)  # mootdx TCP, 轻微节流
         except Exception as e:
             print(f"获取 {c} 失败: {e}")
             failed_list.append({'code': c, 'reason': str(e)})
-            time.sleep(1)  # 失败后多等一会
+            time.sleep(0.2)
+        _report('price', f'获取行情 {i + 1}/{len(need_fetch)} (代码 {c})',
+                cached_cnt + i + 1, total_codes)
         if (i + 1) % 20 == 0:
             print(f"已处理 {i + 1}/{len(need_fetch)}，成功 {len(success_list)}")
     
@@ -429,7 +547,8 @@ def prefetch_prices(codes, start, end):
 # ============== 主统计逻辑 ==============
 
 def track_hot_stocks(start, end, sort='stock_count', with_price=True,
-                     excel_dir=EXCEL_DIR):
+                     excel_dir=EXCEL_DIR, progress=None, source='db',
+                     apply_removal=True):
     """
     热门股追踪主函数
 
@@ -461,13 +580,21 @@ def track_hot_stocks(start, end, sort='stock_count', with_price=True,
         }
     排序由前端按 new_count / total_count 实时切换, 不需重新请求
     """
-    all_files = list_excel_dates(excel_dir)
-    dates = daterange_keys(all_files.keys(), start, end)
+    _report = progress if callable(progress) else (lambda *a, **k: None)
 
-    # 逐日解析, 构建 {日期: {板块: [票...]}}
+    # 数据源: db(默认, 读 PostgreSQL) 或 excel
+    if source == 'db':
+        all_files = None
+        dates = sorted(d for d in list_db_dates() if start <= d <= end)
+    else:
+        all_files = list_excel_dates(excel_dir)
+        dates = daterange_keys(all_files.keys(), start, end)
+
+    # === 阶段1: 逐日载入数据 + 按入榜规则加入板块/个股 ===
+    _report('build', f'开始载入数据 (来源: {"数据库" if source == "db" else "Excel"})，共 {len(dates)} 个交易日', 0, len(dates))
     daily = {}  # date -> block -> list[stock]
-    for d in dates:
-        rows = parse_excel_04(all_files[d])
+    for i, d in enumerate(dates):
+        rows = read_day_stocks_db(d) if source == 'db' else parse_excel_04(all_files[d])
         bmap = {}
         for s in rows:
             blk = s['概念板块']
@@ -475,6 +602,7 @@ def track_hot_stocks(start, end, sort='stock_count', with_price=True,
                 continue
             bmap.setdefault(blk, []).append(s)
         daily[d] = bmap
+        _report('build', f'{d}: 载入 {len(rows)} 只个股 / {len(bmap)} 个板块', i + 1, len(dates))
 
     # === 板块入选: 逐日扫描, 首次满足即加入(保留) ===
     selected_blocks = {}   # block -> first_date
@@ -484,9 +612,11 @@ def track_hot_stocks(start, end, sort='stock_count', with_price=True,
                 continue
             if block_qualifies(stocks):
                 selected_blocks[blk] = d
+    _report('build', f'入榜板块共 {len(selected_blocks)} 个', len(dates), len(dates))
 
     # === 个股入选 + 逐日跟踪 ===
     # 先收集所有入选板块的入选个股代码, 批量预取涨幅
+    fetch_report = None
     if with_price:
         all_codes = set()
         for blk in selected_blocks:
@@ -497,7 +627,11 @@ def track_hot_stocks(start, end, sort='stock_count', with_price=True,
         
         fetch_report = None
         if all_codes and dates:
-            fetch_report = prefetch_prices(all_codes, dates[0], dates[-1])
+            _report('price', f'阶段2: 获取 {len(all_codes)} 只个股行情(通达信 mootdx)…', 0, len(all_codes))
+            fetch_report = prefetch_prices(all_codes, dates[0], dates[-1],
+                                           progress=_report, check_dates=dates)
+        else:
+            _report('price', '阶段2: 无需获取行情', 0, 0)
 
     def build_track(blk, code):
         """构建某票在某板块下逐日跟踪"""
@@ -552,6 +686,7 @@ def track_hot_stocks(start, end, sort='stock_count', with_price=True,
         block_total[blk] = len(codes)
         block_times[blk] = sum(1 for d in dates if blk in daily[d])
 
+    _report('remove', f'阶段3: 应用移除规则(跌破10日线次日删除)…', 0, len(dates))
     by_date = []
     # 累积每个板块已入选的票(跨日累加), 实现"每天看完整阵容"
     block_cum_stocks = {}   # block -> list[stock_item] (按入选顺序)
@@ -583,7 +718,8 @@ def track_hot_stocks(start, end, sort='stock_count', with_price=True,
             cum = block_cum_stocks[blk]
             
             # 检查每只股票是否跌破10日线，标记移除状态
-            for st in cum:
+            # apply_removal=False 时不做移除(数据缺失阶段, 移除不可靠, 待用户确认后再算)
+            for st in (cum if apply_removal else []):
                 track = st['track'].get(d)
                 if track and track.get('below_ma10') == True:
                     # 检查是否涨停（涨停则不移除）
@@ -641,6 +777,7 @@ def track_hot_stocks(start, end, sort='stock_count', with_price=True,
             })
         if day_blocks:
             by_date.append({'date': d, 'blocks': day_blocks})
+        _report('remove', f'{d}: 移除规则处理完成', dates.index(d) + 1, len(dates))
 
     # === 板块图表汇总数据 ===
     # 每个板块: 逐日平均涨幅 / 逐日累计平均涨幅 / 逐日累计入选票数 / 各入选票逐日涨幅序列
@@ -684,6 +821,7 @@ def track_hot_stocks(start, end, sort='stock_count', with_price=True,
             'stocks': stocks_series,
         })
 
+    _report('done', f'计算完成: {len(selected_blocks)} 个板块, {len(dates)} 个交易日', len(dates), len(dates))
     return {
         'start': start,
         'end': end,

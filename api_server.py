@@ -105,6 +105,9 @@ extract_tasks = {}
 # 入库(上传)任务状态
 submit_tasks = {}
 
+# 热门股计算任务状态
+hot_tasks = {}
+
 
 def get_article_list(user_id='444409'):
     """获取博客文章列表"""
@@ -1325,9 +1328,224 @@ def api_hot_track():
 
 @app.route('/api/hot/dates', methods=['GET'])
 def api_hot_dates():
-    """返回当前已有数据的所有日期"""
-    dates = sorted(ht.list_excel_dates().keys())
-    return jsonify({'success': True, 'dates': dates})
+    """返回数据库中已入库的所有日期(热门股追踪的可选范围)"""
+    import db as _db
+    try:
+        dates = sorted(_db.get_submitted_dates())
+    except _db.DBError as e:
+        return jsonify({'success': True, 'dates': [], 'db_connected': False, 'db_message': str(e)})
+    return jsonify({'success': True, 'dates': dates, 'db_connected': True})
+
+
+def _build_missing_report(result):
+    """
+    扫描计算结果, 按"每日 -> 板块"列出当天在榜但缺涨幅/缺MA10的个股。
+    返回: (missing_by_date, missing_codes)
+      missing_by_date: [{date, blocks:[{block, stocks:[{code,name,missing:[...]}]}]}]
+      missing_codes: 去重的缺失股票代码列表
+    """
+    missing_by_date = []
+    missing_codes = set()
+    for day in result.get('by_date', []):
+        d = day['date']
+        blocks_out = []
+        for b in day.get('blocks', []):
+            miss_stocks = []
+            for s in b.get('stocks', []):
+                cell = s.get('track', {}).get(d) or {}
+                if not cell.get('present'):
+                    continue  # 当天不在榜的不算缺失
+                missing = []
+                if cell.get('pct') is None:
+                    missing.append('涨幅')
+                if cell.get('ma10') is None:
+                    missing.append('MA10')
+                if missing:
+                    miss_stocks.append({'code': s['code'], 'name': s['name'], 'missing': missing})
+                    missing_codes.add(s['code'])
+            if miss_stocks:
+                blocks_out.append({'block': b['block'], 'stocks': miss_stocks})
+        if blocks_out:
+            missing_by_date.append({'date': d, 'blocks': blocks_out})
+    return missing_by_date, sorted(missing_codes)
+
+
+def hot_compute_task(task_id, start, end, with_price):
+    """
+    后台热门股计算任务(分阶段):
+      阶段1 build: 载入板块/个股
+      阶段2 price: 获取行情
+      -> 检查数据缺失: 缺失则暂停询问(再次同步/跳过), 因为数据不全时移除判断不可靠
+      阶段3 remove: 用户确认后才应用移除规则, 出最终结果
+    """
+    global hot_tasks
+    t = hot_tasks[task_id]
+    t['status'] = 'running'
+
+    def prog(stage, msg, cur=None, total=None):
+        t['stage'] = stage
+        t['logs'].append({'stage': stage, 'msg': msg, 'cur': cur, 'total': total})
+        if cur is not None and total:
+            t['progress'] = int(cur / max(total, 1) * 100)
+
+    try:
+        missing_by_date, missing_codes = [], []
+
+        if with_price:
+            # 循环: 构建+行情(不移除) -> 检查缺失 -> 询问; 直到无缺失或用户跳过
+            while True:
+                data = ht.track_hot_stocks(start, end, with_price=True, progress=prog,
+                                           source='db', apply_removal=False)
+                missing_by_date, missing_codes = _build_missing_report(data)
+                if not missing_codes or t.get('_skip'):
+                    break
+                # 暂停, 等待用户决定(数据缺失时无法可靠判断移除)
+                n = sum(len(s['stocks']) for day in missing_by_date for s in day['blocks'])
+                t['missing_report'] = missing_by_date
+                t['missing_codes'] = missing_codes
+                prog('await', f'检测到 {len(missing_codes)} 只个股共 {n} 处缺数据(缺涨幅/MA10)。'
+                              f'数据不全时无法可靠执行移除规则，请选择「再次同步」或「跳过直接显示」', None, None)
+                t['status'] = 'awaiting'
+                t['_event'].clear()
+                t['_event'].wait()   # 阻塞直到 resolve 唤醒
+                action = t.get('_action')
+                t['_action'] = None
+                t['status'] = 'running'
+                if action == 'resync':
+                    prog('price', f'再次同步 {len(missing_codes)} 只个股行情(通达信)…', 0, len(missing_codes))
+                    for i, c in enumerate(missing_codes):
+                        try:
+                            ht.fetch_range(c, start, end)
+                        except Exception:
+                            pass
+                        prog('price', f'同步 {i + 1}/{len(missing_codes)} ({c})', i + 1, len(missing_codes))
+                    continue  # 重新构建 + 再检查缺失
+                else:
+                    t['_skip'] = True
+                    break
+
+        # 阶段3: 应用移除规则, 出最终结果
+        prog('remove', '数据就绪，应用移除规则(跌破10日线次日删除)…', 0, 1)
+        final = ht.track_hot_stocks(start, end, with_price=with_price, progress=prog,
+                                    source='db', apply_removal=True)
+        final['missing_report'] = missing_by_date
+        final['missing_codes'] = missing_codes
+        n = sum(len(s['stocks']) for day in missing_by_date for s in day['blocks'])
+        prog('done', (f'计算完成(跳过 {len(missing_codes)} 只缺数据个股, 共 {n} 处)'
+                      if missing_codes else '计算完成，数据完整'), 1, 1)
+        t['result'] = final
+        t['status'] = 'completed'
+        t['progress'] = 100
+    except Exception as e:
+        t['status'] = 'failed'
+        t['error'] = str(e)
+        t['logs'].append({'stage': 'error', 'msg': f'计算失败: {e}', 'cur': None, 'total': None})
+
+
+@app.route('/api/hot/compute', methods=['POST'])
+def api_hot_compute():
+    """启动热门股计算(异步, 带分阶段进度)。范围受数据库已入库日期约束。"""
+    import db as _db
+    data = request.get_json() or {}
+    start = (data.get('start') or '').strip()
+    end = (data.get('end') or '').strip()
+    with_price = data.get('price', True) not in (0, '0', False, 'false', 'no')
+
+    if not (re.match(r'^\d{8}$', start) and re.match(r'^\d{8}$', end)):
+        return jsonify({'success': False, 'error': '日期格式错误, 请用 YYYYMMDD'}), 400
+    if start > end:
+        start, end = end, start
+
+    try:
+        db_dates = _db.get_submitted_dates()
+    except _db.DBError as e:
+        return jsonify({'success': False, 'error': f'数据库未连接: {e}'}), 503
+    if not db_dates:
+        return jsonify({'success': False, 'error': '数据库暂无已入库数据, 请先在数据同步页入库'}), 404
+
+    dmin, dmax = min(db_dates), max(db_dates)
+    if start < dmin or end > dmax:
+        return jsonify({'success': False,
+                        'error': f'日期超出已入库范围({dmin}~{dmax})'}), 400
+
+    import uuid
+    task_id = str(uuid.uuid4())[:8]
+    hot_tasks[task_id] = {
+        'status': 'pending', 'stage': '', 'progress': 0,
+        'logs': [], 'result': None, 'error': None,
+        'missing_report': [], 'missing_codes': [],
+        '_event': threading.Event(), '_action': None, '_skip': False,
+    }
+    threading.Thread(target=hot_compute_task,
+                     args=(task_id, start, end, with_price), daemon=True).start()
+    return jsonify({'success': True, 'task_id': task_id,
+                    'status_url': f'/api/hot/compute/status/{task_id}'})
+
+
+@app.route('/api/hot/resync', methods=['POST'])
+def api_hot_resync():
+    """强制用通达信 mootdx 重新拉取指定个股的行情(覆盖缓存)，用于补齐缺失的涨幅/MA10。"""
+    data = request.get_json() or {}
+    codes = data.get('codes', [])
+    start = (data.get('start') or '').strip()
+    end = (data.get('end') or '').strip()
+    if not codes:
+        return jsonify({'success': False, 'error': '没有需要同步的股票'}), 400
+
+    import time
+    ok, failed = 0, []
+    for c in codes:
+        try:
+            if ht.fetch_range(c, start, end):
+                ok += 1
+            else:
+                failed.append(c)
+            time.sleep(0.05)
+        except Exception as e:
+            failed.append(c)
+    return jsonify({'success': True, 'fetched': ok, 'total': len(codes), 'failed': failed})
+
+
+@app.route('/api/hot/compute/status/<task_id>', methods=['GET'])
+def api_hot_compute_status(task_id):
+    """查询热门股计算进度; 支持 ?since=N 增量拉日志; awaiting时返回缺失报告; 完成时返回 result"""
+    if task_id not in hot_tasks:
+        return jsonify({'success': False, 'error': '任务不存在'}), 404
+    t = hot_tasks[task_id]
+    since = request.args.get('since', default=0, type=int)
+    resp = {
+        'success': True, 'status': t['status'], 'stage': t['stage'],
+        'progress': t['progress'],
+        'logs': t['logs'][since:], 'log_count': len(t['logs']),
+    }
+    if t['status'] == 'awaiting':
+        resp['missing_report'] = t.get('missing_report', [])
+        resp['missing_codes'] = t.get('missing_codes', [])
+    elif t['status'] == 'completed':
+        resp['result'] = t['result']
+    elif t['status'] == 'failed':
+        resp['error'] = t['error']
+    return jsonify(resp)
+
+
+@app.route('/api/hot/compute/resolve', methods=['POST'])
+def api_hot_compute_resolve():
+    """
+    响应缺失数据询问: action='resync'(再次同步后重算) 或 'skip'(跳过缺失直接出结果)
+    """
+    data = request.get_json() or {}
+    task_id = data.get('task_id')
+    action = data.get('action')
+    if task_id not in hot_tasks:
+        return jsonify({'success': False, 'error': '任务不存在'}), 404
+    if action not in ('resync', 'skip'):
+        return jsonify({'success': False, 'error': 'action 必须是 resync 或 skip'}), 400
+    t = hot_tasks[task_id]
+    if t['status'] != 'awaiting':
+        return jsonify({'success': False, 'error': '任务当前不在等待状态'}), 409
+    t['_action'] = action
+    t['_event'].set()  # 唤醒后台线程继续
+    return jsonify({'success': True, 'action': action})
 
 
 @app.route('/api/hot/sync', methods=['POST'])

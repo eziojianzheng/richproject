@@ -16,3 +16,6 @@ rapidocr_onnxruntime>=1.3.0
 
 # PostgreSQL 驱动 (数据入库)
 psycopg2-binary>=2.9.0
+
+# 行情数据 (通达信 TCP, 替代易被封的 akshare)
+mootdx>=0.11.0
