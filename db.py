@@ -55,6 +55,11 @@ class DBError(Exception):
     pass
 
 
+class NotVerifiedError(Exception):
+    """Excel 未通过校验(manualcheck)，需人工复核后才能入库"""
+    pass
+
+
 def _load_db_config():
     cfg = dict(_DEFAULT_DB)
     if yaml and os.path.exists('config.yml'):
@@ -221,6 +226,11 @@ def submit_date(date, excel_dir=EXCEL_DIR):
     if not fp:
         raise FileNotFoundError(f"未找到 {date} 的 Excel(verified/manualcheck)")
 
+    # 只允许 verified 入库；manualcheck 需人工复核后改为 verified 才能入库
+    if status != 'verified':
+        raise NotVerifiedError(
+            f"{date} 当前为 {status}，需人工复核并确认为 verified 后才能入库")
+
     daily, stocks = parse_excel(fp)
     d = _fmt_date(date)
 
@@ -262,5 +272,16 @@ def get_submitted_dates():
         with conn.cursor() as cur:
             cur.execute("SELECT to_char(trade_date, 'YYYYMMDD') FROM zt_daily")
             return {r[0] for r in cur.fetchall()}
+    finally:
+        conn.close()
+
+
+def get_submitted_status():
+    """返回已入库日期及其状态: {日期(YYYYMMDD): status}"""
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT to_char(trade_date, 'YYYYMMDD'), status FROM zt_daily")
+            return {r[0]: r[1] for r in cur.fetchall()}
     finally:
         conn.close()

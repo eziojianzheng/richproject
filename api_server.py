@@ -462,6 +462,9 @@ def extract_task(task_id, dates, submit_to_db=True, base_dir='dataresource',
                             submitted += 1
                             it['status'] = 'submitted'
                             it['message'] = '入库成功'
+                        except _db.NotVerifiedError:
+                            it['status'] = 'need_review'
+                            it['message'] = '已提取(manualcheck)，需人工复核后再入库'
                         except _db.DBError as e:
                             it['status'] = 'failed'
                             it['message'] = f'入库失败: {e}'
@@ -513,13 +516,16 @@ def submit_batch_task(task_id, dates, output_dir='excelDataSource'):
             if not fp:
                 it['status'] = 'no_excel'
                 it['message'] = 'Excel不存在（需先提取）'
+            elif status != 'verified':
+                it['status'] = 'need_review'
+                it['message'] = f'{status} 需人工复核，未入库'
             else:
                 it['status'] = 'submitting'
                 it['message'] = '正在入库…'
                 _db.submit_date(d, output_dir)
                 submitted += 1
                 it['status'] = 'submitted'
-                it['message'] = f'入库成功（{status}）'
+                it['message'] = '入库成功（verified）'
         except _db.DBError as e:
             it['status'] = 'failed'
             it['message'] = f'入库失败: {e}'
@@ -1010,6 +1016,8 @@ def db_submit():
         return jsonify({'success': True, **result})
     except FileNotFoundError as e:
         return jsonify({'success': False, 'error': str(e)}), 404
+    except _db.NotVerifiedError as e:
+        return jsonify({'success': False, 'error': str(e), 'need_review': True}), 409
     except _db.DBError as e:
         return jsonify({'success': False, 'error': str(e)}), 503
     except Exception as e:
@@ -1107,12 +1115,12 @@ def excel_list():
 
     days = trading_days_in_range(start, end)
 
-    # 已入库集合(数据库不可用时降级)
-    submitted_set = set()
+    # 已入库状态(数据库不可用时降级)
+    submitted_status = {}
     db_connected = True
     db_msg = 'ok'
     try:
-        submitted_set = _db.get_submitted_dates()
+        submitted_status = _db.get_submitted_status()
     except _db.DBError as e:
         db_connected = False
         db_msg = str(e)
@@ -1125,7 +1133,8 @@ def excel_list():
             'excel': status or 'none',           # verified / manualcheck / none
             'has_excel': fp is not None,
             'downloaded': os.path.isdir(os.path.join(base_dir, d)),
-            'submitted': (d in submitted_set) if db_connected else None,
+            'submitted': (d in submitted_status) if db_connected else None,
+            'db_status': submitted_status.get(d) if db_connected else None,  # 库里存的状态
         })
 
     return jsonify({

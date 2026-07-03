@@ -390,6 +390,7 @@ function exBadge(it) {
     case 'submitting': return `<span class="st st-warn pulse">${msg}</span>`;
     case 'failed':     return `<span class="st st-bad">✗ ${msg}</span>`;
     case 'no_excel':   return `<span class="st st-warn">⚠ ${msg}</span>`;
+    case 'need_review':return `<span class="st st-warn">⚠ ${msg}</span>`;
     default:           return `<span class="st st-unknown">${msg}</span>`;
   }
 }
@@ -409,21 +410,30 @@ async function loadExcelList() {
     if (!items.length) { box.innerHTML = '<div class="empty">暂无交易日数据</div>'; return; }
     let html = `<table><thead><tr><th>入库状态</th><th>日期</th><th>Excel</th><th></th></tr></thead><tbody>`;
     for (const it of items) {
-      // 入库状态(左)
+      // 入库状态(左): 已入库(标注库里存的状态) / 未入库 / 未知
       let sub;
       if (it.submitted === null) sub = `<span class="st st-unknown">未知</span>`;
-      else if (it.submitted) sub = `<span class="st st-ok">已入库</span>`;
-      else sub = `<span class="st st-warn">未入库</span>`;
+      else if (it.submitted) {
+        sub = (it.db_status && it.db_status !== 'verified')
+          ? `<span class="st st-warn">已入库(${it.db_status})</span>`
+          : `<span class="st st-ok">已入库</span>`;
+      } else sub = `<span class="st st-warn">未入库</span>`;
       // Excel 状态
       let excel;
       if (it.excel === 'verified') excel = `<span class="st st-ok">verified</span>`;
       else if (it.excel === 'manualcheck') excel = `<span class="st st-warn">manualcheck</span>`;
       else excel = `<span class="st st-bad">缺失</span>`;
-      // 操作: 有Excel且(未入库或未知)才给上传
+      // 操作:
+      //   verified  -> 上传 / 重新上传(已入库也可覆盖刷新)
+      //   manualcheck -> 需人工复核(不可入库)
+      //   缺失      -> 提取并上传
       let action = '';
-      if (it.has_excel && it.submitted !== true) {
-        action = `<button class="btn-sm" onclick="uploadDate('${it.date}', this)">上传</button>`;
-      } else if (!it.has_excel) {
+      if (it.excel === 'verified') {
+        const label = it.submitted ? '重新上传' : '上传';
+        action = `<button class="btn-sm" onclick="uploadDate('${it.date}', this)">${label}</button>`;
+      } else if (it.excel === 'manualcheck') {
+        action = `<span class="hint" style="margin:0;">需人工复核</span>`;
+      } else {
         action = `<button class="btn-sm ghost" onclick="extractAndUpload('${it.date}', this)">提取并上传</button>`;
       }
       html += `<tr><td>${sub}</td><td>${it.date}</td><td>${excel}</td>
@@ -461,8 +471,11 @@ async function extractAndUpload(date, btn) {
         if (s.status === 'completed') {
           clearInterval(timer);
           const it0 = (s.items || [])[0] || {};
-          if (it0.status === 'submitted' || it0.status === 'extracted') {
+          if (it0.status === 'submitted') {
             btn.textContent = '已完成';
+          } else if (it0.status === 'need_review') {
+            btn.disabled = false; btn.textContent = orig;
+            alert(date + ' 已提取但为 manualcheck，需人工复核改为 verified 后再上传');
           } else {
             btn.disabled = false; btn.textContent = orig;
             alert(date + ' 失败: ' + (it0.message || '未知'));
