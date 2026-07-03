@@ -99,6 +99,12 @@ def request_with_retry(url, headers, max_retries=MAX_RETRIES, backoff=RETRY_BACK
 # 下载任务状态
 download_tasks = {}
 
+# 提取任务状态
+extract_tasks = {}
+
+# 入库(上传)任务状态
+submit_tasks = {}
+
 
 def get_article_list(user_id='444409'):
     """获取博客文章列表"""
@@ -279,6 +285,26 @@ def filter_trading_articles(articles):
     return kept, dropped
 
 
+def trading_days_in_range(start8, end8):
+    """返回 [start8, end8] 区间内的所有A股交易日(YYYYMMDD)，升序。"""
+    from datetime import datetime as _dt, timedelta as _td
+    try:
+        s = _dt.strptime(start8, '%Y%m%d')
+        e = _dt.strptime(end8, '%Y%m%d')
+    except ValueError:
+        return []
+    if s > e:
+        s, e = e, s
+    days = []
+    cur = s
+    while cur <= e:
+        d8 = cur.strftime('%Y%m%d')
+        if is_trading_day(d8):
+            days.append(d8)
+        cur += _td(days=1)
+    return days
+
+
 def download_task(task_id, articles, base_dir='dataresource', skip_existing=True):
     """后台下载任务"""
     global download_tasks
@@ -391,6 +417,122 @@ def download_task(task_id, articles, base_dir='dataresource', skip_existing=True
     download_tasks[task_id]['skipped_folders'] = skipped_folders
     download_tasks[task_id]['failed_dates'] = failed_dates
     download_tasks[task_id]['failed_details'] = failed_details
+
+
+def extract_task(task_id, dates, submit_to_db=True, base_dir='dataresource',
+                 output_dir='excelDataSource'):
+    """
+    后台提取任务：对每个日期跑 extract_glm 生成 Excel，可选提交入库。
+    dates: 交易日列表(YYYYMMDD)
+    """
+    global extract_tasks
+    import extract_glm as eg
+    import db as _db
+
+    t = extract_tasks[task_id]
+    t['status'] = 'running'
+    total = len(dates)
+    done = extracted = submitted = 0
+
+    # 每个日期一条实时状态：pending/extracting/submitting/submitted/extracted/failed
+    items = [{'date': d, 'status': 'pending', 'message': '待处理'} for d in dates]
+    t['items'] = items
+
+    for i, d in enumerate(dates):
+        it = items[i]
+        folder = os.path.join(base_dir, d)
+        try:
+            if not os.path.isdir(folder) or not check_folder_has_images(folder):
+                it['status'] = 'failed'
+                it['message'] = '未下载图片（无 dataresource 文件夹）'
+            else:
+                it['status'] = 'extracting'
+                it['message'] = '正在提取…'
+                ok = eg.extract_date(d, base_dir, output_dir)
+                if not ok:
+                    it['status'] = 'failed'
+                    it['message'] = '提取失败（未找到03/04或识别失败）'
+                else:
+                    extracted += 1
+                    if submit_to_db:
+                        it['status'] = 'submitting'
+                        it['message'] = '正在入库…'
+                        try:
+                            _db.submit_date(d, output_dir)
+                            submitted += 1
+                            it['status'] = 'submitted'
+                            it['message'] = '入库成功'
+                        except _db.DBError as e:
+                            it['status'] = 'failed'
+                            it['message'] = f'入库失败: {e}'
+                        except Exception as e:
+                            it['status'] = 'failed'
+                            it['message'] = f'入库异常: {e}'
+                    else:
+                        it['status'] = 'extracted'
+                        it['message'] = '提取成功'
+        except Exception as e:
+            # 单个日期异常不中断，继续下一个
+            it['status'] = 'failed'
+            it['message'] = f'提取异常: {e}'
+
+        done += 1
+        t['progress'] = int(done / max(total, 1) * 100)
+        t['extracted'] = extracted
+        t['submitted'] = submitted
+
+    t['status'] = 'completed'
+    t['extracted'] = extracted
+    t['submitted'] = submitted
+
+
+def submit_batch_task(task_id, dates, output_dir='excelDataSource'):
+    """
+    后台批量入库任务：按交易日逐个把已有 Excel 上传到数据库。
+    Excel 不存在的日期标记 no_excel（在前端下方显示），失败则继续下一个。
+    """
+    global submit_tasks
+    import db as _db
+
+    t = submit_tasks[task_id]
+    t['status'] = 'running'
+    total = len(dates)
+    done = submitted = 0
+    items = [{'date': d, 'status': 'pending', 'message': '待处理'} for d in dates]
+    t['items'] = items
+
+    try:
+        _db.init_db()
+    except Exception:
+        pass
+
+    for i, d in enumerate(dates):
+        it = items[i]
+        try:
+            fp, status = _db.find_excel(d, output_dir)
+            if not fp:
+                it['status'] = 'no_excel'
+                it['message'] = 'Excel不存在（需先提取）'
+            else:
+                it['status'] = 'submitting'
+                it['message'] = '正在入库…'
+                _db.submit_date(d, output_dir)
+                submitted += 1
+                it['status'] = 'submitted'
+                it['message'] = f'入库成功（{status}）'
+        except _db.DBError as e:
+            it['status'] = 'failed'
+            it['message'] = f'入库失败: {e}'
+        except Exception as e:
+            it['status'] = 'failed'
+            it['message'] = f'入库异常: {e}'
+
+        done += 1
+        t['progress'] = int(done / max(total, 1) * 100)
+        t['submitted'] = submitted
+
+    t['status'] = 'completed'
+    t['submitted'] = submitted
 
 
 # ============== API 接口 ==============
@@ -772,6 +914,226 @@ def get_files_by_date(date):
         'file_count': len(files),
         'files': files,
         'folder_path': os.path.abspath(folder_path)
+    })
+
+
+@app.route('/api/extract', methods=['POST'])
+def extract_data():
+    """
+    按日期区间提取涨停复盘数据(生成Excel到本地)，可选提交入库。
+    参数:
+        start_date, end_date: YYYY-MM-DD（缺省时默认取当天）
+        submit_to_db: 是否提交入库(默认 true)
+    """
+    data = request.get_json() or {}
+    start_date = data.get('start_date')
+    end_date = data.get('end_date')
+    submit_to_db = data.get('submit_to_db', True)
+
+    # 默认当天
+    if not start_date and not end_date:
+        start_date = end_date = datetime.now().strftime('%Y-%m-%d')
+    elif start_date and not end_date:
+        end_date = start_date
+    elif end_date and not start_date:
+        start_date = end_date
+
+    try:
+        datetime.strptime(start_date, '%Y-%m-%d')
+        datetime.strptime(end_date, '%Y-%m-%d')
+    except ValueError:
+        return jsonify({'success': False, 'error': '日期格式错误，请使用 YYYY-MM-DD'}), 400
+
+    start8 = start_date.replace('-', '')
+    end8 = end_date.replace('-', '')
+    dates = trading_days_in_range(start8, end8)
+    if not dates:
+        return jsonify({'success': False, 'error': '区间内没有A股交易日'}), 404
+
+    import uuid
+    task_id = str(uuid.uuid4())[:8]
+    extract_tasks[task_id] = {
+        'status': 'pending', 'progress': 0,
+        'total': len(dates), 'extracted': 0, 'submitted': 0,
+        'submit_to_db': bool(submit_to_db),
+        'items': [{'date': d, 'status': 'pending', 'message': '待处理'} for d in dates],
+    }
+    thread = threading.Thread(
+        target=extract_task,
+        args=(task_id, dates, bool(submit_to_db)),
+    )
+    thread.daemon = True
+    thread.start()
+
+    return jsonify({
+        'success': True, 'task_id': task_id, 'dates_count': len(dates),
+        'submit_to_db': bool(submit_to_db),
+        'message': f'开始提取 {len(dates)} 个交易日',
+        'status_url': f'/api/extract/status/{task_id}',
+    })
+
+
+@app.route('/api/extract/status/<task_id>', methods=['GET'])
+def extract_status(task_id):
+    """查询提取任务状态"""
+    if task_id not in extract_tasks:
+        return jsonify({'success': False, 'error': '任务不存在'}), 404
+    t = extract_tasks[task_id]
+    return jsonify({
+        'success': True, 'task_id': task_id,
+        'status': t['status'], 'progress': t['progress'],
+        'total': t['total'], 'extracted': t.get('extracted', 0),
+        'submitted': t.get('submitted', 0),
+        'items': t.get('items', []),
+    })
+
+
+@app.route('/api/db/status', methods=['GET'])
+def db_status():
+    """探测数据库连接状态"""
+    import db as _db
+    ok, msg = _db.ping()
+    return jsonify({'success': True, 'connected': ok, 'message': msg})
+
+
+@app.route('/api/db/submit', methods=['POST'])
+def db_submit():
+    """把某日期的 Excel 上传(入库)到 PostgreSQL"""
+    import db as _db
+    data = request.get_json() or {}
+    date = (data.get('date') or '').replace('-', '')
+    if not re.match(r'^\d{8}$', date):
+        return jsonify({'success': False, 'error': '日期格式错误，请用 YYYYMMDD'}), 400
+    try:
+        _db.init_db()
+        result = _db.submit_date(date)
+        return jsonify({'success': True, **result})
+    except FileNotFoundError as e:
+        return jsonify({'success': False, 'error': str(e)}), 404
+    except _db.DBError as e:
+        return jsonify({'success': False, 'error': str(e)}), 503
+    except Exception as e:
+        return jsonify({'success': False, 'error': f'入库失败: {e}'}), 500
+
+
+@app.route('/api/db/submit-batch', methods=['POST'])
+def db_submit_batch():
+    """
+    按A股交易日区间批量入库(上传已有Excel)。
+    参数: start_date, end_date (YYYY-MM-DD, 缺省取当天)
+    """
+    import db as _db
+    data = request.get_json() or {}
+    start_date = data.get('start_date')
+    end_date = data.get('end_date')
+
+    if not start_date and not end_date:
+        start_date = end_date = datetime.now().strftime('%Y-%m-%d')
+    elif start_date and not end_date:
+        end_date = start_date
+    elif end_date and not start_date:
+        start_date = end_date
+
+    try:
+        datetime.strptime(start_date, '%Y-%m-%d')
+        datetime.strptime(end_date, '%Y-%m-%d')
+    except ValueError:
+        return jsonify({'success': False, 'error': '日期格式错误，请使用 YYYY-MM-DD'}), 400
+
+    dates = trading_days_in_range(start_date.replace('-', ''), end_date.replace('-', ''))
+    if not dates:
+        return jsonify({'success': False, 'error': '区间内没有A股交易日'}), 404
+
+    ok, msg = _db.ping()
+    if not ok:
+        return jsonify({'success': False, 'error': f'数据库未连接: {msg}'}), 503
+
+    import uuid
+    task_id = str(uuid.uuid4())[:8]
+    submit_tasks[task_id] = {
+        'status': 'pending', 'progress': 0, 'total': len(dates), 'submitted': 0,
+        'items': [{'date': d, 'status': 'pending', 'message': '待处理'} for d in dates],
+    }
+    threading.Thread(target=submit_batch_task, args=(task_id, dates), daemon=True).start()
+
+    return jsonify({
+        'success': True, 'task_id': task_id, 'dates_count': len(dates),
+        'message': f'开始入库 {len(dates)} 个交易日',
+        'status_url': f'/api/db/submit-batch/status/{task_id}',
+    })
+
+
+@app.route('/api/db/submit-batch/status/<task_id>', methods=['GET'])
+def db_submit_batch_status(task_id):
+    """查询批量入库任务状态"""
+    if task_id not in submit_tasks:
+        return jsonify({'success': False, 'error': '任务不存在'}), 404
+    t = submit_tasks[task_id]
+    return jsonify({
+        'success': True, 'task_id': task_id,
+        'status': t['status'], 'progress': t['progress'],
+        'total': t['total'], 'submitted': t.get('submitted', 0),
+        'items': t.get('items', []),
+    })
+
+
+@app.route('/api/excel/list', methods=['GET'])
+def excel_list():
+    """
+    按A股交易日列出应有的Excel及其状态。
+    参数: start, end (YYYYMMDD, 可选)。缺省时取已有数据(下载/Excel)的最早~最晚区间。
+    返回每个交易日: excel状态(verified/manualcheck/none) + 是否已入库(submitted)
+    """
+    import db as _db
+    base_dir = 'dataresource'
+    excel_dir = 'excelDataSource'
+
+    # 收集已有日期，确定默认区间
+    known = set()
+    if os.path.isdir(base_dir):
+        known |= {d for d in os.listdir(base_dir) if re.match(r'^\d{8}$', d)}
+    if os.path.isdir(excel_dir):
+        for f in os.listdir(excel_dir):
+            m = re.match(r'^(\d{8})_', f)
+            if m:
+                known.add(m.group(1))
+
+    start = request.args.get('start', '')
+    end = request.args.get('end', '')
+    if not (re.match(r'^\d{8}$', start) and re.match(r'^\d{8}$', end)):
+        if not known:
+            return jsonify({'success': True, 'items': [], 'db_connected': False})
+        start, end = min(known), max(known)
+
+    days = trading_days_in_range(start, end)
+
+    # 已入库集合(数据库不可用时降级)
+    submitted_set = set()
+    db_connected = True
+    db_msg = 'ok'
+    try:
+        submitted_set = _db.get_submitted_dates()
+    except _db.DBError as e:
+        db_connected = False
+        db_msg = str(e)
+
+    items = []
+    for d in sorted(days, reverse=True):
+        fp, status = _db.find_excel(d, excel_dir)
+        items.append({
+            'date': d,
+            'excel': status or 'none',           # verified / manualcheck / none
+            'has_excel': fp is not None,
+            'downloaded': os.path.isdir(os.path.join(base_dir, d)),
+            'submitted': (d in submitted_set) if db_connected else None,
+        })
+
+    return jsonify({
+        'success': True,
+        'items': items,
+        'db_connected': db_connected,
+        'db_message': db_msg,
+        'range': {'start': start, 'end': end},
     })
 
 

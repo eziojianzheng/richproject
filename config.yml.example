@@ -45,3 +45,11 @@ ocr:
       - "其他"
       - "涨停炸板"
       - "市场连板股"
+
+# PostgreSQL 数据库配置 (数据入库/热门股追踪)
+database:
+  host: "localhost"
+  port: 15432
+  user: "postgres"
+  password: "postgres"
+  dbname: "postgres"
