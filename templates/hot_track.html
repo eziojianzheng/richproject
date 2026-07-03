@@ -216,7 +216,7 @@
     transform: rotate(-5deg);
   }
   .stock-thumb.below-ma10::after {
-    content: '已移除';
+    content: '跌破10日线第三日未收回';
     position: absolute;
     bottom: -12px; left: 50%;
     transform: translateX(-50%);
@@ -225,12 +225,11 @@
     white-space: nowrap;
   }
 
-  /* 跌破10日线预警(未移除, 观察期) */
+  /* 跌破10日线预警(未移除, 观察期): 保留涨跌色, 仅叠加黄色边框标识 */
   .stock-thumb.warn-ma10 {
     position: relative;
-    background: rgba(234,179,8,0.22) !important;
-    color: #eab308 !important;
-    border: 1px solid rgba(234,179,8,0.5);
+    border: 1.5px solid #eab308 !important;
+    box-shadow: 0 0 0 1px rgba(234,179,8,0.35);
   }
   .stock-thumb.warn-ma10::after {
     content: '预警';
@@ -976,11 +975,11 @@ function renderRow(day, order){
       const isRemoved = s.remove_date === lastDate;
       
       let thumbClass = getThumbClass(pct, s.is_kcb_cyb);
-      // 移除当日=灰(已移除); 跌破但未移除=橙(预警)
+      // 移除当日=灰(已移除); 跌破但未移除=保留涨跌色+叠加黄色预警边框
       if (isRemoved) {
         thumbClass = 'below-ma10';
       } else if (belowMa10) {
-        thumbClass = 'warn-ma10';
+        thumbClass = thumbClass + ' warn-ma10';
       }
       
       const isNew = s.first_date === day.date;
@@ -1004,7 +1003,7 @@ function renderRow(day, order){
       if (isRemoved) {
         thumbClass = 'below-ma10';
       } else if (belowMa10) {
-        thumbClass = 'warn-ma10';
+        thumbClass = thumbClass + ' warn-ma10';
       }
       
       const pctText = pct !== null ? (pct > 0 ? '+' : '') + pct.toFixed(1) + '%' : '—';

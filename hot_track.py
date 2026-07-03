@@ -746,7 +746,7 @@ def track_hot_stocks(start, end, sort='stock_count', with_price=True,
                     if wi is not None and di is not None and (di - wi + 1) >= 3:
                         # 第三日仍收盘破位 -> 移除
                         st['remove_date'] = d
-                        st['remove_reason'] = '跌破10日线第三日仍未收回'
+                        st['remove_reason'] = '跌破10日线第三日未收回'
                         block_removed_stocks[blk][st['code']] = d
                 else:
                     # 收回10日线或涨停, 解除预警
