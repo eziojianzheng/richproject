@@ -3,13 +3,14 @@
 """
 涨停复盘数据提取（GLM-OCR + 红色板块标题识别）
 
-流程:
-- 用 GLM-OCR 找 03/04 图片：
-    03图: 开头包含 "880005" 或 "涨跌家数"（提取涨跌家数/成交额）
-    04图: 含 "湖南人涨停复盘" 或以涨停股表格开头（提取板块个股）
-- 03/04 必须来自同一日期文件夹
+流程（找图与提取合并，直接从 _order.txt 第3/4张开始，不轮询）:
+- 03图 = _order.txt 第3张: OCR 后开头200字含 "880005" 或 "涨跌家数"
+        -> 提取涨跌家数/成交额，否则判定03不存在
+- 04图 = _order.txt 第4张: extract_sectors_by_red 识别的板块标题含 "市场连板股"
+        -> 提取板块个股，否则判定04不存在
 - 04图板块归属: 红色检测定位板块标题 -> 裁剪单条小图用视觉模型识别板块名
   -> 按 y 坐标把 OCR 提取的股票分配到对应板块（涨停炸板之后的数据丢弃）
+- 只要 03/04 命中其一即生成 Excel，缺失方在表内写明原因；都不存在则失败
 - 提取数据并按模板导出 Excel 到 excelDataSource
 
 用法:
@@ -423,6 +424,8 @@ def extract_sectors_by_red(image_path, layout_details, use_cache=True):
 
     # 3. 按 y 排序板块标题，找"涨停炸板"作为截止线
     titles = sorted(sector_titles, key=lambda x: x[0])
+    # 记录所有识别成功的板块标题名（供04图判定：是否含【市场连板股】）
+    meta['titles'] = [t[1] for t in titles if t[1]]
     cutoff_idx = len(titles)
     for i, t in enumerate(titles):
         if t[1] in ('涨停炸板', '炸板'):
@@ -478,92 +481,94 @@ def extract_sectors_by_red(image_path, layout_details, use_cache=True):
     return results, None, meta
 
 
+# 字段识别正则
+_TIME_RE = re.compile(r'^\d{1,2}:\d{2}$')          # 末次时间 HH:MM
+_CODE_RE = re.compile(r'^\d{6}$')                  # 6位股票代码
+# 连板列: 纯数字 / "N板" / "X/Y天Z板" / "Y天Z板"（避免误吞含"板"的原因文字）
+_LIANBAN_RE = re.compile(r'^\d+$|^\d+板$|^\d+天\d+板$|\d+/\d+天\d+板')
+# 表头/非数据 token
+_HEADER_TOKENS = {'代码', '名称', '板块', '末次时间', '时间', '连板数', '连扳数', '原因'}
+
+
 def _extract_stocks_with_y(layout_details):
-    """提取所有股票并带上 y 坐标（含thead中被误判的股票），按y排序"""
-    stocks = []
+    """
+    提取所有股票并带上 y 坐标，按 y 排序。
+
+    兼容两种 OCR 表格结构（长图底部常出现结构退化）:
+      A. 规整行: 一行5列  代码|名称|时间|连板|原因
+      B. 退化行: 每个字段被拆成单列单行
+
+    做法: 把所有单元格按行序拉平成 (token, y) 流，以6位代码为边界切分成股票，
+          遇到【板块】标题或"消息面"说明则中断当前股票（避免跨板块粘连）。
+    """
+    # 1. 拉平所有单元格为 (文本, y) token 流
+    tokens = []
     for page in layout_details:
         for item in page:
             if item.get('label') != 'table':
                 continue
-            y_base = item.get('bbox_2d', [0, 0])[1]
-            content = item.get('content', '')
-            soup = BeautifulSoup(content, 'html.parser')
+            bbox = item.get('bbox_2d', [0, 0, 0, 0])
+            y_base = bbox[1] if len(bbox) >= 2 else 0
+            th = (bbox[3] - bbox[1]) if len(bbox) >= 4 else 0
+            soup = BeautifulSoup(item.get('content', ''), 'html.parser')
             for table in soup.find_all('table'):
-                rows = table.find_all('tr')
-                n_rows = len(rows)
-                table_h = item.get('bbox_2d', [0, 0, 0, 0])
-                th = (table_h[3] - table_h[1]) if len(table_h) >= 4 else 0
-                for ri, row in enumerate(rows):
-                    cells = [c.get_text(strip=True) for c in row.find_all(['th', 'td'])]
-                    if not cells:
-                        continue
-                    first = cells[0].strip()
-                    if first in ('代码', '名称', '板块'):
-                        continue
-                    full_text = ' '.join(cells)
-                    if _SECTOR_HEAD_RE.search(full_text) and not re.match(r'^\d{6}$', first):
-                        continue
-                    if re.match(r'^\d{6}$', first) and len(cells) >= 4:
-                        val4 = cells[3].strip()
-                        # 估算该行的 y 坐标（表格内按行均分）
-                        row_y = y_base + int(th * ri / max(n_rows, 1)) if th else y_base
-                        stocks.append({
-                            '代码': first,
-                            '名称': cells[1].strip() if len(cells) > 1 else '',
-                            '末次时间': cells[2].strip() if len(cells) > 2 else '',
-                            '连扳数': val4,
-                            '原因': cells[4].strip() if len(cells) > 4 else '',
-                            '_y': row_y,
-                        })
+                trs = table.find_all('tr')
+                n = len(trs)
+                for ri, row in enumerate(trs):
+                    # 估算该行 y（表格内按行均分）
+                    row_y = y_base + int(th * ri / max(n, 1)) if th else y_base
+                    for cell in row.find_all(['th', 'td']):
+                        t = cell.get_text(strip=True)
+                        if t:
+                            tokens.append((t, row_y))
+
+    # 2. 以6位代码为边界切分股票
+    stocks = []
+
+    def _flush(cur):
+        if not cur:
+            return
+        name = time = lianban = ''
+        reasons = []
+        for t in cur['toks']:
+            if not time and _TIME_RE.match(t):
+                time = t
+            elif not name:
+                name = t
+            elif not lianban and _LIANBAN_RE.match(t):
+                lianban = t
+            else:
+                reasons.append(t)
+        stocks.append({
+            '代码': cur['code'],
+            '名称': name,
+            '末次时间': time,
+            '连扳数': lianban,
+            '原因': ' '.join(reasons),
+            '_y': cur['y'],
+        })
+
+    cur = None
+    for t, y in tokens:
+        if t in _HEADER_TOKENS:
+            continue
+        # 板块标题 / 消息面说明 -> 中断当前股票，不跨板块粘连
+        if _SECTOR_HEAD_RE.search(t) or t.startswith('消息面') or t.startswith('消息'):
+            _flush(cur)
+            cur = None
+            continue
+        if _CODE_RE.match(t):
+            _flush(cur)
+            cur = {'code': t, 'toks': [], 'y': y}
+        elif cur is not None:
+            cur['toks'].append(t)
+    _flush(cur)
+
     stocks.sort(key=lambda s: s['_y'])
     return stocks
 
 
 # ============== 找 03/04 图片 ==============
-
-def classify_image(layout_details):
-    """
-    依据图片内容判断类型
-    返回: '03' | '04' | None
-
-    03图特征: 开头包含 "880005" 或 "涨跌家数"
-    04图特征: 
-        1. 包含 "湖南人涨停复盘" 标题
-        2. 以板块结构 "【市场连板股】" 开头
-        3. 开头表格含涨停股特征（代码|名称|末次时间|连板数|原因）
-           （部分日期标题为图形未被OCR识别，需通过表格结构判断）
-    """
-    head = layout_to_text(layout_details, limit=200)
-    full = layout_to_text(layout_details)
-
-    # 03 优先（开头特征明确）
-    if '880005' in head or '涨跌家数' in head:
-        return '03'
-
-    # 04: 标题命中
-    if '湖南人涨停复盘' in full:
-        return '04'
-    # 04: 以"市场连板股"板块开头
-    if '【市场连板股】' in head or head.lstrip().startswith('市场连板股'):
-        return '04'
-
-    # 04: 开头表格含涨停股特征（代码|名称|末次时间|连板数|原因）
-    # 部分日期的标题是图形，OCR只能识别表格，需通过表格结构判断
-    head_lower = head.lower()
-    if ('连板数' in head or '连板' in head) and ('代码' in head or '名称' in head):
-        # 检查是否包含典型的涨停股表格结构
-        if re.search(r'代码.*名称.*连板', head, re.DOTALL):
-            return '04'
-        # 检查是否有6位股票代码开头（涨停股表格特征）
-        if re.search(r'^\s*\d{6}\s+\S+\s+\d{1,2}:\d{2}\s+\d', head):
-            return '04'
-
-    # 04: 表格内容包含"涨停炸板"（04图底部特有）
-    if '涨停炸板' in full:
-        return '04'
-
-    return None
-
 
 def read_order(date_folder, base_dir='dataresource'):
     """读取 _order.txt，返回 {序号: 文件名}"""
@@ -582,90 +587,110 @@ def read_order(date_folder, base_dir='dataresource'):
     return order
 
 
-def find_03_04(date_folder, base_dir='dataresource'):
+def locate_03_04(date_folder, base_dir='dataresource'):
     """
-    在日期文件夹中用 GLM-OCR 找 03/04 图片
-    策略: 先按 _order.txt 第3/4张验证，命中即用；否则轮询其余图片
+    直接从 _order.txt 的第3/4张图开始判定并提取（不轮询，省时省token）。
+    找图与提取合并在一步完成，03/04 天然来自同一日期文件夹。
 
-    返回: {'image_03': path|None, 'image_04': path|None, 'date': date_folder}
+    03判定: OCR 后开头200字含 "880005" 或 "涨跌家数" -> 提取涨跌家数/成交额
+    04判定: extract_sectors_by_red 识别到的板块标题含 "市场连板股" -> 提取板块个股
+
+    返回:
+        {
+          'date':      日期文件夹,
+          'has_03':    bool,  'img_03': path|None,
+          'zhangdie':  {上涨家数, 下跌家数, 总成交额},
+          'reason_03': str|None,          # 03不可用的原因
+          'has_04':    bool,  'img_04': path|None,
+          'sectors':   list|None, 'meta': dict,
+          'reason_04': str|None,          # 04不可用的原因
+        }
     """
-    result = {'image_03': None, 'image_04': None, 'date': date_folder}
+    res = {
+        'date': date_folder,
+        'has_03': False, 'img_03': None,
+        'zhangdie': {'上涨家数': None, '下跌家数': None, '总成交额': None},
+        'reason_03': None,
+        'has_04': False, 'img_04': None,
+        'sectors': None, 'meta': {},
+        'reason_04': None,
+    }
 
     folder = os.path.join(base_dir, date_folder)
     if not os.path.isdir(folder):
-        print(f"  文件夹不存在: {folder}")
-        return result
-
-    def classify_file(name):
-        path = os.path.join(folder, name)
-        if not os.path.exists(path):
-            return None
-        layout, err = glm_ocr(path)
-        if err:
-            print(f"  识别 {name} 失败: {err}")
-            return None
-        return classify_image(layout)
+        res['reason_03'] = res['reason_04'] = f"文件夹不存在: {folder}"
+        return res
 
     order = read_order(date_folder, base_dir)
-    checked = set()
 
-    # 策略1: 先验证 order 的第3张(03) / 第4张(04)
-    if 3 in order:
-        name = order[3]
-        checked.add(name)
-        if classify_file(name) == '03':
-            result['image_03'] = os.path.join(folder, name)
-            print(f"  03图(order#3命中): {name}")
-    if 4 in order:
-        name = order[4]
-        checked.add(name)
-        if classify_file(name) == '04':
-            result['image_04'] = os.path.join(folder, name)
-            print(f"  04图(order#4命中): {name}")
+    # ---- 03: 直接取 _order.txt 第3张 ----
+    if 3 not in order:
+        res['reason_03'] = "无 _order.txt 第3张记录"
+    else:
+        name3 = order[3]
+        path3 = os.path.join(folder, name3)
+        if not os.path.exists(path3):
+            res['reason_03'] = f"03候选图不存在: {name3}"
+        else:
+            layout3, err3 = glm_ocr(path3)
+            if err3:
+                res['reason_03'] = f"03图OCR失败: {err3}"
+            else:
+                head = layout_to_text(layout3, limit=200)
+                if '880005' in head or '涨跌家数' in head:
+                    res['has_03'] = True
+                    res['img_03'] = path3
+                    res['zhangdie'] = extract_zhangdie(layout3)
+                    print(f"  03图(order#3命中): {name3}")
+                else:
+                    res['reason_03'] = f"03候选图({name3})开头未含 880005/涨跌家数"
 
-    # 策略2: 仍缺则轮询其余图片
-    if not (result['image_03'] and result['image_04']):
-        images = sorted([f for f in os.listdir(folder) if f.lower().endswith('.png')])
-        for name in images:
-            if result['image_03'] and result['image_04']:
-                break
-            if name in checked:
-                continue
-            kind = classify_file(name)
-            if kind == '03' and not result['image_03']:
-                result['image_03'] = os.path.join(folder, name)
-                print(f"  03图(轮询命中): {name}")
-            elif kind == '04' and not result['image_04']:
-                result['image_04'] = os.path.join(folder, name)
-                print(f"  04图(轮询命中): {name}")
+    # ---- 04: 直接取 _order.txt 第4张 ----
+    if 4 not in order:
+        res['reason_04'] = "无 _order.txt 第4张记录"
+    else:
+        name4 = order[4]
+        path4 = os.path.join(folder, name4)
+        if not os.path.exists(path4):
+            res['reason_04'] = f"04候选图不存在: {name4}"
+        else:
+            layout4, err4 = glm_ocr(path4)
+            if err4:
+                res['reason_04'] = f"04图OCR失败: {err4}"
+            else:
+                sectors, errsec, meta = extract_sectors_by_red(path4, layout4)
+                res['meta'] = meta or {}
+                titles = (meta or {}).get('titles', [])
+                has_market = any('市场连板' in (t or '') for t in titles)
+                if errsec:
+                    res['reason_04'] = f"04图板块识别失败: {errsec}"
+                elif not has_market:
+                    res['reason_04'] = f"04候选图({name4})未识别到【市场连板股】，判定非04图"
+                else:
+                    res['has_04'] = True
+                    res['img_04'] = path4
+                    res['sectors'] = sectors or []
+                    print(f"  04图(order#4命中): {name4}")
 
-    return result
-
-
-def validate_same_date(img_03, img_04):
-    """校验03/04来自同一日期文件夹"""
-    if not img_03 or not img_04:
-        return False, "图片路径不能为空"
-    d03 = os.path.basename(os.path.dirname(img_03))
-    d04 = os.path.basename(os.path.dirname(img_04))
-    if d03 != d04:
-        return False, f"日期不一致: 03在{d03}, 04在{d04}"
-    return True, f"校验通过，日期: {d03}"
+    return res
 
 
 # ============== 单日提取 ==============
 
 def export_excel(date_folder, zhangdie, sectors, output_dir='excelDataSource',
-                 status='verified', issues=None):
+                 status='verified', issues=None,
+                 has_03=True, has_04=True, reason_03=None, reason_04=None):
     """
-    基于提取模板生成Excel
+    基于提取模板生成Excel（03/04 只要命中其一即生成，缺失的一方在表内写明原因）
     - 03提取 sheet: 上涨家数 | 下跌家数 | 总成交额
     - 04提取 sheet: 概念板块 | 代码 | 名称 | 末次时间 | 连扳数 | 原因
     - 文件名按校验状态加后缀: _verified(通过) / _manualcheck(需人工复核)
-    - 04提取 sheet 末尾追加校验说明
+    - 缺失的 03/04 在对应 sheet 内写明原因；04提取 sheet 末尾追加校验说明
     """
     os.makedirs(output_dir, exist_ok=True)
     issues = issues or []
+    sectors = sectors or []
+    zhangdie = zhangdie or {}
 
     # 以模板为基础（保留表头/样式）
     if os.path.exists(TEMPLATE_PATH):
@@ -679,35 +704,44 @@ def export_excel(date_folder, zhangdie, sectors, output_dir='excelDataSource',
 
     # === 03提取 ===
     ws03 = wb['03提取']
-    ws03.cell(row=2, column=1, value=zhangdie.get('上涨家数'))
-    ws03.cell(row=2, column=2, value=zhangdie.get('下跌家数'))
-    ws03.cell(row=2, column=3, value=zhangdie.get('总成交额'))
+    if has_03:
+        ws03.cell(row=2, column=1, value=zhangdie.get('上涨家数'))
+        ws03.cell(row=2, column=2, value=zhangdie.get('下跌家数'))
+        ws03.cell(row=2, column=3, value=zhangdie.get('总成交额'))
+    else:
+        # 未找到03图：留空数据行并写明原因
+        ws03.append([])
+        ws03.append(['【未找到03图】', reason_03 or '未找到符合条件的03图片'])
 
     # === 04提取 ===
     ws04 = wb['04提取']
     # 清除模板里第2行起的旧数据（保留表头）
     if ws04.max_row > 1:
         ws04.delete_rows(2, ws04.max_row)
-    for s in sectors:
-        ws04.append([
-            s.get('概念板块', ''),
-            s.get('代码', ''),
-            s.get('名称', ''),
-            s.get('末次时间', ''),
-            s.get('连扳数', ''),
-            s.get('原因', ''),
-        ])
+    if has_04:
+        for s in sectors:
+            ws04.append([
+                s.get('概念板块', ''),
+                s.get('代码', ''),
+                s.get('名称', ''),
+                s.get('末次时间', ''),
+                s.get('连扳数', ''),
+                s.get('原因', ''),
+            ])
+    else:
+        # 未找到04图：写明原因
+        ws04.append(['【未找到04图】', reason_04 or '未找到符合条件的04图片'])
 
     # === 末尾追加校验说明 ===
     ws04.append([])
     if status == 'verified':
         ws04.append(['【校验结果】', '通过 (verified)'])
-        ws04.append(['说明', '板块标题全部识别成功，各板块声明数量与提取股票数一致，自动校验通过。'])
+        ws04.append(['说明', '03/04均识别成功，板块标题与声明数量校验通过。'])
     else:
         ws04.append(['【校验结果】', '需人工复核 (manualcheck)'])
         for i, msg in enumerate(issues, 1):
             ws04.append([f'问题{i}', msg])
-        ws04.append(['建议', '请对照原始04图片人工核对上述板块的股票归属与数量。'])
+        ws04.append(['建议', '请对照原始图片人工核对上述问题（含缺失的03/04图）。'])
 
     suffix = 'verified' if status == 'verified' else 'manualcheck'
     out_path = os.path.join(output_dir, f'{date_folder}_涨停复盘_{suffix}.xlsx')
@@ -718,83 +752,60 @@ def export_excel(date_folder, zhangdie, sectors, output_dir='excelDataSource',
 # ============== 单日提取 ==============
 
 def extract_date(date_folder, base_dir='dataresource', output_dir='excelDataSource'):
-    """提取单日数据并生成Excel"""
+    """提取单日数据并生成Excel（找图与提取合并，直接从 _order.txt 第3/4张开始）"""
     date_folder = date_folder.replace('-', '')
     print("=" * 60)
     print(f"提取日期: {date_folder}")
     print("=" * 60)
 
-    # 1. 找03/04（先order，后轮询）
-    print("[1/4] 查找 03/04 图片 (先order第3/4张，未命中再轮询)...")
-    imgs = find_03_04(date_folder, base_dir)
-    img_03, img_04 = imgs['image_03'], imgs['image_04']
+    # 1. 从 _order.txt 第3/4张直接判定并提取（不轮询）
+    print("[1/2] 从 _order.txt 第3/4张直接判定并提取...")
+    r = locate_03_04(date_folder, base_dir)
 
-    if not img_03:
-        print("✗ 未找到03图片(开头含 880005/涨跌家数)")
-        return False
-    if not img_04:
-        print("✗ 未找到04图片(湖南人涨停复盘/市场连板股)")
-        return False
-
-    # 2. 校验同日期
-    valid, msg = validate_same_date(img_03, img_04)
-    print(f"[2/4] {msg}")
-    if not valid:
+    # 03/04 都不存在才失败
+    if not r['has_03'] and not r['has_04']:
+        print("✗ 找不到03/04图片")
+        print(f"    03: {r['reason_03']}")
+        print(f"    04: {r['reason_04']}")
         return False
 
-    # 3. 提取数据
-    print("[3/4] 提取数据...")
-    layout_03, err03 = glm_ocr(img_03)
-    if err03:
-        print(f"✗ 03图提取失败: {err03}")
-        return False
-
-    zhangdie = extract_zhangdie(layout_03)
-
-    # 04图板块识别新方案(红色定位):
-    #   1. OCR 提取所有股票（含 y 坐标）
-    #   2. 红色检测定位板块标题 + 单条小图识别板块名（准、省token）
-    #   3. 按 y 坐标匹配分配板块，涨停炸板之后丢弃
-    layout_04, err04 = glm_ocr(img_04)
-    if err04:
-        print(f"✗ 04图OCR失败: {err04}")
-        return False
-
-    sectors, errsec, meta = extract_sectors_by_red(img_04, layout_04)
-    if errsec:
-        print(f"✗ 04图板块识别失败: {errsec}")
-        return False
-
-    if not sectors:
-        print(f"✗ 04图提取失败: 无有效数据")
-        return False
-
-    print(f"  涨跌(03): {zhangdie}")
-    from collections import Counter
-    dist = Counter(s['概念板块'] for s in sectors)
-    print(f"  板块个股(04): {len(sectors)} 条，{len(dist)} 个板块")
-    print(f"  板块分布: {dict(dist)}")
+    zhangdie = r['zhangdie']
+    sectors = r['sectors'] or []
 
     # 汇总校验问题，判定状态
-    issues = list(meta.get('issues', []))
-    # 涨跌数据缺失也需复核
-    if zhangdie.get('上涨家数') is None or zhangdie.get('下跌家数') is None:
-        issues.append("03图涨跌家数提取不完整（上涨/下跌家数缺失）")
-    if zhangdie.get('总成交额') is None:
-        issues.append("03图总成交额未提取到")
+    issues = list(r['meta'].get('issues', [])) if r['has_04'] else []
+    if r['has_03']:
+        print(f"  涨跌(03): {zhangdie}")
+        if zhangdie.get('上涨家数') is None or zhangdie.get('下跌家数') is None:
+            issues.append("03图涨跌家数提取不完整（上涨/下跌家数缺失）")
+        if zhangdie.get('总成交额') is None:
+            issues.append("03图总成交额未提取到")
+    else:
+        issues.append(f"未找到03图: {r['reason_03']}")
 
-    status = 'verified' if not issues else 'manualcheck'
-    if issues:
+    if r['has_04']:
+        from collections import Counter
+        dist = Counter(s['概念板块'] for s in sectors)
+        print(f"  板块个股(04): {len(sectors)} 条，{len(dist)} 个板块")
+        print(f"  板块分布: {dict(dist)}")
+    else:
+        issues.append(f"未找到04图: {r['reason_04']}")
+
+    # 仅当 03/04 都命中且无其他问题时才判定通过
+    status = 'verified' if (r['has_03'] and r['has_04'] and not issues) else 'manualcheck'
+    if status == 'verified':
+        print("  ✓ 校验通过")
+    else:
         print(f"  ⚠ 校验未通过 ({len(issues)} 项问题):")
         for m in issues:
             print(f"      - {m}")
-    else:
-        print(f"  ✓ 校验通过")
 
-    # 4. 生成Excel
-    print("[4/4] 生成Excel(按模板)...")
+    # 2. 生成Excel（只要命中其一即生成，缺失方在表内写明原因）
+    print("[2/2] 生成Excel(按模板)...")
     excel_path = export_excel(date_folder, zhangdie, sectors, output_dir,
-                              status=status, issues=issues)
+                              status=status, issues=issues,
+                              has_03=r['has_03'], has_04=r['has_04'],
+                              reason_03=r['reason_03'], reason_04=r['reason_04'])
     print(f"✓ 已生成: {excel_path}")
     print("=" * 60)
     return True
