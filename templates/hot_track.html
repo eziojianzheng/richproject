@@ -216,12 +216,29 @@
     transform: rotate(-5deg);
   }
   .stock-thumb.below-ma10::after {
-    content: '跌破10日线';
+    content: '已移除';
     position: absolute;
     bottom: -12px; left: 50%;
     transform: translateX(-50%);
     font-size: 7px;
     color: #ff4d4d;
+    white-space: nowrap;
+  }
+
+  /* 跌破10日线预警(未移除, 观察期) */
+  .stock-thumb.warn-ma10 {
+    position: relative;
+    background: rgba(234,179,8,0.22) !important;
+    color: #eab308 !important;
+    border: 1px solid rgba(234,179,8,0.5);
+  }
+  .stock-thumb.warn-ma10::after {
+    content: '预警';
+    position: absolute;
+    bottom: -12px; left: 50%;
+    transform: translateX(-50%);
+    font-size: 7px;
+    color: #eab308;
     white-space: nowrap;
   }
 
@@ -299,11 +316,22 @@
   .p-limit { color:#ffd60a; }
 
   /* 上下分屏 */
-  .split { display:flex; flex-direction:column; gap:10px; }
+  .split { display:flex; flex-direction:column; gap:0; }
   .pane { background: var(--bg-body); }
-  .pane-title { font-size:12px; color:var(--text-muted); margin:4px 0 8px; font-weight:600; }
-  .pane-top { max-height:54vh; overflow:auto; }
-  .pane-bottom { border-top:2px solid var(--border-light); padding-top:8px; }
+  .pane-title {
+    font-size:12px; color:var(--text-muted); margin:4px 0 8px; font-weight:600;
+    cursor:pointer; user-select:none;
+  }
+  .pane-title .chev { display:inline-block; transition:transform .2s; font-size:10px; margin-right:4px; }
+  .pane.collapsed .chev { transform:rotate(-90deg); }
+  .pane.collapsed { height:auto !important; }
+  .pane.collapsed .pane-body { display:none; }
+  .pane-top { height:54vh; overflow:auto; }
+  .pane-top .pane-body { }
+  .pane-bottom { border-top:2px solid var(--border-light); padding-top:8px; overflow:auto; max-height:48vh; }
+  /* 可拖动分隔条 */
+  .splitter { height:7px; margin:5px 0; background:var(--border-light); border-radius:4px; cursor:row-resize; flex:0 0 auto; }
+  .splitter:hover { background:#e63946; }
 
   /* 图表区 */
   .charts-scroll {
@@ -411,6 +439,7 @@
     </div>
     <label><input type="checkbox" id="price" checked> 涨幅</label>
     <button id="go">计算</button>
+    <button id="goToday">仅计算今日</button>
     <div class="console-panel">
       <button class="console-btn" onclick="toggleConsole()">
         <span>控制台</span>
@@ -474,13 +503,18 @@
   </div>
 
   <div class="split">
-    <div class="pane pane-top">
-      <div class="pane-title">板块统计（最新 → 最早）</div>
-      <div id="rows"></div>
+    <div class="pane pane-top" id="paneTop">
+      <div class="pane-title" onclick="togglePane('paneTop')">
+        <span class="chev">▼</span>板块统计（最新 → 最早）
+      </div>
+      <div id="rows" class="pane-body"></div>
     </div>
-    <div class="pane pane-bottom">
-      <div class="pane-title">板块图表（与上方板块对齐）</div>
-      <div id="charts"></div>
+    <div class="splitter" id="splitter" title="拖动调整上下高度"></div>
+    <div class="pane pane-bottom" id="paneBottom">
+      <div class="pane-title" onclick="togglePane('paneBottom')">
+        <span class="chev">▼</span>板块图表（与上方板块对齐）
+      </div>
+      <div id="charts" class="pane-body"></div>
     </div>
   </div>
 
@@ -804,6 +838,26 @@ document.querySelectorAll('#stock-sort span').forEach(el => {
   };
 });
 
+document.getElementById('goToday').onclick = () => { computeToday(); };
+
+// 仅计算当日: 要求当日数据已入库(结束日期包含当日), 否则报错
+function computeToday(){
+  const t = todayStr().replace(/-/g, '');   // YYYYMMDD
+  const startSel = document.getElementById('start');
+  const endSel = document.getElementById('end');
+  const avail = [...startSel.options].map(o => o.value);
+  if(!avail.includes(t)){
+    const msg = `当日(${t})数据尚未入库，无法仅计算当日。请先在「数据同步」入库当日数据。`;
+    document.getElementById('meta').innerHTML = '<span class="error">❌ ' + msg + '</span>';
+    alert(msg);
+    return;
+  }
+  startSel.value = t;
+  endSel.value = t;
+  saveConfig();
+  compute();
+}
+
 document.getElementById('go').onclick = () => {
   saveConfig();
   compute();
@@ -922,9 +976,11 @@ function renderRow(day, order){
       const isRemoved = s.remove_date === lastDate;
       
       let thumbClass = getThumbClass(pct, s.is_kcb_cyb);
-      // 如果跌破10日线，添加特殊样式
-      if (belowMa10 || isRemoved) {
+      // 移除当日=灰(已移除); 跌破但未移除=橙(预警)
+      if (isRemoved) {
         thumbClass = 'below-ma10';
+      } else if (belowMa10) {
+        thumbClass = 'warn-ma10';
       }
       
       const isNew = s.first_date === day.date;
@@ -945,8 +1001,10 @@ function renderRow(day, order){
       const isRemoved = s.remove_date === lastDate;
       
       let thumbClass = getThumbClass(pct, s.is_kcb_cyb);
-      if (belowMa10 || isRemoved) {
+      if (isRemoved) {
         thumbClass = 'below-ma10';
+      } else if (belowMa10) {
+        thumbClass = 'warn-ma10';
       }
       
       const pctText = pct !== null ? (pct > 0 ? '+' : '') + pct.toFixed(1) + '%' : '—';
@@ -1518,6 +1576,42 @@ function escapeHtmlHT(s){
   return String(s==null?'':s).replace(/[&<>"']/g, c => (
     {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 }
+
+// ============== 面板: 收缩/展开 + 可拖动分隔 ==============
+function togglePane(id){
+  const p = document.getElementById(id);
+  p.classList.toggle('collapsed');
+  try{ localStorage.setItem(id+'_collapsed', p.classList.contains('collapsed')?'1':'0'); }catch(e){}
+}
+
+(function initSplit(){
+  const splitter = document.getElementById('splitter');
+  const top = document.getElementById('paneTop');
+  if(!splitter || !top) return;
+  // 恢复高度与折叠状态
+  try{
+    const h = localStorage.getItem('paneTopH'); if(h) top.style.height = h;
+    if(localStorage.getItem('paneTop_collapsed')==='1') document.getElementById('paneTop').classList.add('collapsed');
+    if(localStorage.getItem('paneBottom_collapsed')==='1') document.getElementById('paneBottom').classList.add('collapsed');
+  }catch(e){}
+
+  let dragging = false;
+  splitter.addEventListener('mousedown', e => {
+    dragging = true; document.body.style.userSelect = 'none'; e.preventDefault();
+  });
+  document.addEventListener('mousemove', e => {
+    if(!dragging) return;
+    const rect = top.getBoundingClientRect();
+    let h = e.clientY - rect.top;
+    h = Math.max(120, Math.min(h, window.innerHeight - 160));
+    top.style.height = h + 'px';
+  });
+  document.addEventListener('mouseup', () => {
+    if(!dragging) return;
+    dragging = false; document.body.style.userSelect = '';
+    try{ localStorage.setItem('paneTopH', top.style.height); }catch(e){}
+  });
+})();
 
 // 初始化: 载入可选日期(不自动计算)
 populateDates();

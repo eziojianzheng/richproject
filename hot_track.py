@@ -686,7 +686,8 @@ def track_hot_stocks(start, end, sort='stock_count', with_price=True,
         block_total[blk] = len(codes)
         block_times[blk] = sum(1 for d in dates if blk in daily[d])
 
-    _report('remove', f'阶段3: 应用移除规则(跌破10日线次日删除)…', 0, len(dates))
+    _report('remove', '阶段3: 应用移除规则(跌破10日线预警, 第三日仍破位则移除)…', 0, len(dates))
+    date_pos = {dd: i for i, dd in enumerate(dates)}  # 交易日 -> 序号
     by_date = []
     # 累积每个板块已入选的票(跨日累加), 实现"每天看完整阵容"
     block_cum_stocks = {}   # block -> list[stock_item] (按入选顺序)
@@ -717,31 +718,39 @@ def track_hot_stocks(start, end, sort='stock_count', with_price=True,
             
             cum = block_cum_stocks[blk]
             
-            # 检查每只股票是否跌破10日线，标记移除状态
-            # apply_removal=False 时不做移除(数据缺失阶段, 移除不可靠, 待用户确认后再算)
+            # 移除规则(新): 跌破10日线当日"预警", 自预警日起第三日收盘仍<10日线则移除;
+            # 期间收回10日线(或涨停)则解除预警。apply_removal=False 时不做(数据缺失阶段)。
             for st in (cum if apply_removal else []):
+                if st.get('remove_date'):
+                    continue  # 已移除, 不再处理
                 track = st['track'].get(d)
-                if track and track.get('below_ma10') == True:
-                    # 检查是否涨停（涨停则不移除）
-                    pct = track.get('pct')
-                    is_limit_up = False
-                    if pct is not None:
-                        if st['is_kcb_cyb']:
-                            is_limit_up = pct >= 19.4  # 科创板/创业板涨停
-                        else:
-                            is_limit_up = pct >= 9.8   # 普通股票涨停
-                    
-                    # 检查是否一字板（9:25涨停）
-                    desc = track.get('desc', '')
-                    if '一字板' in desc:
-                        is_limit_up = True
-                    
-                    # 跌破10日线且未涨停，记录移除日期
-                    if not is_limit_up:
-                        if st['code'] not in block_removed_stocks[blk]:
-                            block_removed_stocks[blk][st['code']] = d
-                            st['remove_date'] = d
-                            st['remove_reason'] = '跌破10日线'
+                if not track:
+                    continue
+                # 涨停判定(涨停/一字板不算破位)
+                pct = track.get('pct')
+                is_limit_up = False
+                if pct is not None:
+                    is_limit_up = pct >= 19.4 if st['is_kcb_cyb'] else pct >= 9.8
+                if '一字板' in (track.get('desc', '') or ''):
+                    is_limit_up = True
+
+                below = (track.get('below_ma10') == True) and not is_limit_up
+
+                if below:
+                    # 首次跌破: 进入预警
+                    if st.get('warn_date') is None:
+                        st['warn_date'] = d
+                    # 自预警日起的交易日序数(预警日记为第1日)
+                    wi = date_pos.get(st['warn_date'])
+                    di = date_pos.get(d)
+                    if wi is not None and di is not None and (di - wi + 1) >= 3:
+                        # 第三日仍收盘破位 -> 移除
+                        st['remove_date'] = d
+                        st['remove_reason'] = '跌破10日线第三日仍未收回'
+                        block_removed_stocks[blk][st['code']] = d
+                else:
+                    # 收回10日线或涨停, 解除预警
+                    st['warn_date'] = None
             
             # 计算当前仍在跟踪的股票（未被移除或在移除当天仍显示）
             active_stocks = []
