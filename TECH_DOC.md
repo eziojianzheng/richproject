@@ -72,6 +72,7 @@ database:                 # PostgreSQL(本次新增)
 | `templates/update.html` | 数据同步页（下载/提取/入库/状态三模块）。 |
 | `templates/hot_track.html` | 热门股追踪页（计算执行框、表格、图表、面板拖动）。 |
 | `.price_cache.json` | 行情缓存（涨跌幅/20日/60日/MA10/是否破位），gitignore。 |
+| `.hot_last_result.json` | 最近一次热门股计算结果的服务端缓存（刷新/重启恢复），gitignore。 |
 | `config.yml` | 配置（含密钥/DB），gitignore。 |
 
 ### 数据目录
@@ -162,7 +163,14 @@ zt_stocks (
 
 **分阶段计算(异步, 见 7.4)**：build 建板块/个股 → price 取行情 → 若缺数据**暂停询问**(不擅自移除) → remove 移除规则 → 结果 + 缺失报告。
 
-**返回结构**：`{start,end,sort,dates,by_date[{date,blocks[{block,cum_count,active_count,new_count,removed_today,times_count,total_count,active,removing,stocks[{code,name,is_kcb_cyb,first_date,warn_date,remove_date,track:{date:{desc,pct,pct_20d,pct_60d,ma10,below_ma10,present}}}]}]}], blocks_summary[...], missing_report, missing_codes}`
+前端展示：**预警**股保留涨跌幅颜色，仅叠加黄色边框+「预警」标签（不再整块涂黄，避免盖掉涨跌色）；**移除**股灰色标「跌破10日线第三日未收回」。
+
+**返回结构**：`{start,end,sort,dates,by_date[{date,blocks[{block,cum_count,active_count,new_count,removed_today,times_count,total_count,active,removing,stocks[{code,name,is_kcb_cyb,first_date,warn_date,remove_date,track:{date:{desc,pct,pct_20d,pct_60d,ma10,below_ma10,present}}}]}]}], blocks_summary[...], date_summary{date:{up_count,down_count,total_amount,high_stocks[{code,name,lianban,block}],broken_stocks[{code,name,block,pct}]}}, missing_report, missing_codes}`
+
+**左侧汇总列 `date_summary`（板块统计每日行左侧两列的数据源）**：
+- 列1 涨跌数：`up_count/down_count/total_amount`（来自 `zt_daily`）；前端在 涨>3000&跌<2000 或 跌>3000&涨<2000 时整列标红。
+- 列2 高位股：`high_stocks`=当日 3板及以上（`parse_lianban.current>=3`，概念优先取非「市场连板股」的板块）；`broken_stocks`=昨日3板+、今日未涨停(断板)的个股，带今日涨跌幅(前端按涨跌色)。
+- ⚠️ 3板+高位股代码已一并加入行情预取集合，保证断板股涨跌幅可取。
 
 ### 7.4 热门股异步计算任务（api_server.py `hot_compute_task`）
 - 状态机：`pending → running → (awaiting 缺数据暂停) → running → completed/failed`。
@@ -197,6 +205,7 @@ zt_stocks (
 
 ### 热门股追踪
 - `GET /api/hot/dates` 可选日期=数据库已入库日期(约束前端范围)
+- `GET /api/hot/last` 最近一次计算结果(服务端持久化, 刷新恢复用; has=false 表示无)
 - `POST /api/hot/compute` 启动分阶段异步计算(start/end/price；范围须在已入库区间内)
 - `GET /api/hot/compute/status/<task_id>?since=N` 进度/日志(awaiting返回缺失报告, completed返回result)
 - `POST /api/hot/compute/resolve` {task_id, action: resync|skip}
@@ -219,8 +228,8 @@ zt_stocks (
 ### `hot_track.html`（热门股追踪）
 - 顶部：起止日期**下拉**(只列已入库日期，超范围选不了)、排序切换、「计算」「仅计算今日」(要求当日已入库否则报错)。
 - **计算执行框(modal)**：分阶段进度条+分色日志；缺数据时暂停显示报告+「再次同步/跳过」；关闭按钮常显；render 有 try/catch 容错。
-- 结果本地缓存(localStorage)，刷新自动恢复。
-- 表格：日期行 × 板块卡片(全局排序)，个股缩略块；**预警**=保留涨跌色+黄色边框；**已移除**=灰色"跌破10日线第三日未收回"；新入选有标记。
+- **结果恢复**：刷新时**优先从服务端** `/api/hot/last` 恢复(`restoreServerResult`，不受浏览器配额限制)，失败再退回 localStorage(`restoreLastResult`)。大范围结果几MB，localStorage 会超配额，所以服务端为主。
+- 表格：日期行左侧**两列**(列1 涨跌数极端标红；列2 3板+高位股/昨断板，见 `renderRow` 的 col1/col2) × 板块卡片(全局排序)，个股缩略块；**预警**=保留涨跌色+黄色边框；**已移除**=灰色"跌破10日线第三日未收回"；新入选有标记。
 - 底部板块图表；上下面板间**可拖动分隔条** + 两面板**可收缩/展开**(高度与折叠状态记忆到 localStorage)。
 
 ---
@@ -236,7 +245,7 @@ zt_stocks (
 **已知问题**
 - `003133 中量科技` 等极个别标的 mootdx 无数据 → 缺失报告会列出，只能「跳过」。
 - 热门股底部**板块图表仍展示全部入选过的板块**，与上方"只显示活跃板块"不完全对齐（待定：图表是否也只显示活跃板块）。
-- `hot_tasks/extract_tasks/submit_tasks/download_tasks` 都是**内存字典**，服务(debug)重载或重启会丢任务；结果靠前端 localStorage 兜底。
+- `hot_tasks/extract_tasks/submit_tasks/download_tasks` 都是**内存字典**，服务(debug)重载或重启会丢**进行中的任务**；但热门股**最终计算结果**已服务端持久化到 `.hot_last_result.json`(`/api/hot/last`)，重启不丢、刷新可恢复。
 - `extract_api.py` / `hot_track_api.py` / `utils.py` 为旧实现，主流程未用，未清理。
 
 **可能的后续 TODO**
