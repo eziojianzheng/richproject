@@ -17,6 +17,7 @@ from flask import Flask, request, jsonify, render_template
 import requests
 from bs4 import BeautifulSoup
 import os
+import re
 import time
 from datetime import datetime, timedelta
 import threading
@@ -213,6 +214,71 @@ def check_folder_has_images(folder_path):
     return False
 
 
+# ============== A股交易日历 ==============
+
+_TRADE_DAYS = None       # set of 'YYYYMMDD'
+_TRADE_DAYS_MAX = None   # 日历覆盖的最大日期(用于判断"超出日历范围")
+
+
+def get_trade_days():
+    """
+    返回A股交易日集合(YYYYMMDD)，用 akshare 交易日历，带内存缓存。
+    获取失败返回 None（调用方回退到工作日判断）。
+    """
+    global _TRADE_DAYS, _TRADE_DAYS_MAX
+    if _TRADE_DAYS is not None:
+        return _TRADE_DAYS
+    try:
+        import akshare as ak
+        df = ak.tool_trade_date_hist_sina()
+        days = {str(d).replace('-', '') for d in df['trade_date']}
+        if not days:
+            return None
+        _TRADE_DAYS = days
+        _TRADE_DAYS_MAX = max(days)
+        print(f"[交易日历] 已加载 {len(days)} 个交易日 (至 {_TRADE_DAYS_MAX})")
+        return _TRADE_DAYS
+    except Exception as e:
+        print(f"[交易日历] 获取失败，回退到工作日判断: {e}")
+        return None
+
+
+def is_trading_day(date_folder):
+    """
+    判断 date_folder(YYYYMMDD) 是否为A股交易日。
+    - 交易日历可用: 命中集合即为交易日；若日期超出日历覆盖范围则回退到工作日判断
+    - 交易日历不可用: 回退到周一~周五判断
+    """
+    from datetime import datetime
+    days = get_trade_days()
+    if days:
+        # 超出日历覆盖范围（比最新已知交易日还新）时回退到工作日判断
+        if _TRADE_DAYS_MAX and date_folder > _TRADE_DAYS_MAX:
+            try:
+                return datetime.strptime(date_folder, '%Y%m%d').weekday() < 5
+            except ValueError:
+                return True
+        return date_folder in days
+    # 日历不可用: 工作日
+    try:
+        return datetime.strptime(date_folder, '%Y%m%d').weekday() < 5
+    except ValueError:
+        return True
+
+
+def filter_trading_articles(articles):
+    """只保留A股交易日的文章，返回 (保留列表, 被跳过的非交易日日期列表)"""
+    kept, dropped = [], []
+    for a in articles:
+        if is_trading_day(a.get('date_folder', '')):
+            kept.append(a)
+        else:
+            dropped.append(a.get('date_folder', 'unknown'))
+    if dropped:
+        print(f"跳过非交易日文章: {dropped}")
+    return kept, dropped
+
+
 def download_task(task_id, articles, base_dir='dataresource', skip_existing=True):
     """后台下载任务"""
     global download_tasks
@@ -222,6 +288,12 @@ def download_task(task_id, articles, base_dir='dataresource', skip_existing=True
     success_images = 0
     skipped_folders = 0
     failed_dates = []
+    failed_details = []  # [{'date':..., 'reason':...}]
+
+    def _mark_failed(date_folder, reason):
+        if date_folder not in failed_dates:
+            failed_dates.append(date_folder)
+            failed_details.append({'date': date_folder, 'reason': reason})
 
     for i, article in enumerate(articles):
         try:
@@ -248,7 +320,7 @@ def download_task(task_id, articles, base_dir='dataresource', skip_existing=True
                 images = get_article_images(link)
             except NetworkError as e:
                 print(f"获取图片列表失败（网络）: {date_folder} - {e}")
-                failed_dates.append(date_folder)
+                _mark_failed(date_folder, f"获取图片列表失败（网络）: {e}")
                 progress = int((i + 1) / len(articles) * 100)
                 download_tasks[task_id]['progress'] = progress
                 continue
@@ -256,18 +328,14 @@ def download_task(task_id, articles, base_dir='dataresource', skip_existing=True
             if not images:
                 continue
             
-            # 下载图片
+            # 下载图片（按图片ID命名，与CLI下载器一致，便于 _order.txt 完整性核对与提取查找）
             article_failed = False
+            id_list = []
             for j, img_url in enumerate(images, 1):
-                ext = '.png'
-                if '.jpg' in img_url.lower() or '.jpeg' in img_url.lower():
-                    ext = '.jpg'
-                elif '.gif' in img_url.lower():
-                    ext = '.gif'
-                elif '.webp' in img_url.lower():
-                    ext = '.webp'
-                
-                filename = f"{date_folder}_{j:02d}{ext}"
+                m = re.search(r'/([a-z0-9]+)\.(?:png|jpg|jpeg|gif|webp)', img_url, re.I)
+                img_id = m.group(1) if m else f"{date_folder}_{j:02d}"
+                id_list.append(img_id)
+                filename = f"{img_id}.png"
                 save_path = os.path.join(save_dir, filename)
                 
                 total_images += 1
@@ -282,9 +350,31 @@ def download_task(task_id, articles, base_dir='dataresource', skip_existing=True
                 else:
                     article_failed = True
             
+            # 写入 _order.txt（图片顺序映射，供完整性核对与提取查找）
+            try:
+                with open(os.path.join(save_dir, '_order.txt'), 'w', encoding='utf-8') as f:
+                    f.write(f"# {title}\n")
+                    f.write(f"# 日期: {article.get('pub_time', '')}\n")
+                    f.write(f"# 图片顺序映射\n\n")
+                    for k, iid in enumerate(id_list, 1):
+                        f.write(f"{k:02d}. {iid}.png\n")
+            except Exception as e:
+                print(f"  写入_order.txt失败: {e}")
+            
+            # 强制重下且已补齐时，清理旧命名/多余的图片文件，避免与ID命名文件重复
+            if not skip_existing and not article_failed:
+                expected = {f"{iid}.png" for iid in id_list}
+                for fn in os.listdir(save_dir):
+                    if fn.lower().endswith(('.png', '.jpg', '.jpeg', '.gif', '.webp')) and fn not in expected:
+                        try:
+                            os.remove(os.path.join(save_dir, fn))
+                            print(f"  清理旧文件: {fn}")
+                        except Exception:
+                            pass
+            
             # 部分图片下载失败，标记该日期待重试
-            if article_failed and date_folder not in failed_dates:
-                failed_dates.append(date_folder)
+            if article_failed:
+                _mark_failed(date_folder, "部分图片下载失败（网络重试后仍失败）")
             
             # 更新进度
             progress = int((i + 1) / len(articles) * 100)
@@ -293,86 +383,28 @@ def download_task(task_id, articles, base_dir='dataresource', skip_existing=True
             
         except Exception as e:
             print(f"处理文章出错: {e}")
-            failed_dates.append(article.get('date_folder', 'unknown'))
+            _mark_failed(article.get('date_folder', 'unknown'), f"处理异常: {e}")
     
     download_tasks[task_id]['status'] = 'completed'
     download_tasks[task_id]['total'] = total_images
     download_tasks[task_id]['downloaded'] = success_images
     download_tasks[task_id]['skipped_folders'] = skipped_folders
     download_tasks[task_id]['failed_dates'] = failed_dates
+    download_tasks[task_id]['failed_details'] = failed_details
 
 
 # ============== API 接口 ==============
 
 @app.route('/', methods=['GET'])
 def index():
-    """API首页"""
-    html = '''
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <meta charset="utf-8">
-        <title>淘股吧数据服务</title>
-        <style>
-            body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; max-width: 900px; margin: 50px auto; padding: 20px; }
-            h1 { color: #333; border-bottom: 2px solid #4CAF50; padding-bottom: 10px; }
-            .version { color: #666; font-size: 14px; }
-            .nav-links { margin: 30px 0; }
-            .nav-links a { display: inline-block; background: #4CAF50; color: white; padding: 12px 24px; margin-right: 10px; text-decoration: none; border-radius: 6px; font-weight: 600; }
-            .nav-links a:hover { background: #45a049; }
-            .nav-links a.secondary { background: #2196F3; }
-            .nav-links a.secondary:hover { background: #1976D2; }
-            table { width: 100%; border-collapse: collapse; margin-top: 20px; }
-            th, td { text-align: left; padding: 12px; border-bottom: 1px solid #ddd; }
-            th { background-color: #4CAF50; color: white; }
-            tr:hover { background-color: #f5f5f5; }
-            code { background-color: #f4f4f4; padding: 2px 6px; border-radius: 3px; color: #d63384; }
-            .method-get { color: #28a745; font-weight: bold; }
-            .method-post { color: #007bff; font-weight: bold; }
-        </style>
-    </head>
-    <body>
-        <h1>淘股吧数据服务</h1>
-        <p class="version">版本: 1.2.0</p>
-        
-        <div class="nav-links">
-            <a href="/hot">🔥 热门股追踪</a>
-            <a href="/api/files" class="secondary">📁 已下载文件</a>
-        </div>
-        
-        <h2>API接口</h2>
-        <table>
-            <tr><th>方法</th><th>路径</th><th>说明</th></tr>
-            <tr><td><span class="method-get">GET</span></td><td><code>/hot</code></td><td>热门股追踪页面</td></tr>
-            <tr><td><span class="method-get">GET</span></td><td><code>/api/articles</code></td><td>获取文章列表</td></tr>
-            <tr><td><span class="method-post">POST</span></td><td><code>/api/download</code></td><td>按日期范围下载图片<br><small>参数: start_date, end_date (格式: YYYY-MM-DD)</small></td></tr>
-            <tr><td><span class="method-post">POST</span></td><td><code>/api/download/sync</code></td><td>同步下载图片（阻塞式）</td></tr>
-            <tr><td><span class="method-get">GET</span></td><td><code>/api/status/&lt;task_id&gt;</code></td><td>查询下载任务状态</td></tr>
-            <tr><td><span class="method-get">GET</span></td><td><code>/api/files</code></td><td>查看已下载的文件列表</td></tr>
-            <tr><td><span class="method-get">GET</span></td><td><code>/api/files/&lt;date&gt;</code></td><td>查看指定日期的文件列表</td></tr>
-            <tr><td><span class="method-get">GET</span></td><td><code>/api/ocr/title</code></td><td>通过OCR查找"湖南人涨停复盘"标题图片<br><small>参数: date, keyword</small></td></tr>
-            <tr><td><span class="method-post">POST</span></td><td><code>/api/ocr/recognize</code></td><td>OCR识别图片文字<br><small>参数: image_path</small></td></tr>
-            <tr><td><span class="method-get">GET</span></td><td><code>/api/hot/track</code></td><td>热门股追踪数据<br><small>参数: start, end (格式: YYYYMMDD)</small></td></tr>
-            <tr><td><span class="method-get">GET</span></td><td><code>/api/hot/dates</code></td><td>获取已有数据的日期列表</td></tr>
-        </table>
-        
-        <h2>使用示例</h2>
-        <pre style="background:#f4f4f4;padding:15px;border-radius:5px;overflow-x:auto;">
-# 下载图片
-curl -X POST http://127.0.0.1:5000/api/download \\
-  -H "Content-Type: application/json" \\
-  -d '{"start_date":"2026-05-14","end_date":"2026-05-20"}'
+    """导航首页：更新数据 / 热门股追踪 / 盯盘(待开发)"""
+    return render_template('nav.html')
 
-# 查询任务状态
-curl http://127.0.0.1:5000/api/status/abc123
 
-# 热门股追踪
-curl "http://127.0.0.1:5000/api/hot/track?start=20260601&end=20260605"
-        </pre>
-    </body>
-    </html>
-    '''
-    return html
+@app.route('/update', methods=['GET'])
+def update_page():
+    """更新数据页面：按日期下载涨停复盘图片、查看已下载数据"""
+    return render_template('update.html')
 
 
 @app.route('/api/articles', methods=['GET'])
@@ -450,11 +482,14 @@ def download_by_date():
                 continue
             filtered.append(article)
         articles = filtered
-    
+
+    # 只保留A股交易日的文章（跳过周末/节假日等非交易日）
+    articles, _dropped_non_trading = filter_trading_articles(articles)
+
     if not articles:
         return jsonify({
             'success': False,
-            'error': '没有找到符合日期范围的文章'
+            'error': '没有找到符合条件的交易日文章'
         }), 404
     
     # 创建下载任务
@@ -528,11 +563,14 @@ def download_sync():
                 continue
             filtered.append(article)
         articles = filtered
-    
+
+    # 只保留A股交易日的文章（跳过周末/节假日等非交易日）
+    articles, _dropped_non_trading = filter_trading_articles(articles)
+
     if not articles:
         return jsonify({
             'success': False,
-            'error': '没有找到符合日期范围的文章'
+            'error': '没有找到符合条件的交易日文章'
         }), 404
     
     # 开始下载
@@ -634,13 +672,51 @@ def get_status(task_id):
         'total': task['total'],
         'downloaded': task['downloaded'],
         'articles_count': task['articles_count'],
-        'failed_dates': task.get('failed_dates', [])
+        'failed_dates': task.get('failed_dates', []),
+        'failed_details': task.get('failed_details', [])
     })
+
+
+def _parse_order_expected(folder_path):
+    """
+    解析 _order.txt，返回应存在的图片文件名列表（按顺序）。
+    格式: "01. n05q339s0imk.png"；无文件或无有效行返回 []。
+    """
+    order_file = os.path.join(folder_path, '_order.txt')
+    if not os.path.exists(order_file):
+        return []
+    expected = []
+    with open(order_file, 'r', encoding='utf-8') as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith('#'):
+                continue
+            m = re.match(r'^\d+\.\s*(\S+\.(?:png|jpg|jpeg|gif|webp))$', line, re.I)
+            if m:
+                expected.append(m.group(1))
+    return expected
+
+
+def _folder_completeness(folder_path, files):
+    """
+    依据 _order.txt 判断文件夹完整性。
+    返回: (status, expected_count, missing_list)
+      status: 'complete' 完整 | 'incomplete' 缺失 | 'unknown' 无_order.txt无法判断
+    """
+    expected = _parse_order_expected(folder_path)
+    if not expected:
+        # 无 _order.txt：只要有图片就视为未知（无法核对应有张数）
+        return ('unknown', None, [])
+    present = set(files)
+    missing = [name for name in expected if name not in present]
+    if missing:
+        return ('incomplete', len(expected), missing)
+    return ('complete', len(expected), [])
 
 
 @app.route('/api/files', methods=['GET'])
 def list_files():
-    """查看已下载的文件列表"""
+    """查看已下载的文件列表（含完整性状态）"""
     base_dir = 'dataresource'
     
     if not os.path.exists(base_dir):
@@ -657,9 +733,14 @@ def list_files():
         folder_path = os.path.join(base_dir, date_folder)
         if os.path.isdir(folder_path):
             files = [f for f in os.listdir(folder_path) if f.endswith(('.png', '.jpg', '.gif', '.webp'))]
+            status, expected_count, missing = _folder_completeness(folder_path, files)
             folders.append({
                 'date': date_folder,
                 'file_count': len(files),
+                'expected_count': expected_count,
+                'status': status,               # complete | incomplete | unknown
+                'missing_count': len(missing),
+                'missing': missing,
                 'files': files
             })
             total_files += len(files)

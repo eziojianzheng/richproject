@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AI看盘</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  :root {
+    --bg-body: #0f1115;
+    --bg-side: #14171d;
+    --bg-active: #1f232c;
+    --text-primary: #e6e6e6;
+    --text-secondary: #9aa0a6;
+    --text-muted: #6b7280;
+    --border-color: #2c313a;
+    --accent: #e63946;
+  }
+  html, body { height: 100%; }
+  body {
+    font-family: -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+    background: var(--bg-body); color: var(--text-primary);
+    display: flex; height: 100vh; overflow: hidden;
+  }
+
+  /* 左侧导航栏 */
+  .sidebar {
+    width: 220px; flex-shrink: 0; background: var(--bg-side);
+    border-right: 1px solid var(--border-color);
+    display: flex; flex-direction: column; padding: 20px 0;
+  }
+  .brand {
+    padding: 0 22px 20px; font-size: 20px; font-weight: 700; letter-spacing: 1px;
+    background: linear-gradient(135deg, #e63946, #b5179e);
+    -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent;
+  }
+  .nav-list { display: flex; flex-direction: column; gap: 4px; padding: 0 12px; }
+  .nav-item {
+    display: flex; align-items: center; gap: 11px;
+    padding: 11px 14px; border-radius: 8px; cursor: pointer;
+    color: var(--text-secondary); font-size: 14px; font-weight: 500;
+    border: none; background: none; text-align: left; width: 100%;
+    transition: background .15s, color .15s;
+  }
+  .nav-item .ico { font-size: 17px; width: 20px; text-align: center; }
+  .nav-item:hover:not(.disabled):not(.active) { background: var(--bg-active); color: var(--text-primary); }
+  .nav-item.active { background: var(--bg-active); color: var(--text-primary); box-shadow: inset 3px 0 0 var(--accent); }
+  .nav-item.disabled { cursor: not-allowed; color: var(--text-muted); }
+  .nav-item .tag {
+    margin-left: auto; font-size: 10px; padding: 2px 7px; border-radius: 999px;
+    background: rgba(155,160,166,.18); color: var(--text-muted);
+  }
+  .side-footer { margin-top: auto; padding: 14px 22px 0; font-size: 11px; color: var(--text-muted); }
+
+  /* 右侧内容区 */
+  .content { flex: 1; height: 100%; }
+  .content iframe { width: 100%; height: 100%; border: none; display: block; }
+</style>
+</head>
+<body>
+  <aside class="sidebar">
+    <div class="brand">AI 看盘</div>
+    <nav class="nav-list">
+      <button class="nav-item active" data-src="/update" onclick="nav(this)">
+        <span class="ico">🔄</span><span>数据同步</span>
+      </button>
+      <button class="nav-item" data-src="/hot" onclick="nav(this)">
+        <span class="ico">🔥</span><span>热门股复盘追踪</span>
+      </button>
+      <button class="nav-item disabled" title="功能开发中">
+        <span class="ico">👁️</span><span>盯盘</span><span class="tag">待开发</span>
+      </button>
+    </nav>
+    <div class="side-footer">淘股吧数据服务 · v1.3.0</div>
+  </aside>
+
+  <main class="content">
+    <iframe id="frame" src="/update" title="内容区"></iframe>
+  </main>
+
+<script>
+  function nav(el) {
+    if (el.classList.contains('disabled')) return;
+    document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+    el.classList.add('active');
+    document.getElementById('frame').src = el.dataset.src;
+  }
+</script>
+</body>
+</html>

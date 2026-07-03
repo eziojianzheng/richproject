@@ -1,0 +1,284 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>数据同步 · AI看盘</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  :root {
+    --bg-body: #0f1115;
+    --bg-card: #1a1d24;
+    --bg-input: #0f1115;
+    --text-primary: #e6e6e6;
+    --text-secondary: #9aa0a6;
+    --text-muted: #6b7280;
+    --border-color: #2c313a;
+    --accent: #e63946;
+    --ok: #2ea043;
+  }
+  body {
+    font-family: -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+    background: var(--bg-body); color: var(--text-primary); padding: 20px;
+  }
+  .wrap { max-width: 900px; margin: 0 auto; }
+  .topbar { display: flex; align-items: center; gap: 12px; margin-bottom: 20px; }
+  .topbar a.back { color: var(--text-secondary); text-decoration: none; font-size: 14px; }
+  .topbar a.back:hover { color: var(--accent); }
+  .topbar h1 { font-size: 20px; }
+  .card {
+    background: var(--bg-card); border: 1px solid var(--border-color);
+    border-radius: 12px; padding: 20px 22px; margin-bottom: 18px;
+  }
+  .card h2 { font-size: 15px; margin-bottom: 14px; color: var(--text-primary); }
+  .row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+  label { font-size: 13px; color: var(--text-secondary); }
+  input[type=date] {
+    background: var(--bg-input); border: 1px solid var(--border-color); color: var(--text-primary);
+    padding: 7px 10px; border-radius: 6px; font-size: 13px;
+  }
+  button {
+    background: var(--accent); color: #fff; border: none; padding: 8px 20px;
+    border-radius: 6px; font-size: 13px; cursor: pointer; font-weight: 600;
+  }
+  button:hover { background: #d62839; }
+  button:disabled { background: #555; cursor: not-allowed; }
+  button.today { background: transparent; border: 1px solid var(--accent); color: var(--accent); }
+  button.today:hover { background: rgba(230,57,70,.12); }
+  button.today:disabled { background: transparent; border-color: #555; color: #555; }
+  .hint { font-size: 12px; color: var(--text-muted); margin-top: 8px; }
+
+  .progress-wrap { margin-top: 16px; display: none; }
+  .progress-bar { background: #14171d; border-radius: 6px; height: 14px; overflow: hidden; border: 1px solid var(--border-color); }
+  .progress-fill { background: linear-gradient(90deg,#e63946,#b5179e); height: 100%; width: 0%; transition: width .3s; }
+  .status-line { font-size: 13px; color: var(--text-secondary); margin-top: 8px; }
+
+  .failed-box { margin-top: 16px; border: 1px solid #5a2a2f; border-radius: 8px; background: rgba(230,57,70,.06); padding: 12px 14px; }
+  .failed-title { font-size: 13px; font-weight: 600; color: #ff6b74; margin-bottom: 10px; }
+  .failed-item {
+    display: flex; align-items: center; gap: 12px; padding: 9px 0;
+    border-top: 1px solid var(--border-color);
+  }
+  .failed-item:first-of-type { border-top: none; }
+  .failed-info { display: flex; flex-direction: column; gap: 3px; flex: 1; min-width: 0; }
+  .failed-date { font-size: 13px; font-weight: 600; color: var(--text-primary); }
+  .failed-reason { font-size: 12px; color: var(--text-secondary); word-break: break-all; }
+  .redl { background: var(--accent); color: #fff; border: none; padding: 6px 14px; border-radius: 6px; font-size: 12px; cursor: pointer; font-weight: 600; flex-shrink: 0; }
+  .redl:hover { background: #d62839; }
+  .redl:disabled { background: #555; cursor: not-allowed; }
+
+  table { width: 100%; border-collapse: collapse; margin-top: 6px; font-size: 13px; }
+  th, td { text-align: left; padding: 9px 10px; border-bottom: 1px solid var(--border-color); }
+  th { color: var(--text-secondary); font-weight: 600; }
+  td .cnt { color: var(--ok); font-weight: 600; }
+  td .cnt-bad { color: #ff6b74; font-weight: 600; }
+  .st { font-size: 12px; padding: 2px 9px; border-radius: 999px; font-weight: 600; }
+  .st-ok { background: rgba(46,160,67,.15); color: #4ade80; }
+  .st-bad { background: rgba(230,57,70,.15); color: #ff6b74; }
+  .st-unknown { background: rgba(155,160,166,.15); color: var(--text-muted); }
+  .refresh { background: transparent; border: 1px solid var(--border-color); color: var(--text-secondary); padding: 6px 14px; }
+  .refresh:hover { background: #14171d; color: var(--text-primary); }
+  .empty { color: var(--text-muted); font-size: 13px; padding: 10px 0; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="topbar">
+    <h1>🔄 数据同步</h1>
+  </div>
+
+  <div class="card">
+    <h2>下载涨停复盘图片</h2>
+    <div class="row">
+      <label>开始日期 <input type="date" id="startDate"></label>
+      <label>结束日期 <input type="date" id="endDate"></label>
+      <label><input type="checkbox" id="skipExisting" checked> 跳过已存在</label>
+      <button id="btnDownload" onclick="startDownload()">开始下载</button>
+      <button id="btnToday" class="today" onclick="downloadToday()">只下载今日</button>
+    </div>
+    <div class="hint">留空则下载全部；数据源为淘股吧博客，按发布日期匹配。“只下载今日”将按当天日期抓取。</div>
+
+    <div class="progress-wrap" id="progressWrap">
+      <div class="progress-bar"><div class="progress-fill" id="progressFill"></div></div>
+      <div class="status-line" id="statusLine">准备中…</div>
+    </div>
+
+    <div class="failed-box" id="failedBox" style="display:none;">
+      <div class="failed-title">⚠ 下载失败</div>
+      <div id="failedList"></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="row" style="justify-content: space-between;">
+      <h2 style="margin:0;">已下载数据</h2>
+      <button class="refresh" onclick="loadFiles()">刷新</button>
+    </div>
+    <div id="filesBox"><div class="empty">加载中…</div></div>
+  </div>
+</div>
+
+<script>
+let pollTimer = null;
+
+function todayStr() {
+  const d = new Date();
+  const p = n => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+}
+
+function downloadToday() {
+  const t = todayStr();
+  document.getElementById('startDate').value = t;
+  document.getElementById('endDate').value = t;
+  startDownload();
+}
+
+async function startDownload() {
+  const start = document.getElementById('startDate').value;
+  const end = document.getElementById('endDate').value;
+  const skip = document.getElementById('skipExisting').checked;
+
+  const body = { skip_existing: skip };
+  if (start) body.start_date = start;
+  if (end) body.end_date = end;
+
+  setBusy(true);
+  document.getElementById('progressWrap').style.display = 'block';
+  renderFailures([]);
+  setProgress(0, '正在创建下载任务…');
+
+  try {
+    const resp = await fetch('/api/download', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const data = await resp.json();
+    if (!data.success) {
+      setProgress(0, '失败: ' + (data.error || '未知错误'));
+      setBusy(false);
+      return;
+    }
+    setProgress(2, `已创建任务 ${data.task_id}，共 ${data.articles_count} 篇，下载中…`);
+    pollStatus(data.task_id);
+  } catch (e) {
+    setProgress(0, '请求异常: ' + e.message);
+    setBusy(false);
+  }
+}
+
+function setBusy(busy) {
+  document.getElementById('btnDownload').disabled = busy;
+  document.getElementById('btnToday').disabled = busy;
+}
+
+function pollStatus(taskId) {
+  if (pollTimer) clearInterval(pollTimer);
+  pollTimer = setInterval(async () => {
+    try {
+      const resp = await fetch('/api/status/' + taskId);
+      const s = await resp.json();
+      if (!s.success) return;
+      setProgress(s.progress, `状态: ${s.status} · 进度 ${s.progress}% · 已下载 ${s.downloaded} 张`);
+      if (s.status === 'completed') {
+        clearInterval(pollTimer);
+        let msg = `完成 · 共 ${s.total} 张，已下载 ${s.downloaded} 张`;
+        if (s.failed_dates && s.failed_dates.length) msg += ` · 失败 ${s.failed_dates.length} 个日期`;
+        setProgress(100, msg);
+        renderFailures(s.failed_details || []);
+        setBusy(false);
+        loadFiles();
+      }
+    } catch (e) { /* 忽略单次轮询错误 */ }
+  }, 1200);
+}
+
+function setProgress(pct, text) {
+  document.getElementById('progressFill').style.width = pct + '%';
+  document.getElementById('statusLine').textContent = text;
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, c => (
+    { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
+  ));
+}
+
+function renderFailures(details) {
+  const box = document.getElementById('failedBox');
+  const list = document.getElementById('failedList');
+  if (!details || !details.length) {
+    box.style.display = 'none';
+    list.innerHTML = '';
+    return;
+  }
+  box.style.display = 'block';
+  list.innerHTML = details.map(d => `
+    <div class="failed-item">
+      <div class="failed-info">
+        <span class="failed-date">${escapeHtml(d.date)}</span>
+        <span class="failed-reason">${escapeHtml(d.reason || '未知原因')}</span>
+      </div>
+      <button class="redl" onclick="redownload('${escapeHtml(d.date)}')">再次下载</button>
+    </div>`).join('');
+}
+
+// 对某个失败日期触发"当日再次下载"（强制不跳过已存在）
+function redownload(dateFolder) {
+  // 20260701 -> 2026-07-01
+  const t = /^\d{8}$/.test(dateFolder)
+    ? `${dateFolder.slice(0,4)}-${dateFolder.slice(4,6)}-${dateFolder.slice(6,8)}`
+    : dateFolder;
+  document.getElementById('startDate').value = t;
+  document.getElementById('endDate').value = t;
+  document.getElementById('skipExisting').checked = false;  // 失败重试：强制重新下载
+  startDownload();
+}
+
+async function loadFiles() {
+  const box = document.getElementById('filesBox');
+  try {
+    const resp = await fetch('/api/files');
+    const data = await resp.json();
+    const folders = data.folders || [];
+    if (!folders.length) {
+      box.innerHTML = '<div class="empty">暂无已下载数据</div>';
+      return;
+    }
+    let incompleteCount = 0;
+    let html = `<table><thead><tr><th>日期</th><th>图片数</th><th>状态</th><th></th></tr></thead><tbody>`;
+    for (const f of folders) {
+      let statusHtml, actionHtml = '';
+      if (f.status === 'incomplete') {
+        incompleteCount++;
+        statusHtml = `<span class="st st-bad">缺失 ${f.missing_count} 张 / 应有 ${f.expected_count}</span>`;
+        actionHtml = `<button class="redl" onclick="redownload('${f.date}')">重试</button>`;
+      } else if (f.status === 'complete') {
+        statusHtml = `<span class="st st-ok">完整 (${f.expected_count})</span>`;
+      } else {
+        statusHtml = `<span class="st st-unknown">未知(无清单)</span>`;
+        actionHtml = `<button class="redl" onclick="redownload('${f.date}')">重试</button>`;
+      }
+      const cntCls = f.status === 'incomplete' ? 'cnt-bad' : 'cnt';
+      html += `<tr>
+        <td>${f.date}</td>
+        <td><span class="${cntCls}">${f.file_count}</span> 张</td>
+        <td>${statusHtml}</td>
+        <td style="text-align:right;">${actionHtml}</td>
+      </tr>`;
+    }
+    html += `</tbody></table>`;
+    html += `<div class="hint">共 ${folders.length} 个日期 · ${data.total_files} 张图片`
+      + (incompleteCount ? ` · <span style="color:#ff6b74;">${incompleteCount} 个不完整</span>` : '')
+      + `</div>`;
+    box.innerHTML = html;
+  } catch (e) {
+    box.innerHTML = '<div class="empty">加载失败: ' + e.message + '</div>';
+  }
+}
+
+loadFiles();
+</script>
+</body>
+</html>
