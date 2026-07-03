@@ -141,6 +141,27 @@ def read_day_stocks_db(date8):
     return out
 
 
+def read_daily_stats_db():
+    """读取 zt_daily 涨跌家数/成交额, 返回 {YYYYMMDD: {up_count, down_count, total_amount}}"""
+    try:
+        conn = _dbmod.get_conn()
+    except Exception as e:
+        print(f'读取涨跌家数失败: {e}')
+        return {}
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT to_char(trade_date,'YYYYMMDD'), up_count, down_count, total_amount FROM zt_daily")
+            out = {}
+            for d, u, dn, amt in cur.fetchall():
+                out[d] = {
+                    'up_count': u, 'down_count': dn,
+                    'total_amount': float(amt) if amt is not None else None,
+                }
+            return out
+    finally:
+        conn.close()
+
+
 # ============== 连扳数解析 ==============
 
 def parse_lianban(lianban):
@@ -592,9 +613,11 @@ def track_hot_stocks(start, end, sort='stock_count', with_price=True,
 
     # === 阶段1: 逐日载入数据 + 按入榜规则加入板块/个股 ===
     _report('build', f'开始载入数据 (来源: {"数据库" if source == "db" else "Excel"})，共 {len(dates)} 个交易日', 0, len(dates))
-    daily = {}  # date -> block -> list[stock]
+    daily = {}      # date -> block -> list[stock] (已排除市场连板股)
+    daily_all = {}  # date -> 原始所有个股(含市场连板股), 用于左侧高位股统计
     for i, d in enumerate(dates):
         rows = read_day_stocks_db(d) if source == 'db' else parse_excel_04(all_files[d])
+        daily_all[d] = rows
         bmap = {}
         for s in rows:
             blk = s['概念板块']
@@ -624,6 +647,11 @@ def track_hot_stocks(start, end, sort='stock_count', with_price=True,
                 for s in daily[d].get(blk, []):
                     if stock_qualifies(s):
                         all_codes.add(s['代码'])
+        # 左侧列需要3板+高位股(及其次日断板)的涨幅, 一并预取
+        for d in dates:
+            for r in daily_all[d]:
+                if parse_lianban(r['连扳数']).get('current', 0) >= 3:
+                    all_codes.add(r['代码'])
         
         fetch_report = None
         if all_codes and dates:
@@ -830,6 +858,49 @@ def track_hot_stocks(start, end, sort='stock_count', with_price=True,
             'stocks': stocks_series,
         })
 
+    # === 左侧汇总列: 每日涨跌数 + 3板及以上高位股 + 昨日高位今日断板 ===
+    daily_stats = read_daily_stats_db()
+    date_summary = {}
+    prev_high = None  # 上一交易日的3板+个股(用于断板追踪)
+    for d in dates:
+        # 汇总当日每只票(取最大连板; 概念优先非市场连板股)
+        info = {}
+        for r in daily_all.get(d, []):
+            code = r['代码']
+            cur = parse_lianban(r['连扳数']).get('current', 0)
+            blk = r['概念板块']
+            e = info.get(code)
+            if e is None:
+                info[code] = {'code': code, 'name': r['名称'], 'lianban': r['连扳数'],
+                              'current': cur, 'block': blk}
+            else:
+                if cur > e['current']:
+                    e['current'] = cur
+                    e['lianban'] = r['连扳数']
+                if blk != '市场连板股' and e['block'] == '市场连板股':
+                    e['block'] = blk
+        high = sorted([v for v in info.values() if v['current'] >= 3],
+                      key=lambda x: -x['current'])
+        # 断板: 昨日3板+今日不在涨停列表(未涨停)
+        broken = []
+        if prev_high is not None:
+            today_codes = set(info.keys())
+            for pc in prev_high:
+                if pc['code'] not in today_codes:
+                    pct = get_pct_change(pc['code'], d) if with_price else None
+                    broken.append({'code': pc['code'], 'name': pc['name'],
+                                   'block': pc['block'], 'pct': pct})
+        stats = daily_stats.get(d, {})
+        date_summary[d] = {
+            'up_count': stats.get('up_count'),
+            'down_count': stats.get('down_count'),
+            'total_amount': stats.get('total_amount'),
+            'high_stocks': [{'code': v['code'], 'name': v['name'],
+                             'lianban': v['lianban'], 'block': v['block']} for v in high],
+            'broken_stocks': broken,
+        }
+        prev_high = high
+
     _report('done', f'计算完成: {len(selected_blocks)} 个板块, {len(dates)} 个交易日', len(dates), len(dates))
     return {
         'start': start,
@@ -838,6 +909,7 @@ def track_hot_stocks(start, end, sort='stock_count', with_price=True,
         'dates': dates,
         'by_date': by_date,
         'blocks_summary': blocks_summary,
+        'date_summary': date_summary,
         'fetch_report': fetch_report,
     }
 

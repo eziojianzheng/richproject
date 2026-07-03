@@ -18,6 +18,7 @@ import requests
 from bs4 import BeautifulSoup
 import os
 import re
+import json
 import time
 from datetime import datetime, timedelta
 import threading
@@ -107,6 +108,31 @@ submit_tasks = {}
 
 # 热门股计算任务状态
 hot_tasks = {}
+
+# 最近一次热门股计算结果(服务端持久化, 刷新后恢复, 不受浏览器localStorage配额限制)
+hot_last = None
+HOT_LAST_FILE = '.hot_last_result.json'
+
+
+def _save_hot_last():
+    try:
+        with open(HOT_LAST_FILE, 'w', encoding='utf-8') as f:
+            json.dump(hot_last, f, ensure_ascii=False)
+    except Exception as e:
+        print(f'保存热门股结果缓存失败: {e}')
+
+
+def _load_hot_last():
+    global hot_last
+    try:
+        if os.path.exists(HOT_LAST_FILE):
+            with open(HOT_LAST_FILE, 'r', encoding='utf-8') as f:
+                hot_last = json.load(f)
+    except Exception:
+        hot_last = None
+
+
+_load_hot_last()  # 启动时载入上次计算结果
 
 
 def get_article_list(user_id='444409'):
@@ -1436,10 +1462,28 @@ def hot_compute_task(task_id, start, end, with_price):
         t['result'] = final
         t['status'] = 'completed'
         t['progress'] = 100
+        # 服务端持久化最近结果(供刷新恢复)
+        global hot_last
+        hot_last = {'start': start, 'end': end, 'price': with_price,
+                    'saved_at': time.time(), 'result': final}
+        _save_hot_last()
     except Exception as e:
         t['status'] = 'failed'
         t['error'] = str(e)
         t['logs'].append({'stage': 'error', 'msg': f'计算失败: {e}', 'cur': None, 'total': None})
+
+
+@app.route('/api/hot/last', methods=['GET'])
+def api_hot_last():
+    """返回最近一次计算结果(服务端缓存, 刷新恢复用)。无则 has=false。"""
+    if not hot_last or not hot_last.get('result'):
+        return jsonify({'success': True, 'has': False})
+    return jsonify({
+        'success': True, 'has': True,
+        'start': hot_last.get('start'), 'end': hot_last.get('end'),
+        'price': hot_last.get('price', True), 'saved_at': hot_last.get('saved_at'),
+        'result': hot_last['result'],
+    })
 
 
 @app.route('/api/hot/compute', methods=['POST'])

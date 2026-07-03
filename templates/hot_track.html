@@ -152,6 +152,30 @@
   .date-label { font-size: 13px; font-weight: 700; color: #ffd166; }
   .date-sub { font-size: 10px; color: var(--text-muted); }
 
+  /* 左侧列1: 涨跌数 */
+  .col-updown {
+    flex: 0 0 66px; display: flex; flex-direction: column; gap: 3px; justify-content: center;
+    padding-right: 8px; border-right: 1px solid var(--border-light); font-size: 12px;
+  }
+  .col-updown .ud-up { color: #ff6b6b; font-weight: 700; }
+  .col-updown .ud-dn { color: #4dd07a; font-weight: 700; }
+  .col-updown .ud-amt { color: var(--text-muted); font-size: 10px; }
+  .col-updown.ud-red { background: rgba(230,57,70,0.18); border-radius: 6px; padding: 4px 6px; box-shadow: inset 0 0 0 1px rgba(230,57,70,0.5); }
+  /* 左侧列2: 3板+高位股 / 昨日断板 */
+  .col-high {
+    flex: 0 0 158px; max-height: 160px; overflow-y: auto;
+    padding-right: 8px; border-right: 1px solid var(--border-light); font-size: 11px;
+  }
+  .col-high .hi-title { color: var(--text-secondary); font-weight: 600; margin-bottom: 3px; }
+  .col-high .hi-sep { color: #eab308; font-weight: 600; margin: 5px 0 3px; border-top: 1px dashed var(--border-light); padding-top: 3px; }
+  .col-high .hi-item { line-height: 1.55; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .col-high .hi-lb { color: #ff6b6b; font-weight: 700; }
+  .col-high .hi-blk { color: var(--text-muted); margin-left: 3px; }
+  .col-high .hi-empty { color: var(--text-muted); }
+  .col-high .hi-item.broken { color: var(--text-secondary); }
+  .col-high::-webkit-scrollbar { width: 6px; }
+  .col-high::-webkit-scrollbar-thumb { background: var(--scrollbar-bg); border-radius: 3px; }
+
   /* 板块横向滚动 */
   .blocks-scroll {
     flex: 1 1 auto; display: flex; gap: 12px; overflow-x: auto;
@@ -1055,11 +1079,39 @@ function renderRow(day, order){
   }).join('');
 
   const activeBlocks = day.blocks.filter(b => (b.active_count || 0) > 0).length;
+
+  // 左侧列1: 涨跌数(极端行情标红)
+  const sum = (DATA.date_summary && DATA.date_summary[day.date]) || {};
+  const up = sum.up_count, dn = sum.down_count;
+  let udCls = '';
+  if(up != null && dn != null && ((up > 3000 && dn < 2000) || (dn > 3000 && up < 2000))) udCls = 'ud-red';
+  const amt = (sum.total_amount != null) ? `<div class="ud-amt">${sum.total_amount}亿</div>` : '';
+  const col1 = `<div class="col-updown ${udCls}">
+      <div class="ud-up">↑ ${up != null ? up : '—'}</div>
+      <div class="ud-dn">↓ ${dn != null ? dn : '—'}</div>${amt}
+    </div>`;
+
+  // 左侧列2: 3板+高位股 + 昨日断板(涨跌幅按统计色)
+  const highs = (sum.high_stocks || []).map(s =>
+    `<div class="hi-item" title="${s.name} ${s.lianban} ${s.block}"><span class="hi-lb">${s.lianban}</span> ${s.name}<span class="hi-blk">${s.block}</span></div>`).join('');
+  const brokens = (sum.broken_stocks || []).map(s => {
+    const cls = pctClass(s.pct);
+    const ptxt = (typeof s.pct === 'number') ? ((s.pct > 0 ? '+' : '') + s.pct.toFixed(1) + '%') : '—';
+    return `<div class="hi-item broken" title="断板 ${s.name} ${s.block}">断 ${s.name}<span class="hi-blk">${s.block}</span> <span class="${cls}">${ptxt}</span></div>`;
+  }).join('');
+  const col2 = `<div class="col-high">
+      <div class="hi-title">3板+ (${(sum.high_stocks || []).length})</div>
+      ${highs || '<div class="hi-empty">无</div>'}
+      ${brokens ? '<div class="hi-sep">昨断板</div>' + brokens : ''}
+    </div>`;
+
   return `<div class="date-row">
     <div class="date-head">
       <div class="date-label">${fmtDate(day.date)}</div>
       <div class="date-sub">${activeBlocks} 板块</div>
     </div>
+    ${col1}
+    ${col2}
     <div class="blocks-scroll">${cards}</div>
   </div>`;
 }
@@ -1397,8 +1449,9 @@ async function populateDates(){
       if(saved.start && dates.includes(saved.start)) startSel.value = saved.start;
       if(saved.end && dates.includes(saved.end)) endSel.value = saved.end;
     }catch(e){}
-    // 尝试恢复上次计算结果(刷新后仍在); 恢复不到再显示提示
-    if(!restoreLastResult()){
+    // 尝试恢复上次计算结果: 先服务端(不受配额限制), 再本地缓存
+    const restored = await restoreServerResult();
+    if(!restored && !restoreLastResult()){
       document.getElementById('meta').innerHTML =
         `<span style="color:var(--text-muted)">可选范围 ${dates[0]} ~ ${dates[dates.length-1]}，选择后点击「计算」</span>`;
     }
@@ -1407,7 +1460,25 @@ async function populateDates(){
   }
 }
 
-// 计算结果本地缓存(刷新后恢复)
+// 从服务端恢复最近一次计算结果(大结果不受浏览器配额限制)
+async function restoreServerResult(){
+  try{
+    const j = await (await fetch('/api/hot/last')).json();
+    if(!j.success || !j.has || !j.result || !j.result.dates) return false;
+    DATA = j.result;
+    const startSel = document.getElementById('start'), endSel = document.getElementById('end');
+    if(j.start && [...startSel.options].some(o=>o.value===j.start)) startSel.value = j.start;
+    if(j.end && [...endSel.options].some(o=>o.value===j.end)) endSel.value = j.end;
+    if(typeof j.price === 'boolean') document.getElementById('price').checked = j.price;
+    render();
+    const when = j.saved_at ? new Date(j.saved_at*1000).toLocaleString() : '';
+    document.getElementById('meta').innerHTML =
+      `<span style="color:var(--text-muted)">已恢复上次计算结果 (${j.start}~${j.end}${when?'，'+when:''})，如需最新请点「计算」</span>`;
+    return true;
+  }catch(e){ return false; }
+}
+
+// 计算结果本地缓存(刷新后恢复, 作为服务端缓存的补充)
 const RESULT_KEY = 'hotTrackResult';
 function saveResult(){
   try{
