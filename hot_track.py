@@ -26,6 +26,9 @@ try:
 except Exception:
     pass
 
+import logging as _logging
+_ht_logger = _logging.getLogger('ai_kanpan')
+
 import os
 import re
 import glob
@@ -372,7 +375,7 @@ def fetch_range_akshare(code, start, end):
                         below_ma10 = close_today < ma10
                         cache[f'{code}_{date_str}_below_ma10'] = below_ma10
                     else:
-                        # 数据不足10天，不判断
+                        cache[f'{code}_{date_str}_ma10'] = None
                         cache[f'{code}_{date_str}_below_ma10'] = False
                 except:
                     pass
@@ -416,6 +419,10 @@ def fetch_range_mootdx(code, start, end):
     返回: True 成功 / False 失败
     """
     try:
+        # 北交所(8开头)mootdx std市场不支持, 直接返回False
+        if code.startswith('8'):
+            print(f"mootdx {code} 北交所股票, 跳过")
+            return 'bse'  # 特殊返回值区分原因
         client = _get_tdx_client()
         offset = _mootdx_offset(start)
         df = client.bars(symbol=code, frequency=9, offset=offset)  # 9=日线
@@ -449,6 +456,7 @@ def fetch_range_mootdx(code, start, end):
                     cache[f'{code}_{dstr}_ma10'] = round(ma10, 2)
                     cache[f'{code}_{dstr}_below_ma10'] = closes[i] < ma10
                 else:
+                    cache[f'{code}_{dstr}_ma10'] = None
                     cache[f'{code}_{dstr}_below_ma10'] = False
             _save_price_cache()
         return True
@@ -457,9 +465,71 @@ def fetch_range_mootdx(code, start, end):
         return False
 
 
+def fetch_range_local_tdx(code, start, end):
+    """
+    连接本地通达信客户端(127.0.0.1:7709)拉取日线数据。
+    作为 mootdx 标准服务器失败后的备用数据源。
+    返回: True 成功 / False 失败
+    """
+    try:
+        from mootdx.quotes import Quotes
+        client = Quotes.factory(market='std', host='127.0.0.1', port=7709)
+        offset = _mootdx_offset(start)
+        df = client.bars(symbol=code, frequency=9, offset=offset)
+        if df is None or len(df) == 0:
+            print(f"本地通达信 {code} 无数据")
+            return False
+
+        df = df.sort_index()
+        closes = [float(x) for x in df['close'].tolist()]
+        dates = [str(idx)[:10].replace('-', '') for idx in df.index]
+
+        cache = _load_price_cache()
+        with _cache_lock:
+            n = len(closes)
+            for i in range(n):
+                dstr = dates[i]
+                if i > 0 and closes[i - 1] > 0:
+                    cache[f'{code}_{dstr}'] = round((closes[i] - closes[i - 1]) / closes[i - 1] * 100, 2)
+                if i > 0:
+                    j20 = max(0, i - 19)
+                    if closes[j20] > 0:
+                        cache[f'{code}_{dstr}_20d'] = round((closes[i] - closes[j20]) / closes[j20] * 100, 2)
+                    j60 = max(0, i - 59)
+                    if closes[j60] > 0:
+                        cache[f'{code}_{dstr}_60d'] = round((closes[i] - closes[j60]) / closes[j60] * 100, 2)
+                if i >= 9:
+                    ma10 = sum(closes[i - 9:i + 1]) / 10
+                    cache[f'{code}_{dstr}_ma10'] = round(ma10, 2)
+                    cache[f'{code}_{dstr}_below_ma10'] = closes[i] < ma10
+                else:
+                    cache[f'{code}_{dstr}_ma10'] = None
+                    cache[f'{code}_{dstr}_below_ma10'] = False
+            _save_price_cache()
+        return True
+    except Exception as e:
+        print(f"本地通达信获取{code}失败: {e}")
+        return False
+
+
 def fetch_range(code, start, end):
-    """获取个股涨幅数据, 使用通达信 mootdx (TCP)"""
-    return fetch_range_mootdx(code, start, end)
+    """获取个股涨幅数据: 优先 mootdx 远程 -> 失败则尝试本地通达信 -> 仍失败返回 False"""
+    _ht_logger.debug(f'fetch_range {code} {start}~{end}')
+    result = fetch_range_mootdx(code, start, end)
+    if result is True:
+        _ht_logger.debug(f'fetch_range {code} mootdx成功')
+        return True
+    if result == 'bse':
+        _ht_logger.debug(f'fetch_range {code} 北交所跳过')
+        return False
+    _ht_logger.debug(f'fetch_range {code} mootdx失败, 尝试本地通达信')
+    print(f"{code} mootdx远程失败, 尝试本地通达信...")
+    if fetch_range_local_tdx(code, start, end):
+        _ht_logger.debug(f'fetch_range {code} 本地通达信成功')
+        return True
+    _ht_logger.warning(f'fetch_range {code} 全部失败')
+    print(f"{code} 本地通达信也失败, 无法获取数据")
+    return False
 
 
 def get_pct_change(code, date):
@@ -520,8 +590,14 @@ def prefetch_prices(codes, start, end, progress=None, check_dates=None):
             current += timedelta(days=1)
 
     # 逐个交易日核对: 任一交易日缺 pct 或 MA10 即需要重取
+    # 注意: 已标记为无数据(cache['{c}_no_data']=True)的票跳过重拉, 但仍加入 failed 列表
     need_fetch = []
+    known_no_data = []  # 上次已确认无数据的票
+    _ht_logger.debug(f'prefetch_prices 共 {len(codes)} 只, 日期 {start}~{end}')
     for c in codes:
+        if cache.get(f'{c}_no_data'):
+            known_no_data.append({'code': c, 'reason': cache.get(f'{c}_no_data_reason', '无数据')})
+            continue
         incomplete = any((f'{c}_{d}' not in cache) or (f'{c}_{d}_ma10' not in cache)
                          for d in query_dates)
         if incomplete:
@@ -530,10 +606,17 @@ def prefetch_prices(codes, start, end, progress=None, check_dates=None):
     total_codes = len(codes)
     cached_cnt = total_codes - len(need_fetch)
     if not need_fetch:
+        _ht_logger.debug(f'prefetch_prices 全部命中缓存 {total_codes} 只')
         print(f"所有 {total_codes} 只股票涨幅数据已缓存")
         _report('price', f'行情已全部缓存 ({total_codes} 只)', total_codes, total_codes)
-        return {'success': total_codes, 'failed': [], 'total': total_codes}
+        all_failed = known_no_data
+        if all_failed:
+            print(f"以下 {len(all_failed)} 只股票无法获取行情数据(将显示为空):")
+            for f in all_failed:
+                print(f"  {f['code']} - {f['reason']}")
+        return {'success': total_codes - len(known_no_data), 'failed': all_failed, 'total': total_codes}
 
+    _ht_logger.debug(f'prefetch_prices 需拉取 {len(need_fetch)} 只, 已缓存 {cached_cnt} 只, known_no_data {len(known_no_data)} 只')
     print(f"需要获取 {len(need_fetch)} 只股票的涨幅数据...")
     import time
     success_list = []
@@ -541,31 +624,136 @@ def prefetch_prices(codes, start, end, progress=None, check_dates=None):
 
     for i, c in enumerate(need_fetch):
         try:
-            if fetch_range(c, start, end):
-                success_list.append(c)
-            else:
-                failed_list.append({'code': c, 'reason': '无数据返回'})
-            time.sleep(0.05)  # mootdx TCP, 轻微节流
+            ok = fetch_range(c, start, end)
         except Exception as e:
             print(f"获取 {c} 失败: {e}")
+            ok = False
             failed_list.append({'code': c, 'reason': str(e)})
             time.sleep(0.2)
+        else:
+            time.sleep(0.05)
+        if ok:
+            success_list.append(c)
+        else:
+            # 拉取失败: 写 _no_data 标记避免完整性检查反复重拉, 同时保留在 failed 列表中
+            reason = next((f['reason'] for f in failed_list if f['code'] == c), '无数据返回')
+            _cache = _load_price_cache()
+            with _cache_lock:
+                _cache[f'{c}_no_data'] = True
+                _cache[f'{c}_no_data_reason'] = reason
+                # 同时写 None 占位避免其他地方的 key-not-in 检查
+                for _d in query_dates:
+                    for _sfx in ('', '_ma10', '_below_ma10', '_20d', '_60d'):
+                        k = f'{c}_{_d}{_sfx}'
+                        if k not in _cache:
+                            _cache[k] = None
+                _save_price_cache()
+            if not any(f['code'] == c for f in failed_list):
+                failed_list.append({'code': c, 'reason': reason})
         _report('price', f'获取行情 {i + 1}/{len(need_fetch)} (代码 {c})',
                 cached_cnt + i + 1, total_codes)
         if (i + 1) % 20 == 0:
             print(f"已处理 {i + 1}/{len(need_fetch)}，成功 {len(success_list)}")
     
     print(f"完成: 成功获取 {len(success_list)}/{len(need_fetch)} 只股票数据")
-    
+    all_failed = known_no_data + failed_list
+    if all_failed:
+        print(f"以下 {len(all_failed)} 只股票无法获取行情数据(将显示为空):")
+        for f in all_failed:
+            print(f"  {f['code']} - {f['reason']}")
+
     return {
         'success': len(success_list),
-        'failed': failed_list,
+        'failed': all_failed,
         'total': len(need_fetch),
-        'cached': len(codes) - len(need_fetch)
+        'cached': len(codes) - len(need_fetch) - len(known_no_data)
     }
 
 
-# ============== 主统计逻辑 ==============
+def apply_removal_rules(data, progress=None):
+    """
+    对已有的 track_hot_stocks 结果应用移除规则。
+    直接在内存中操作, 不重新读库/拉行情。
+    返回: 修改后的 data（原地修改 by_date 中的 stocks 列表）
+    """
+    _report = progress if callable(progress) else (lambda *a, **k: None)
+    dates = data.get('dates', [])
+    date_pos = {dd: i for i, dd in enumerate(dates)}
+    by_date = data.get('by_date', [])
+
+    # 重建 block_cum_stocks 结构（从 by_date 反推）
+    block_cum = {}  # block -> {code: stock_item}
+    for day in by_date:
+        for b in day.get('blocks', []):
+            blk = b['block']
+            if blk not in block_cum:
+                block_cum[blk] = {}
+            for s in b.get('stocks', []):
+                if s['code'] not in block_cum[blk]:
+                    block_cum[blk][s['code']] = s
+
+    # 应用移除规则
+    for blk, stocks_map in block_cum.items():
+        for code, st in stocks_map.items():
+            st.pop('warn_date', None)
+            st.pop('remove_date', None)
+            st.pop('remove_reason', None)
+
+    for d in dates:
+        di = date_pos.get(d)
+        for blk, stocks_map in block_cum.items():
+            for code, st in stocks_map.items():
+                if st.get('remove_date'):
+                    continue
+                # 只从个股入选日(first_date)起才开始检查跌破10日线
+                # 否则会在个股尚未入选时就因历史价格数据触发预警/移除, 导致漏票
+                if st.get('first_date', '') > d:
+                    continue
+                track = st.get('track', {}).get(d)
+                if not track:
+                    continue
+                pct = track.get('pct')
+                is_kcb_cyb = st.get('is_kcb_cyb', False)
+                is_limit_up = False
+                if pct is not None:
+                    is_limit_up = pct >= 19.4 if is_kcb_cyb else pct >= 9.8
+                if '一字板' in (track.get('desc', '') or ''):
+                    is_limit_up = True
+                below = (track.get('below_ma10') == True) and not is_limit_up
+                if below:
+                    if st.get('warn_date') is None:
+                        st['warn_date'] = d
+                    wi = date_pos.get(st['warn_date'])
+                    if wi is not None and di is not None and (di - wi + 1) >= 3:
+                        st['remove_date'] = d
+                        st['remove_reason'] = '跌破10日线第三日未收回'
+                else:
+                    st['warn_date'] = None
+        _report('remove', f'{d}: 移除规则处理完成', dates.index(d) + 1, len(dates))
+
+    # 更新 by_date 中每天的 stocks 列表(过滤已移除的票)
+    # 必须以 block_cum 为准遍历所有累积票，而不是 b['stocks']（后者可能只是当天子集）
+    for day in by_date:
+        d = day['date']
+        for b in day.get('blocks', []):
+            blk = b['block']
+            active, removed_today = [], []
+            for st in block_cum.get(blk, {}).values():
+                # 只显示 first_date <= 当天 的票（还未入选的不显示）
+                if st.get('first_date', '') > d:
+                    continue
+                remove_date = st.get('remove_date')
+                if remove_date is None or d < remove_date:
+                    active.append(st)
+                elif remove_date == d:
+                    active.append(st)
+                    removed_today.append(st['code'])
+            b['stocks'] = active
+            b['active_count'] = len(active)
+            b['removed_today'] = removed_today
+
+    return data
+
 
 def track_hot_stocks(start, end, sort='stock_count', with_price=True,
                      excel_dir=EXCEL_DIR, progress=None, source='db',
@@ -725,24 +913,45 @@ def track_hot_stocks(start, end, sort='stock_count', with_price=True,
         block_cum_stocks[blk] = []
         block_seen_codes[blk] = set()
         block_removed_stocks[blk] = {}
+    block_is_dormant = {blk: False for blk in selected_blocks}  # 板块是否休眠(所有票已移除)
 
     for d in dates:
         day_blocks = []
         for blk in selected_blocks:
-            # 把当天该板块"新入选"的票累加进累积列表
-            for s in daily[d].get(blk, []):
-                code = s['代码']
-                if code in block_seen_codes[blk]:
-                    continue
-                if stock_qualifies(s):
-                    block_seen_codes[blk].add(code)
-                    block_cum_stocks[blk].append({
-                        'code': code,
-                        'name': s['名称'],
-                        'is_kcb_cyb': is_kcb_cyb(code),
-                        'first_date': d,
-                        'track': build_track(blk, code),
-                    })
+            blk_stocks = daily[d].get(blk, [])
+            is_dormant = block_is_dormant[blk]
+
+            if is_dormant:
+                # 休眠板块: 需 block_qualifies(连板>=2 / X/Y天Z板 / 9:25) 才能重新唤醒
+                candidates = [s for s in blk_stocks if s['代码'] not in block_seen_codes[blk]]
+                if candidates and block_qualifies(candidates):
+                    # 唤醒成功: 加入所有满足 stock_qualifies 的票
+                    for s in candidates:
+                        if stock_qualifies(s):
+                            code = s['代码']
+                            block_seen_codes[blk].add(code)
+                            block_cum_stocks[blk].append({
+                                'code': code,
+                                'name': s['名称'],
+                                'is_kcb_cyb': is_kcb_cyb(code),
+                                'first_date': d,
+                                'track': build_track(blk, code),
+                            })
+            else:
+                # 活跃板块: 按 stock_qualifies 正常加入新票
+                for s in blk_stocks:
+                    code = s['代码']
+                    if code in block_seen_codes[blk]:
+                        continue
+                    if stock_qualifies(s):
+                        block_seen_codes[blk].add(code)
+                        block_cum_stocks[blk].append({
+                            'code': code,
+                            'name': s['名称'],
+                            'is_kcb_cyb': is_kcb_cyb(code),
+                            'first_date': d,
+                            'track': build_track(blk, code),
+                        })
             
             cum = block_cum_stocks[blk]
             
@@ -797,6 +1006,8 @@ def track_hot_stocks(start, end, sort='stock_count', with_price=True,
             # 计算板块是否即将移除（所有股票都已移除）
             all_removed = len(cum) > 0 and len(active_stocks) == len([st for st in cum if st.get('remove_date')])
             block_removing = all_removed and len(removed_today) > 0
+            # 更新板块休眠状态: 所有票已移除且不再显示 → 进入休眠
+            block_is_dormant[blk] = (len(active_stocks) == 0 and len(cum) > 0)
             
             # 任何入选过的板块每天都显示(含累积阵容为空的早期日期), 保证列纵向对齐
             new_today = sum(1 for st in cum if st['first_date'] == d)

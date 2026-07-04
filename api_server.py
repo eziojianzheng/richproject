@@ -5,6 +5,23 @@
 提供按日期范围下载湖南人涨停复盘图片的接口
 """
 
+# ============== 调试日志 ==============
+# 正式使用时设为 False，_dlog 变成空函数，零性能开销
+DEBUG_MODE = True
+
+import logging as _logging
+_dbg_logger = _logging.getLogger('ai_kanpan')
+if DEBUG_MODE:
+    _dbg_handler = _logging.FileHandler('_debug.log', encoding='utf-8')
+    _dbg_handler.setFormatter(_logging.Formatter('%(asctime)s [%(levelname)s] %(message)s', '%H:%M:%S'))
+    _dbg_logger.addHandler(_dbg_handler)
+    _dbg_logger.setLevel(_logging.DEBUG)
+
+def _dlog(msg, level='DEBUG'):
+    if not DEBUG_MODE:
+        return
+    getattr(_dbg_logger, level.lower(), _dbg_logger.debug)(msg)
+
 # 启动时自动检测并安装缺失依赖
 from bootstrap import ensure_dependencies
 ensure_dependencies({
@@ -130,6 +147,17 @@ def _load_hot_last():
                 hot_last = json.load(f)
     except Exception:
         hot_last = None
+
+
+def _invalidate_hot_cache():
+    """新数据入库后失效热门股缓存，防止前端展示过期结果"""
+    global hot_last
+    hot_last = None
+    try:
+        if os.path.exists(HOT_LAST_FILE):
+            os.remove(HOT_LAST_FILE)
+    except Exception:
+        pass
 
 
 _load_hot_last()  # 启动时载入上次计算结果
@@ -491,6 +519,7 @@ def extract_task(task_id, dates, submit_to_db=True, base_dir='dataresource',
                             submitted += 1
                             it['status'] = 'submitted'
                             it['message'] = '入库成功'
+                            _invalidate_hot_cache()
                         except _db.NotVerifiedError:
                             it['status'] = 'need_review'
                             it['message'] = '已提取(manualcheck)，需人工复核后再入库'
@@ -555,6 +584,7 @@ def submit_batch_task(task_id, dates, output_dir='excelDataSource'):
                 submitted += 1
                 it['status'] = 'submitted'
                 it['message'] = '入库成功（verified）'
+                _invalidate_hot_cache()
         except _db.DBError as e:
             it['status'] = 'failed'
             it['message'] = f'入库失败: {e}'
@@ -1042,6 +1072,7 @@ def db_submit():
     try:
         _db.init_db()
         result = _db.submit_date(date)
+        _invalidate_hot_cache()
         return jsonify({'success': True, **result})
     except FileNotFoundError as e:
         return jsonify({'success': False, 'error': str(e)}), 404
@@ -1379,8 +1410,7 @@ def _build_missing_report(result):
             miss_stocks = []
             for s in b.get('stocks', []):
                 cell = s.get('track', {}).get(d) or {}
-                if not cell.get('present'):
-                    continue  # 当天不在榜的不算缺失
+                # 不再跳过 present=False: 历史入榜跟踪股当日未涨停时仍需涨幅/MA10
                 missing = []
                 if cell.get('pct') is None:
                     missing.append('涨幅')
@@ -1397,6 +1427,7 @@ def _build_missing_report(result):
 
 
 def hot_compute_task(task_id, start, end, with_price):
+    _dlog(f'=== hot_compute_task 启动 task={task_id} {start}~{end} price={with_price} ===')
     """
     后台热门股计算任务(分阶段):
       阶段1 build: 载入板块/个股
@@ -1420,12 +1451,68 @@ def hot_compute_task(task_id, start, end, with_price):
         if with_price:
             # 循环: 构建+行情(不移除) -> 检查缺失 -> 询问; 直到无缺失或用户跳过
             while True:
+                _dlog(f'[{task_id}] 第二步: 开始 track_hot_stocks apply_removal=False')
                 data = ht.track_hot_stocks(start, end, with_price=True, progress=prog,
                                            source='db', apply_removal=False)
+
+                # 从 fetch_report 里取出本轮拉取失败的票
+                fetch_report = data.get('fetch_report') or {}
+                fetch_failed = fetch_report.get('failed', [])  # [{code, reason}, ...]
+                _dlog(f'[{task_id}] fetch_report: cached={fetch_report.get("cached")} success={fetch_report.get("success")} failed={len(fetch_failed)}')
+
+                # 第二步结束: 如果有拉取失败的票, 立即进入 awaiting
+                if fetch_failed and not t.get('_skip'):
+                    _dlog(f'[{task_id}] 进入 awaiting，失败票: {[f["code"] for f in fetch_failed]}')
+                    fail_codes = [f['code'] for f in fetch_failed]
+                    lines = [f"{f['code']} ({f['reason']})" for f in fetch_failed]
+                    prog('await',
+                         f'行情获取完成，以下 {len(fetch_failed)} 只股票无法获取数据:\n'
+                         + '\n'.join(f'  {l}' for l in lines)
+                         + '\n请选择「再次同步」重试，或「跳过」直接进入第三步',
+                         None, None)
+                    t['missing_report'] = []   # 此时还没做 remove, 用 fetch_failed 代替
+                    t['missing_codes'] = fail_codes
+                    t['status'] = 'awaiting'
+                    t['_event'].clear()
+                    t['_event'].wait()
+                    action = t.get('_action')
+                    t['_action'] = None
+                    t['status'] = 'running'
+                    _dlog(f'[{task_id}] awaiting 用户选择: action={action}')
+                    if action == 'resync':
+                        prog('price', f'再次同步 {len(fail_codes)} 只个股行情(通达信)…', 0, len(fail_codes))
+                        ok_cnt, still_fail = 0, []
+                        for i, c in enumerate(fail_codes):
+                            # 先清除之前写入的 None 占位和 _no_data 标记, 让 fetch 重新尝试
+                            _cache = ht._load_price_cache()
+                            with ht._cache_lock:
+                                _cache.pop(f'{c}_no_data', None)
+                                _cache.pop(f'{c}_no_data_reason', None)
+                                for _d in data.get('dates', []):
+                                    for _sfx in ('', '_ma10', '_below_ma10', '_20d', '_60d'):
+                                        _cache.pop(f'{c}_{_d}{_sfx}', None)
+                                ht._save_price_cache()
+                            try:
+                                if ht.fetch_range(c, start, end):
+                                    ok_cnt += 1
+                                else:
+                                    still_fail.append(c)
+                            except Exception:
+                                still_fail.append(c)
+                            prog('price', f'同步 {i + 1}/{len(fail_codes)} ({c})', i + 1, len(fail_codes))
+                        msg = f'同步完成: 成功 {ok_cnt}/{len(fail_codes)}'
+                        if still_fail:
+                            msg += f', 仍失败 {len(still_fail)} 只: ' + ', '.join(still_fail)
+                        prog('price', msg, len(fail_codes), len(fail_codes))
+                        continue  # 重新构建 + 再检查
+                    else:
+                        t['_skip'] = True
+                        # 跳过: 保留 None 占位, 直接进第三步
+
                 missing_by_date, missing_codes = _build_missing_report(data)
                 if not missing_codes or t.get('_skip'):
                     break
-                # 暂停, 等待用户决定(数据缺失时无法可靠判断移除)
+                # 兜底: fetch 全部成功但缓存里仍有 None (理论上不应再触发)
                 n = sum(len(s['stocks']) for day in missing_by_date for s in day['blocks'])
                 t['missing_report'] = missing_by_date
                 t['missing_codes'] = missing_codes
@@ -1433,32 +1520,48 @@ def hot_compute_task(task_id, start, end, with_price):
                               f'数据不全时无法可靠执行移除规则，请选择「再次同步」或「跳过直接显示」', None, None)
                 t['status'] = 'awaiting'
                 t['_event'].clear()
-                t['_event'].wait()   # 阻塞直到 resolve 唤醒
+                t['_event'].wait()
                 action = t.get('_action')
                 t['_action'] = None
                 t['status'] = 'running'
                 if action == 'resync':
                     prog('price', f'再次同步 {len(missing_codes)} 只个股行情(通达信)…', 0, len(missing_codes))
+                    ok_cnt, fail_list = 0, []
                     for i, c in enumerate(missing_codes):
                         try:
-                            ht.fetch_range(c, start, end)
+                            if ht.fetch_range(c, start, end):
+                                ok_cnt += 1
+                            else:
+                                fail_list.append(c)
                         except Exception:
-                            pass
+                            fail_list.append(c)
                         prog('price', f'同步 {i + 1}/{len(missing_codes)} ({c})', i + 1, len(missing_codes))
-                    continue  # 重新构建 + 再检查缺失
+                    msg = f'同步完成: 成功 {ok_cnt}/{len(missing_codes)}'
+                    if fail_list:
+                        msg += f', 失败 {len(fail_list)} 只'
+                    prog('price', msg, len(missing_codes), len(missing_codes))
+                    continue
                 else:
                     t['_skip'] = True
                     break
 
-        # 阶段3: 应用移除规则, 出最终结果
+        # 阶段3: 直接在第二步的数据上应用移除规则, 不再重新拉行情
+        _dlog(f'[{task_id}] 第三步: 应用移除规则 with_price={with_price}')
         prog('remove', '数据就绪，应用移除规则(跌破10日线次日删除)…', 0, 1)
-        final = ht.track_hot_stocks(start, end, with_price=with_price, progress=prog,
-                                    source='db', apply_removal=True)
+        if not with_price:
+            # 未拉行情时才需要重新跑
+            data = ht.track_hot_stocks(start, end, with_price=False, progress=prog,
+                                       source='db', apply_removal=True)
+        else:
+            # 复用第二步数据, 只重跑移除逻辑部分
+            data = ht.apply_removal_rules(data, progress=prog)
+        final = data
         final['missing_report'] = missing_by_date
         final['missing_codes'] = missing_codes
         n = sum(len(s['stocks']) for day in missing_by_date for s in day['blocks'])
         prog('done', (f'计算完成(跳过 {len(missing_codes)} 只缺数据个股, 共 {n} 处)'
                       if missing_codes else '计算完成，数据完整'), 1, 1)
+        _dlog(f'[{task_id}] 计算完成 missing_codes={missing_codes}')
         t['result'] = final
         t['status'] = 'completed'
         t['progress'] = 100
@@ -1468,6 +1571,7 @@ def hot_compute_task(task_id, start, end, with_price):
                     'saved_at': time.time(), 'result': final}
         _save_hot_last()
     except Exception as e:
+        _dlog(f'[{task_id}] 计算异常: {e}', 'ERROR')
         t['status'] = 'failed'
         t['error'] = str(e)
         t['logs'].append({'stage': 'error', 'msg': f'计算失败: {e}', 'cur': None, 'total': None})
@@ -1475,19 +1579,38 @@ def hot_compute_task(task_id, start, end, with_price):
 
 @app.route('/api/hot/last', methods=['GET'])
 def api_hot_last():
-    """返回最近一次计算结果(服务端缓存, 刷新恢复用)。无则 has=false。"""
+    """返回最近一次计算结果(服务端缓存, 刷新恢复用)。无则 has=false。
+    额外检查新鲜度: 若DB日期范围超出缓存覆盖，返回 stale=true。"""
     if not hot_last or not hot_last.get('result'):
         return jsonify({'success': True, 'has': False})
+    # 新鲜度检查: 对比缓存覆盖范围 vs DB实际范围
+    stale = False
+    stale_reason = None
+    try:
+        import db as _db
+        db_dates = sorted(_db.get_submitted_dates())
+        if db_dates:
+            cached_start = hot_last.get('start', '')
+            cached_end = hot_last.get('end', '')
+            db_min, db_max = min(db_dates), max(db_dates)
+            if db_min < cached_start or db_max > cached_end:
+                stale = True
+                stale_reason = f'数据库已有新数据({db_min}~{db_max})，缓存仅覆盖{cached_start}~{cached_end}，需重新计算'
+    except Exception:
+        pass
     return jsonify({
         'success': True, 'has': True,
         'start': hot_last.get('start'), 'end': hot_last.get('end'),
         'price': hot_last.get('price', True), 'saved_at': hot_last.get('saved_at'),
         'result': hot_last['result'],
+        'stale': stale,
+        'stale_reason': stale_reason,
     })
 
 
 @app.route('/api/hot/compute', methods=['POST'])
 def api_hot_compute():
+    _dlog(f'POST /api/hot/compute body={request.get_data(as_text=True)}')
     """启动热门股计算(异步, 带分阶段进度)。范围受数据库已入库日期约束。"""
     import db as _db
     data = request.get_json() or {}
@@ -1574,6 +1697,7 @@ def api_hot_compute_status(task_id):
 
 @app.route('/api/hot/compute/resolve', methods=['POST'])
 def api_hot_compute_resolve():
+    _dlog(f'POST /api/hot/compute/resolve body={request.get_data(as_text=True)}')
     """
     响应缺失数据询问: action='resync'(再次同步后重算) 或 'skip'(跳过缺失直接出结果)
     """

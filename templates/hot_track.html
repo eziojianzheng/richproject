@@ -75,6 +75,18 @@
   }
   .sort-tabs span.active { background: #2563eb; color: #fff; border-color: #2563eb; }
   .meta { font-size: 12px; color: var(--text-muted); margin-bottom: 12px; }
+  .stale-banner {
+    background: rgba(234,179,8,0.15); border: 1px solid rgba(234,179,8,0.4);
+    border-radius: 6px; padding: 8px 14px; margin-bottom: 12px;
+    font-size: 13px; color: #facc15; display: flex; align-items: center; gap: 8px;
+  }
+  .stale-banner .stale-icon { font-size: 18px; flex-shrink: 0; }
+  .stale-banner .stale-msg { flex: 1; }
+  .stale-banner .stale-btn {
+    background: #ca8a04; color: #000; border: none; padding: 5px 12px;
+    border-radius: 4px; font-size: 12px; cursor: pointer; white-space: nowrap;
+  }
+  .stale-banner .stale-btn:hover { background: #eab308; }
   
   /* 控制台面板 */
   .console-panel {
@@ -460,6 +472,10 @@
       <span data-stocksort="20d">20日涨幅</span>
       <span data-stocksort="60d">60日涨幅</span>
     </div>
+    <input type="text" id="stockSearch" placeholder="搜代码, 回车跳转" 
+      style="width:110px;background:var(--bg-input);border:1px solid var(--border-color);color:var(--text-primary);padding:3px 6px;border-radius:4px;font-size:11px;margin-left:6px;"
+      onkeydown="if(event.key==='Enter')searchStock()">
+    <span id="searchResult" style="font-size:10px;margin-left:4px;"></span>
     <label><input type="checkbox" id="price" checked> 涨幅</label>
     <button id="go">计算</button>
     <button id="goToday">仅计算今日</button>
@@ -962,9 +978,16 @@ function renderRow(day, order){
 
   const cards = order.map(blk => {
     const b = dayMap[blk];
-    // 板块移除逻辑: 当天无活跃个股(未开始/已全部移除)则不显示该板块
+    // 板块当天无活跃个股(未开始/已全部移除): 渲染空占位列保持对齐
     if(!b || (b.active_count || 0) === 0){
-      return '';
+      return `
+      <div class="block-card inactive" data-block="${blk}">
+        <div class="block-head">
+          <div class="bname">${blk}</div>
+          <div class="bstat">—</div>
+        </div>
+        <div class="stock-grid"></div>
+      </div>`;
     }
     
     // 按选择的排序方式排序股票（降序，涨幅高的在前，无数据的排后面）
@@ -1034,7 +1057,23 @@ function renderRow(day, order){
       const desc = track && track.present ? (track.desc || '') : '';
       const ma10Text = ma10 !== null ? `MA10: ${ma10.toFixed(2)}` : '';
       const removeText = isRemoved ? ' ⚠️ 已跌破10日线，次日不再跟踪' : '';
-      
+
+      // 预警链: 展示 预警日 → 第N天 → 移除 的完整过程
+      let warnChain = '';
+      if (s.warn_date) {
+        const datesArr = DATA.dates || [];
+        const warnIdx = datesArr.indexOf(s.warn_date);
+        const curIdx = datesArr.indexOf(lastDate);
+        const dayNum = (warnIdx >= 0 && curIdx >= 0) ? (curIdx - warnIdx + 1) : '?';
+        if (isRemoved) {
+          warnChain = `<div class="track-cell" style="border-color: #ff4d4d;">
+            <span class="tdesc" style="color: #ff6b6b;">⚠ ${s.warn_date.slice(4,6)}/${s.warn_date.slice(6)}预警 → ${lastDate.slice(4,6)}/${lastDate.slice(6)}(第${dayNum}天)移除</span></div>`;
+        } else {
+          warnChain = `<div class="track-cell" style="border-color: #eab308;">
+            <span class="tdesc" style="color: #facc15;">⚠ ${s.warn_date.slice(4,6)}/${s.warn_date.slice(6)}预警 (第${dayNum}天跌破MA10)</span></div>`;
+        }
+      }
+
       return `<div class="stock-expand" data-code="${s.code}">
         <div class="stock-expand-top">
           <span class="stock-expand-name">${s.name}</span>
@@ -1046,6 +1085,7 @@ function renderRow(day, order){
             <span class="tdesc">${desc}</span>
           </div>
           ${ma10Text ? `<div class="track-cell"><span class="tdesc">${ma10Text}</span></div>` : ''}
+          ${warnChain}
           ${removeText ? `<div class="track-cell" style="border-color: #ff4d4d;"><span class="tdesc" style="color: #ff4d4d;">${removeText}</span></div>` : ''}
         </div>
       </div>`;
@@ -1460,6 +1500,34 @@ async function populateDates(){
   }
 }
 
+// 股票代码搜索: 在所有已渲染的日期行中定位并高亮
+function searchStock(){
+  const code = document.getElementById('stockSearch').value.trim();
+  const resEl = document.getElementById('searchResult');
+  if(!code){ resEl.textContent=''; return; }
+  // 清除旧高亮
+  document.querySelectorAll('.stock-thumb.search-hit').forEach(el=>el.classList.remove('search-hit'));
+  // 在所有 .stock-thumb 中查找
+  const thumbs = document.querySelectorAll('.stock-thumb');
+  let found = null;
+  for(const el of thumbs){
+    if(el.textContent.trim().startsWith(code)){
+      found = el;
+      break;
+    }
+  }
+  if(found){
+    found.classList.add('search-hit');
+    found.scrollIntoView({behavior:'smooth',block:'center'});
+    // 找到所属日期行
+    const row = found.closest('.date-row');
+    const dateLabel = row ? row.getAttribute('data-date') || row.querySelector('.date-label')?.textContent : '?';
+    resEl.innerHTML = `<span style="color:#4ade80">找到 ${code} @ ${dateLabel||''}</span>`;
+  } else {
+    resEl.innerHTML = `<span style="color:#f87171">未找到 ${code}</span>`;
+  }
+}
+
 // 从服务端恢复最近一次计算结果(大结果不受浏览器配额限制)
 async function restoreServerResult(){
   try{
@@ -1472,10 +1540,32 @@ async function restoreServerResult(){
     if(typeof j.price === 'boolean') document.getElementById('price').checked = j.price;
     render();
     const when = j.saved_at ? new Date(j.saved_at*1000).toLocaleString() : '';
-    document.getElementById('meta').innerHTML =
+    const metaEl = document.getElementById('meta');
+    metaEl.innerHTML =
       `<span style="color:var(--text-muted)">已恢复上次计算结果 (${j.start}~${j.end}${when?'，'+when:''})，如需最新请点「计算」</span>`;
+    // 新鲜度警告
+    if(j.stale){
+      showStaleBanner(j.stale_reason || '数据库已有新数据，当前结果可能不完整');
+    }
     return true;
   }catch(e){ return false; }
+}
+
+function showStaleBanner(msg){
+  let el = document.getElementById('staleBanner');
+  if(!el){
+    el = document.createElement('div');
+    el.id = 'staleBanner';
+    el.className = 'stale-banner';
+    const meta = document.getElementById('meta');
+    meta.parentNode.insertBefore(el, meta.nextSibling);
+  }
+  el.innerHTML = `<span class="stale-icon">&#9888;</span><span class="stale-msg">${msg}</span><button class="stale-btn" onclick="triggerCompute()">重新计算</button>`;
+}
+
+function hideStaleBanner(){
+  const el = document.getElementById('staleBanner');
+  if(el) el.remove();
 }
 
 // 计算结果本地缓存(刷新后恢复, 作为服务端缓存的补充)
@@ -1522,6 +1612,7 @@ async function compute(){
   const price = document.getElementById('price').checked;
   if(!start || !end){ alert('请先选择日期范围'); return; }
   computeParams = {start, end};
+  hideStaleBanner();
 
   const modal = document.getElementById('computeModal');
   document.getElementById('computeLog').innerHTML = '';
@@ -1588,7 +1679,7 @@ function appendComputeLog(logs){
 function computeDone(ok){
   document.getElementById('computeTitle').textContent = ok ? '✓ 计算完成' : '✗ 计算未成功';
   document.getElementById('computeClose').style.display = 'inline-block';
-  if(ok) setTimeout(closeCompute, 1000);  // 成功后稍候自动关闭
+  // 不自动关闭，让用户自己点关闭
 }
 
 // 展示"每日板块缺失数据"报告 + 再次同步/跳过
