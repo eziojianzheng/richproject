@@ -1108,13 +1108,14 @@ def track_hot_stocks(start, end, sort='stock_count', with_price=True,
             e = info.get(code)
             if e is None:
                 info[code] = {'code': code, 'name': r['名称'], 'lianban': r['连扳数'],
-                              'current': cur, 'block': blk}
+                              'current': cur, 'block': blk, 'reason': r.get('原因', '')}
             else:
                 if cur > e['current']:
                     e['current'] = cur
                     e['lianban'] = r['连扳数']
                 if blk != '市场连板股' and e['block'] == '市场连板股':
                     e['block'] = blk
+                    e['reason'] = r.get('原因', e.get('reason', ''))
         high = sorted([v for v in info.values() if v['current'] >= 3],
                       key=lambda x: -x['current'])
         # 断板: 昨日3板+今日不在涨停列表(未涨停)
@@ -1127,14 +1128,16 @@ def track_hot_stocks(start, end, sort='stock_count', with_price=True,
                     broken.append({'code': pc['code'], 'name': pc['name'],
                                    'block': pc['block'], 'pct': pct,
                                    'lianban': pc.get('lianban', ''),
-                                   'current': pc.get('current', 0)})
+                                   'current': pc.get('current', 0),
+                                   'reason': pc.get('reason', '')})
         stats = daily_stats.get(d, {})
         date_summary[d] = {
             'up_count': stats.get('up_count'),
             'down_count': stats.get('down_count'),
             'total_amount': stats.get('total_amount'),
             'high_stocks': [{'code': v['code'], 'name': v['name'],
-                             'lianban': v['lianban'], 'block': v['block']} for v in high],
+                             'lianban': v['lianban'], 'block': v['block'],
+                             'reason': v.get('reason', '')} for v in high],
             'broken_stocks': broken,
         }
         prev_high = high
