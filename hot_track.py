@@ -1125,7 +1125,9 @@ def track_hot_stocks(start, end, sort='stock_count', with_price=True,
                 if pc['code'] not in today_codes:
                     pct = get_pct_change(pc['code'], d) if with_price else None
                     broken.append({'code': pc['code'], 'name': pc['name'],
-                                   'block': pc['block'], 'pct': pct})
+                                   'block': pc['block'], 'pct': pct,
+                                   'lianban': pc.get('lianban', ''),
+                                   'current': pc.get('current', 0)})
         stats = daily_stats.get(d, {})
         date_summary[d] = {
             'up_count': stats.get('up_count'),

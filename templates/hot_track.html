@@ -173,6 +173,7 @@
   .col-updown .ud-dn { color: #4dd07a; font-weight: 700; }
   .col-updown .ud-amt { color: var(--text-muted); font-size: 10px; }
   .col-updown.ud-red { background: rgba(230,57,70,0.18); border-radius: 6px; padding: 4px 6px; box-shadow: inset 0 0 0 1px rgba(230,57,70,0.5); }
+  .col-updown.ud-green { background: rgba(77,208,122,0.18); border-radius: 6px; padding: 4px 6px; box-shadow: inset 0 0 0 1px rgba(77,208,122,0.5); }
   /* 左侧列2: 3板+高位股 / 昨日断板 */
   .col-high {
     flex: 0 0 158px; max-height: 160px; overflow-y: auto;
@@ -379,7 +380,7 @@
     border:1px solid var(--border-light); border-radius:9px; padding:8px 10px;
   }
   .chart-card.placeholder { background:transparent; border:1px dashed var(--border-color); }
-  .charts-offset { flex:0 0 auto; width:71px; }
+  .charts-offset { flex:0 0 auto; width:329px; }
   .chart-card h4 { font-size:13px; color:var(--text-primary); margin-bottom:2px; }
   .chart-card .csub { font-size:10px; color:var(--text-muted); margin-bottom:6px; }
   .chart-card h5 { font-size:11px; color:var(--text-secondary); margin:8px 0 2px; }
@@ -1131,7 +1132,10 @@ function renderRow(day, order){
   const sum = (DATA.date_summary && DATA.date_summary[day.date]) || {};
   const up = sum.up_count, dn = sum.down_count;
   let udCls = '';
-  if(up != null && dn != null && ((up > 3000 && dn < 2000) || (dn > 3000 && up < 2000))) udCls = 'ud-red';
+  if(up != null && dn != null) {
+    if(up > 3000 && dn < 2000) udCls = 'ud-red';        // 极端强势: 涨多跌少=红
+    else if(dn > 3000 && up < 2000) udCls = 'ud-green';  // 极端弱势: 跌多涨少=绿
+  }
   const amt = (sum.total_amount != null) ? `<div class="ud-amt">${sum.total_amount}亿</div>` : '';
   const col1 = `<div class="col-updown ${udCls}">
       <div class="ud-up">↑ ${up != null ? up : '—'}</div>
@@ -1144,7 +1148,8 @@ function renderRow(day, order){
   const brokens = (sum.broken_stocks || []).map(s => {
     const cls = pctClass(s.pct);
     const ptxt = (typeof s.pct === 'number') ? ((s.pct > 0 ? '+' : '') + s.pct.toFixed(1) + '%') : '—';
-    return `<div class="hi-item broken" title="断板 ${s.name} ${s.block}">断 ${s.name}<span class="hi-blk">${s.block}</span> <span class="${cls}">${ptxt}</span></div>`;
+    const lbTag = s.current ? `${s.current}进${s.current+1}断 ` : '断 ';
+    return `<div class="hi-item broken" title="断板 ${s.name} ${s.block}">${lbTag}${s.name}<span class="hi-blk">${s.block}</span> <span class="${cls}">${ptxt}</span></div>`;
   }).join('');
   const col2 = `<div class="col-high">
       <div class="hi-title">3板+ (${(sum.high_stocks || []).length})</div>
@@ -1365,8 +1370,18 @@ function renderCharts(){
   }).join('');
 
   wrap.innerHTML = `<div class="charts-scroll" id="chartsScroll">
-    <div class="charts-offset"></div>${cards}
+    <div class="charts-offset" id="chartsOffset"></div>${cards}
   </div>`;
+  // 动态对齐: charts-offset 宽度 = 上方 blocks-scroll 距 date-row 左侧距离 - gap(12px)
+  const firstRow = document.querySelector('.date-row');
+  if (firstRow) {
+    const bs = firstRow.querySelector('.blocks-scroll');
+    if (bs) {
+      const offsetW = bs.getBoundingClientRect().left - firstRow.getBoundingClientRect().left - 12;
+      const offsetEl = document.getElementById('chartsOffset');
+      if (offsetEl && offsetW > 0) offsetEl.style.width = offsetW + 'px';
+    }
+  }
   syncScroll();
 }
 
