@@ -634,6 +634,19 @@ def prefetch_prices(codes, start, end, progress=None, check_dates=None):
             time.sleep(0.05)
         if ok:
             success_list.append(c)
+            # fetch 成功但 mootdx 可能未覆盖所有交易日(停牌/未上市/数据源缺失)
+            # 对仍缺的日期写 None 占位, 避免下次因 key 不存在而反复重取
+            _cache = _load_price_cache()
+            with _cache_lock:
+                _filled = False
+                for _d in query_dates:
+                    for _sfx in ('', '_ma10', '_below_ma10', '_20d', '_60d'):
+                        k = f'{c}_{_d}{_sfx}'
+                        if k not in _cache:
+                            _cache[k] = None
+                            _filled = True
+                if _filled:
+                    _save_price_cache()
         else:
             # 拉取失败: 写 _no_data 标记避免完整性检查反复重拉, 同时保留在 failed 列表中
             reason = next((f['reason'] for f in failed_list if f['code'] == c), '无数据返回')
@@ -670,16 +683,19 @@ def prefetch_prices(codes, start, end, progress=None, check_dates=None):
     }
 
 
-def apply_removal_rules(data, progress=None):
+def apply_removal_rules(data, progress=None, manual_remove_codes=None):
     """
     对已有的 track_hot_stocks 结果应用移除规则。
     直接在内存中操作, 不重新读库/拉行情。
+    manual_remove_codes: 可选, 需手动剔除(不再追踪)的股票代码集合/列表。
+                         这些票会被标记为在所有日期都不显示(仅本次生效, 不写缓存)。
     返回: 修改后的 data（原地修改 by_date 中的 stocks 列表）
     """
     _report = progress if callable(progress) else (lambda *a, **k: None)
     dates = data.get('dates', [])
     date_pos = {dd: i for i, dd in enumerate(dates)}
     by_date = data.get('by_date', [])
+    manual_set = set(manual_remove_codes) if manual_remove_codes else set()
 
     # 重建 block_cum_stocks 结构（从 by_date 反推）
     block_cum = {}  # block -> {code: stock_item}
@@ -698,6 +714,15 @@ def apply_removal_rules(data, progress=None):
             st.pop('warn_date', None)
             st.pop('remove_date', None)
             st.pop('remove_reason', None)
+
+    # 手动移除: 标记一个早于所有交易日的 remove_date, 使其在任何日期都不显示
+    if manual_set:
+        _manual_marker = '00000000'
+        for stocks_map in block_cum.values():
+            for code, st in stocks_map.items():
+                if code in manual_set:
+                    st['remove_date'] = _manual_marker
+                    st['remove_reason'] = '手动移除(无法获取行情)'
 
     for d in dates:
         di = date_pos.get(d)

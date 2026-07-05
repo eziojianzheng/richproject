@@ -422,7 +422,7 @@
   }
   .compute-modal.show { display: flex; }
   .compute-box {
-    width: min(700px, 92vw); max-height: 80vh; background: var(--bg-card);
+    width: min(700px, 92vw); max-height: 92vh; background: var(--bg-card);
     border: 1px solid var(--border-color); border-radius: 12px;
     padding: 18px 20px; display: flex; flex-direction: column;
   }
@@ -440,18 +440,24 @@
   .lg-done { color: #4ade80; font-weight: 600; }
   .lg-error { color: #ff6b6b; font-weight: 600; }
 
-  .compute-report { margin-top: 10px; max-height: 34vh; overflow: auto; background: var(--bg-body); border: 1px solid var(--border-color); border-radius: 8px; padding: 10px 12px; font-size: 12px; }
+  .compute-report { margin-top: 10px; flex: 1 1 auto; min-height: 300px; max-height: 60vh; overflow: auto; background: var(--bg-body); border: 1px solid var(--border-color); border-radius: 8px; padding: 10px 12px; font-size: 12px; }
   .cr-day { color: #ffd166; font-weight: 600; margin: 8px 0 4px; }
   .cr-day:first-child { margin-top: 0; }
   .cr-block { color: var(--text-secondary); margin: 4px 0 2px 8px; }
   .cr-stock { color: var(--text-primary); margin-left: 20px; }
   .cr-miss { color: #ff6b6b; }
+  .cr-hint { color: var(--text-secondary); margin: 4px 0 8px; font-size: 12px; }
+  .cr-row { display: flex; align-items: center; gap: 8px; margin: 4px 0 4px 20px; color: var(--text-primary); cursor: pointer; }
+  .cr-row input { margin: 0; }
+  .cr-name { min-width: 150px; }
   .compute-actions { display: flex; gap: 10px; margin-top: 12px; }
   .compute-actions button { background: #e63946; color: #fff; border: none; padding: 8px 18px; border-radius: 6px; cursor: pointer; font-size: 13px; font-weight: 600; }
   .compute-actions button:hover { background: #d62839; }
   .compute-actions button:disabled { background: #555; cursor: not-allowed; }
   .compute-actions .compute-skip { background: transparent; border: 1px solid var(--border-color); color: var(--text-secondary); }
   .compute-actions .compute-skip:hover { background: var(--border-color); color: var(--text-primary); }
+  .compute-actions .compute-remove { background: #6b7280; }
+  .compute-actions .compute-remove:hover { background: #4b5563; }
 </style>
 </head>
 <body>
@@ -536,6 +542,7 @@
       <div class="compute-report" id="computeReport" style="display:none;"></div>
       <div class="compute-actions" id="computeActions" style="display:none;">
         <button id="btnResync" onclick="resyncMissing()">再次同步缺失</button>
+        <button id="btnRemove" class="compute-remove" onclick="removeMissing()">移除选中并继续</button>
         <button class="compute-skip" onclick="skipAndShow()">跳过直接显示</button>
       </div>
     </div>
@@ -1599,6 +1606,7 @@ function restoreLastResult(){
 let computeTimer = null, computeSince = 0;
 let computeParams = {start:'', end:''};
 let lastMissingCodes = [];
+let lastAwaitStocks = [];
 let computeTaskId = null;
 
 function closeCompute(){
@@ -1616,6 +1624,8 @@ async function compute(){
 
   const modal = document.getElementById('computeModal');
   document.getElementById('computeLog').innerHTML = '';
+  document.getElementById('computeLog').style.maxHeight = '';   // 恢复日志区高度
+  document.getElementById('computeLog').style.flex = '';
   document.getElementById('computeReport').style.display = 'none';
   document.getElementById('computeReport').innerHTML = '';
   document.getElementById('computeActions').style.display = 'none';
@@ -1652,7 +1662,8 @@ function pollCompute(tid){
       if(s.status==='awaiting'){
         clearInterval(computeTimer);
         lastMissingCodes = s.missing_codes || [];
-        showMissingReport(s.missing_report || []);  // 暂停: 移除规则未执行, 先询问
+        lastAwaitStocks = s.await_stocks || [];
+        showMissingReport(lastAwaitStocks);  // 暂停: 移除规则未执行, 先询问
       }
       else if(s.status==='completed'){
         clearInterval(computeTimer);
@@ -1682,29 +1693,32 @@ function computeDone(ok){
   // 不自动关闭，让用户自己点关闭
 }
 
-// 展示"每日板块缺失数据"报告 + 再次同步/跳过
-function showMissingReport(missingByDate){
+// 展示"无法获取数据的股票"列表(带勾选) + 再次同步/移除选中/跳过
+function showMissingReport(awaitStocks){
   const el = document.getElementById('computeReport');
-  let n = 0;
   let html = '';
-  missingByDate.forEach(day=>{
-    html += `<div class="cr-day">${day.date}</div>`;
-    day.blocks.forEach(b=>{
-      html += `<div class="cr-block">【${escapeHtmlHT(b.block)}】</div>`;
-      b.stocks.forEach(s=>{
-        n++;
-        html += `<div class="cr-stock">${escapeHtmlHT(s.name)}(${s.code}) `
-              + `<span class="cr-miss">缺: ${s.missing.join('、')}</span></div>`;
-      });
+  if(awaitStocks && awaitStocks.length){
+    html += '<div class="cr-hint">勾选要移除(不再追踪)的股票，点「移除选中并继续」；未勾选的保留并按现有数据执行。</div>';
+    awaitStocks.forEach(s=>{
+      const label = s.name ? `${escapeHtmlHT(s.name)}(${escapeHtmlHT(s.code)})` : escapeHtmlHT(s.code);
+      html += `<label class="cr-row"><input type="checkbox" value="${escapeHtmlHT(s.code)}"> `
+            + `<span class="cr-name">${label}</span> `
+            + `<span class="cr-miss">${escapeHtmlHT(s.reason||'')}</span></label>`;
     });
-  });
-  el.innerHTML = html || '<div style="color:var(--text-muted)">无</div>';
+  } else {
+    html = '<div style="color:var(--text-muted)">无</div>';
+  }
+  el.innerHTML = html;
   el.style.display = 'block';
+  // 压缩日志区, 让勾选列表占据更多空间
+  const logEl = document.getElementById('computeLog');
+  logEl.style.maxHeight = '150px';
+  logEl.style.flex = '0 1 150px';
   document.getElementById('computeActions').style.display = 'flex';
   document.getElementById('computeClose').style.display = 'inline-block';
-  document.getElementById('computeTitle').textContent = `⚠ 存在 ${n} 处缺失数据，移除规则未执行`;
+  document.getElementById('computeTitle').textContent = `⚠ ${awaitStocks.length} 只股票无法获取数据`;
   document.getElementById('computeStage').textContent =
-    `涉及 ${lastMissingCodes.length} 只个股。数据不全无法可靠判断移除，请「再次同步」补数据，或「跳过」按现有数据执行。`;
+    `可「再次同步」补数据、勾选后「移除选中并继续」剔除不再追踪，或「跳过」按现有数据执行。`;
 }
 
 // 再次同步: 唤醒后台任务重新拉取缺失并重新检查(不重新建任务)
@@ -1731,6 +1745,24 @@ async function skipAndShow(){
       body: JSON.stringify({task_id: computeTaskId, action:'skip'}) });
   }catch(e){}
   pollCompute(computeTaskId);  // 恢复轮询, 后台执行阶段3
+}
+
+// 移除选中: 剔除勾选的股票(不再追踪)后继续出结果
+async function removeMissing(){
+  const boxes = document.querySelectorAll('#computeReport input[type=checkbox]:checked');
+  const codes = Array.from(boxes).map(b=>b.value);
+  if(codes.length===0){
+    alert('请至少勾选一只要移除的股票');
+    return;
+  }
+  document.getElementById('computeActions').style.display = 'none';
+  document.getElementById('computeReport').style.display = 'none';
+  try{
+    await fetch('/api/hot/compute/resolve', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({task_id: computeTaskId, action:'remove', codes}) });
+  }catch(e){}
+  pollCompute(computeTaskId);  // 恢复轮询, 后台执行阶段3(含手动移除)
 }
 
 function escapeHtmlHT(s){

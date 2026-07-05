@@ -164,7 +164,7 @@ _load_hot_last()  # 启动时载入上次计算结果
 
 
 def get_article_list(user_id='444409'):
-    """获取博客文章列表"""
+    """获取博客文章列表（首页，最近约30篇）"""
     url = f'https://www.tgb.cn/blog/{user_id}'
 
     try:
@@ -202,6 +202,166 @@ def get_article_list(user_id='444409'):
             })
 
     return article_list
+
+
+# ============== 多页文章列表（moreTopic 分页） ==============
+# 淘股吧博客首页只展示最近约30篇，更早的文章需通过 moreTopic 分页接口获取。
+# moreTopic URL: https://www.tgb.cn/user/blog/moreTopic?userID=xxx&pageNo=N&sortFlag=T
+# 每页约100篇，总页数在页面隐藏 input[name=pageNum] 中。
+
+def _parse_moretopic_page(html_text):
+    """
+    解析 moreTopic 页面的文章列表。
+    返回: [{title, link, pub_time, date_folder}, ...]
+    """
+    soup = BeautifulSoup(html_text, 'html.parser')
+    articles = []
+    seen_hrefs = set()
+
+    # moreTopic 页面用 <tr> 行展示文章，每行含 <a href="/a/xxx"> 标题链接
+    for tr in soup.find_all('tr'):
+        link_tag = tr.find('a', href=re.compile(r'^/a/'))
+        if not link_tag:
+            continue
+        href = link_tag.get('href', '')
+        if href in seen_hrefs:
+            continue  # 同一文章可能在多行出现（跟帖行），去重
+        seen_hrefs.add(href)
+
+        title = link_tag.get('title', '') or link_tag.text.strip()
+        link = f"https://www.tgb.cn{href}" if href.startswith('/') else href
+
+        # 从行文本中提取日期
+        time_match = re.search(r'\d{4}-\d{2}-\d{2}', tr.text)
+        pub_time = time_match.group() if time_match else ''
+        date_folder = pub_time.replace('-', '') if pub_time else 'unknown'
+
+        articles.append({
+            'title': title,
+            'link': link,
+            'pub_time': pub_time,
+            'date_folder': date_folder
+        })
+
+    return articles
+
+
+def _get_moretopic_total_pages(html_text):
+    """从 moreTopic 页面 HTML 中提取总页数"""
+    soup = BeautifulSoup(html_text, 'html.parser')
+    # 隐藏 input: <input type="hidden" name="pageNum" value="27">
+    inp = soup.find('input', attrs={'name': 'pageNum'})
+    if inp:
+        try:
+            return int(inp.get('value', '1'))
+        except ValueError:
+            pass
+    # 回退：从 JS gotoPage 函数中提取
+    m = re.search(r'var\s+pageNum\s*=\s*(\d+)', html_text)
+    if m:
+        return int(m.group(1))
+    return 1
+
+
+def get_article_list_paginated(user_id='444409', start_date=None, end_date=None,
+                               max_pages=None, progress_callback=None):
+    """
+    获取博客文章列表（支持分页，覆盖更早日期的文章）。
+
+    通过 moreTopic 分页接口逐页抓取，直到：
+    - 已覆盖 start_date（文章日期早于 start_date 时停止）
+    - 到达最后一页
+    - 达到 max_pages 限制
+
+    参数:
+        user_id: 博客用户ID
+        start_date: 起始日期 (YYYY-MM-DD)，文章早于此日期时停止翻页（None=翻到最后一页）
+        end_date: 结束日期 (YYYY-MM-DD)，用于日志展示
+        max_pages: 最大翻页数限制（None=无限制）
+        progress_callback: 回调函数 (page, total_pages, article_count) -> None
+
+    返回: [{title, link, pub_time, date_folder}, ...] 按日期降序（新→旧）
+    """
+    moretopic_url = 'https://www.tgb.cn/user/blog/moreTopic'
+    all_articles = []
+    seen_hrefs = set()
+
+    # 先抓第1页，获取总页数
+    params = {'userID': user_id, 'pageNo': '1', 'sortFlag': 'T'}
+    try:
+        response = request_with_retry(
+            moretopic_url + '?' + '&'.join(f'{k}={v}' for k, v in params.items()),
+            HEADERS
+        )
+    except NetworkError as e:
+        print(f"获取文章列表失败（网络）: {e}")
+        # 回退到首页方式
+        return get_article_list(user_id)
+
+    response.encoding = 'utf-8'
+    if response.status_code != 200:
+        print(f"获取文章列表失败（HTTP {response.status_code}）")
+        return get_article_list(user_id)
+
+    total_pages = _get_moretopic_total_pages(response.text)
+    if max_pages:
+        total_pages = min(total_pages, max_pages)
+
+    page_articles = _parse_moretopic_page(response.text)
+    for a in page_articles:
+        if a['link'] not in seen_hrefs:
+            seen_hrefs.add(a['link'])
+            all_articles.append(a)
+
+    print(f"[分页] 第1/{total_pages}页: {len(page_articles)}篇, 累计{len(all_articles)}篇")
+    if progress_callback:
+        progress_callback(1, total_pages, len(all_articles))
+
+    # 逐页抓取后续页
+    for page_no in range(2, total_pages + 1):
+        # 如果最早的文章已经早于 start_date，可以停止
+        if start_date and all_articles:
+            oldest = min(a.get('pub_time', '9999') for a in all_articles)
+            if oldest <= start_date:
+                print(f"[分页] 已覆盖到 {start_date}（最早文章 {oldest}），停止翻页")
+                break
+
+        params = {'userID': user_id, 'pageNo': str(page_no), 'sortFlag': 'T'}
+        try:
+            response = request_with_retry(
+                moretopic_url + '?' + '&'.join(f'{k}={v}' for k, v in params.items()),
+                HEADERS
+            )
+        except NetworkError as e:
+            print(f"[分页] 第{page_no}页获取失败（网络）: {e}，跳过")
+            continue
+
+        response.encoding = 'utf-8'
+        if response.status_code != 200:
+            print(f"[分页] 第{page_no}页获取失败（HTTP {response.status_code}），跳过")
+            continue
+
+        page_articles = _parse_moretopic_page(response.text)
+        new_count = 0
+        for a in page_articles:
+            if a['link'] not in seen_hrefs:
+                seen_hrefs.add(a['link'])
+                all_articles.append(a)
+                new_count += 1
+
+        print(f"[分页] 第{page_no}/{total_pages}页: {len(page_articles)}篇(新增{new_count}), 累计{len(all_articles)}篇")
+        if progress_callback:
+            progress_callback(page_no, total_pages, len(all_articles))
+
+        # 如果本页没有新文章，说明已无更多内容
+        if new_count == 0:
+            print(f"[分页] 第{page_no}页无新文章，停止翻页")
+            break
+
+        # 礼貌延时，避免请求过快
+        time.sleep(0.3)
+
+    return all_articles
 
 
 def get_article_images(url):
@@ -360,6 +520,32 @@ def trading_days_in_range(start8, end8):
             days.append(d8)
         cur += _td(days=1)
     return days
+
+
+def _get_article_range(articles):
+    """返回文章列表中最早/最晚可用发布日期 (YYYY-MM-DD)。"""
+    dates = sorted(a.get('pub_time', '') for a in articles if a.get('pub_time'))
+    if not dates:
+        return None, None
+    return dates[0], dates[-1]
+
+
+def _validate_download_range(articles, start_date, end_date):
+    """检查请求日期是否在当前可下载文章范围内。"""
+    if not articles:
+        return False, '无法获取文章列表，请检查网络或目标博客页面是否可访问。'
+    avail_start, avail_end = _get_article_range(articles)
+    if not avail_start or not avail_end:
+        return False, '当前文章列表没有有效发布日期，无法执行下载。'
+
+    errors = []
+    if start_date and start_date < avail_start:
+        errors.append(f'当前最早可下载日期为 {avail_start}，start_date 不应早于此日期')
+    if end_date and end_date > avail_end:
+        errors.append(f'当前最晚可下载日期为 {avail_end}，end_date 不应晚于此日期')
+    if errors:
+        return False, '；'.join(errors)
+    return True, None
 
 
 def download_task(task_id, articles, base_dir='dataresource', skip_existing=True):
@@ -675,8 +861,13 @@ def download_by_date():
             'error': '日期格式错误，请使用 YYYY-MM-DD 格式'
         }), 400
     
-    # 获取文章列表
-    articles = get_article_list('444409')
+    # 获取文章列表（支持分页，自动翻页直到覆盖 start_date）
+    articles = get_article_list_paginated('444409', start_date=start_date, end_date=end_date)
+    if not articles:
+        return jsonify({
+            'success': False,
+            'error': '无法获取文章列表，请检查网络或目标博客页面是否可访问。'
+        }), 400
     
     # 按日期过滤
     if start_date or end_date:
@@ -756,9 +947,14 @@ def download_sync():
             'error': '日期格式错误，请使用 YYYY-MM-DD 格式'
         }), 400
     
-    # 获取文章列表
-    articles = get_article_list('444409')
-    
+    # 获取文章列表（支持分页，自动翻页直到覆盖 start_date）
+    articles = get_article_list_paginated('444409', start_date=start_date, end_date=end_date)
+    if not articles:
+        return jsonify({
+            'success': False,
+            'error': '无法获取文章列表，请检查网络或目标博客页面是否可访问。'
+        }), 400
+
     # 按日期过滤
     if start_date or end_date:
         filtered = []
@@ -1465,12 +1661,21 @@ def hot_compute_task(task_id, start, end, with_price):
                     _dlog(f'[{task_id}] 进入 awaiting，失败票: {[f["code"] for f in fetch_failed]}')
                     fail_codes = [f['code'] for f in fetch_failed]
                     lines = [f"{f['code']} ({f['reason']})" for f in fetch_failed]
+                    # 构建 await_stocks 详情(带名称)供前端勾选移除
+                    _name_map = {}
+                    for _day in data.get('by_date', []):
+                        for _b in _day.get('blocks', []):
+                            for _s in _b.get('stocks', []):
+                                _name_map.setdefault(_s['code'], _s.get('name', ''))
+                    t['await_stocks'] = [{'code': f['code'],
+                                          'name': _name_map.get(f['code'], ''),
+                                          'reason': f['reason']} for f in fetch_failed]
                     prog('await',
                          f'行情获取完成，以下 {len(fetch_failed)} 只股票无法获取数据:\n'
                          + '\n'.join(f'  {l}' for l in lines)
-                         + '\n请选择「再次同步」重试，或「跳过」直接进入第三步',
+                         + '\n可「再次同步」重试、「移除选中」剔除不再追踪，或「跳过」直接进入第三步',
                          None, None)
-                    t['missing_report'] = []   # 此时还没做 remove, 用 fetch_failed 代替
+                    t['missing_report'] = []   # 此时还没做 remove, 用 await_stocks 代替
                     t['missing_codes'] = fail_codes
                     t['status'] = 'awaiting'
                     t['_event'].clear()
@@ -1514,10 +1719,19 @@ def hot_compute_task(task_id, start, end, with_price):
                     break
                 # 兜底: fetch 全部成功但缓存里仍有 None (理论上不应再触发)
                 n = sum(len(s['stocks']) for day in missing_by_date for s in day['blocks'])
+                # 构建 await_stocks 详情供前端勾选移除
+                _await_map = {}
+                for _day in missing_by_date:
+                    for _b in _day['blocks']:
+                        for _s in _b['stocks']:
+                            if _s['code'] not in _await_map:
+                                _await_map[_s['code']] = {'code': _s['code'], 'name': _s['name'],
+                                                           'reason': '缺' + '、'.join(_s['missing'])}
+                t['await_stocks'] = list(_await_map.values())
                 t['missing_report'] = missing_by_date
                 t['missing_codes'] = missing_codes
                 prog('await', f'检测到 {len(missing_codes)} 只个股共 {n} 处缺数据(缺涨幅/MA10)。'
-                              f'数据不全时无法可靠执行移除规则，请选择「再次同步」或「跳过直接显示」', None, None)
+                              f'可「再次同步」补数据、「移除选中」剔除不再追踪，或「跳过」按现有数据执行', None, None)
                 t['status'] = 'awaiting'
                 t['_event'].clear()
                 t['_event'].wait()
@@ -1553,14 +1767,26 @@ def hot_compute_task(task_id, start, end, with_price):
             data = ht.track_hot_stocks(start, end, with_price=False, progress=prog,
                                        source='db', apply_removal=True)
         else:
-            # 复用第二步数据, 只重跑移除逻辑部分
-            data = ht.apply_removal_rules(data, progress=prog)
+            # 复用第二步数据, 只重跑移除逻辑部分(含用户手动剔除的票)
+            _remove_codes = t.get('_remove_codes') or []
+            data = ht.apply_removal_rules(data, progress=prog, manual_remove_codes=_remove_codes)
         final = data
         final['missing_report'] = missing_by_date
         final['missing_codes'] = missing_codes
         n = sum(len(s['stocks']) for day in missing_by_date for s in day['blocks'])
-        prog('done', (f'计算完成(跳过 {len(missing_codes)} 只缺数据个股, 共 {n} 处)'
-                      if missing_codes else '计算完成，数据完整'), 1, 1)
+        _removed = t.get('_remove_codes') or []
+        if _removed:
+            _removed_set = set(_removed)
+            _still_missing = [c for c in missing_codes if c not in _removed_set]
+            _msg = f'计算完成(已移除 {len(_removed)} 只不再追踪'
+            if _still_missing:
+                _msg += f', 另跳过 {len(_still_missing)} 只缺数据个股'
+            _msg += ')'
+            prog('done', _msg, 1, 1)
+        elif missing_codes:
+            prog('done', f'计算完成(跳过 {len(missing_codes)} 只缺数据个股, 共 {n} 处)', 1, 1)
+        else:
+            prog('done', '计算完成，数据完整', 1, 1)
         _dlog(f'[{task_id}] 计算完成 missing_codes={missing_codes}')
         t['result'] = final
         t['status'] = 'completed'
@@ -1640,8 +1866,9 @@ def api_hot_compute():
     hot_tasks[task_id] = {
         'status': 'pending', 'stage': '', 'progress': 0,
         'logs': [], 'result': None, 'error': None,
-        'missing_report': [], 'missing_codes': [],
+        'missing_report': [], 'missing_codes': [], 'await_stocks': [],
         '_event': threading.Event(), '_action': None, '_skip': False,
+        '_remove_codes': [],
     }
     threading.Thread(target=hot_compute_task,
                      args=(task_id, start, end, with_price), daemon=True).start()
@@ -1688,6 +1915,7 @@ def api_hot_compute_status(task_id):
     if t['status'] == 'awaiting':
         resp['missing_report'] = t.get('missing_report', [])
         resp['missing_codes'] = t.get('missing_codes', [])
+        resp['await_stocks'] = t.get('await_stocks', [])
     elif t['status'] == 'completed':
         resp['result'] = t['result']
     elif t['status'] == 'failed':
@@ -1699,18 +1927,26 @@ def api_hot_compute_status(task_id):
 def api_hot_compute_resolve():
     _dlog(f'POST /api/hot/compute/resolve body={request.get_data(as_text=True)}')
     """
-    响应缺失数据询问: action='resync'(再次同步后重算) 或 'skip'(跳过缺失直接出结果)
+    响应缺失数据询问:
+      action='resync'  -> 再次同步后重算
+      action='skip'    -> 跳过缺失直接出结果
+      action='remove'  -> 移除指定 codes(不再追踪)后直接出结果, 需带 codes 列表
     """
     data = request.get_json() or {}
     task_id = data.get('task_id')
     action = data.get('action')
     if task_id not in hot_tasks:
         return jsonify({'success': False, 'error': '任务不存在'}), 404
-    if action not in ('resync', 'skip'):
-        return jsonify({'success': False, 'error': 'action 必须是 resync 或 skip'}), 400
+    if action not in ('resync', 'skip', 'remove'):
+        return jsonify({'success': False, 'error': 'action 必须是 resync / skip / remove'}), 400
     t = hot_tasks[task_id]
     if t['status'] != 'awaiting':
         return jsonify({'success': False, 'error': '任务当前不在等待状态'}), 409
+    if action == 'remove':
+        codes = data.get('codes', [])
+        if not codes or not isinstance(codes, list):
+            return jsonify({'success': False, 'error': '移除操作需要提供 codes 列表'}), 400
+        t['_remove_codes'] = codes
     t['_action'] = action
     t['_event'].set()  # 唤醒后台线程继续
     return jsonify({'success': True, 'action': action})
