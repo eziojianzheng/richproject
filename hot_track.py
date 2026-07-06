@@ -310,6 +310,7 @@ def _save_price_cache():
 
 # ============== 通达信 mootdx 行情 (TCP, 替代易被封的 akshare) ==============
 _tdx_client = None
+_tdx_lock = None
 
 
 def _get_tdx_client():
@@ -319,6 +320,15 @@ def _get_tdx_client():
         from mootdx.quotes import Quotes
         _tdx_client = Quotes.factory(market='std')
     return _tdx_client
+
+
+def _get_tdx_lock():
+    """获取 TDX 连接的线程锁(mootdx 客户端非线程安全, 并发会协议错乱)"""
+    global _tdx_lock
+    if _tdx_lock is None:
+        import threading
+        _tdx_lock = threading.Lock()
+    return _tdx_lock
 
 
 def _mootdx_offset(start):

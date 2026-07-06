@@ -87,6 +87,11 @@
     border-radius: 4px; font-size: 12px; cursor: pointer; white-space: nowrap;
   }
   .stale-banner .stale-btn:hover { background: #eab308; }
+  .stale-banner .stale-close {
+    background: transparent; color: #facc15; border: none; font-size: 14px;
+    cursor: pointer; padding: 2px 6px; opacity: 0.7;
+  }
+  .stale-banner .stale-close:hover { opacity: 1; }
   
   /* 控制台面板 */
   .console-panel {
@@ -572,6 +577,7 @@ let DATA = null;
 let curSort = 'times';       // 板块排序
 let curStockSort = 'daily';  // 股票排序: daily/20d/60d
 let isDarkTheme = true;
+let LAZY_EXPANDS = {};       // 按需展开: { "日期||板块": sortedStocks[] }
 
 // 控制台日志
 function logToConsole(message, type = 'info') {
@@ -1063,59 +1069,11 @@ function renderRow(day, order){
       </div>`;
     }).join('');
     
-    const expands = sortedStocks.map(s => {
-      const lastDate = day.date;
-      const track = s.track[lastDate];
-      const pct = track ? track.pct : null;
-      const belowMa10 = track ? track.below_ma10 : false;
-      const ma10 = track ? track.ma10 : null;
-      const isRemoved = s.remove_date === lastDate;
-      
-      let thumbClass = getThumbClass(pct, s.is_kcb_cyb);
-      if (isRemoved) {
-        thumbClass = 'below-ma10';
-      } else if (belowMa10) {
-        thumbClass = thumbClass + ' warn-ma10';
-      }
-      
-      const pctText = pct !== null ? (pct > 0 ? '+' : '') + pct.toFixed(1) + '%' : '—';
-      const desc = track && track.present ? (track.desc || '') : '';
-      const ma10Text = ma10 !== null ? `MA10: ${ma10.toFixed(2)}` : '';
-      const removeText = isRemoved ? ' ⚠️ 已跌破10日线，次日不再跟踪' : '';
+    // expand 详情改为 lazy 渲染(按需), 这里只存排序后的股票引用供点击时生成
+    // 将 sortedStocks 存到全局, 用 block唯一键(日期+板块名)索引
+    const expandKey = day.date + '||' + b.block;
+    LAZY_EXPANDS[expandKey] = sortedStocks;
 
-      // 预警链: 展示 预警日 → 第N天 → 移除 的完整过程
-      let warnChain = '';
-      if (s.warn_date) {
-        const datesArr = DATA.dates || [];
-        const warnIdx = datesArr.indexOf(s.warn_date);
-        const curIdx = datesArr.indexOf(lastDate);
-        const dayNum = (warnIdx >= 0 && curIdx >= 0) ? (curIdx - warnIdx + 1) : '?';
-        if (isRemoved) {
-          warnChain = `<div class="track-cell" style="border-color: #ff4d4d;">
-            <span class="tdesc" style="color: #ff6b6b;">⚠ ${s.warn_date.slice(4,6)}/${s.warn_date.slice(6)}预警 → ${lastDate.slice(4,6)}/${lastDate.slice(6)}(第${dayNum}天)移除</span></div>`;
-        } else {
-          warnChain = `<div class="track-cell" style="border-color: #eab308;">
-            <span class="tdesc" style="color: #facc15;">⚠ ${s.warn_date.slice(4,6)}/${s.warn_date.slice(6)}预警 (第${dayNum}天跌破MA10)</span></div>`;
-        }
-      }
-
-      return `<div class="stock-expand" data-code="${s.code}">
-        <div class="stock-expand-top">
-          <span class="stock-expand-name">${s.name}</span>
-          <span class="stock-expand-code">${s.code}</span>
-        </div>
-        <div class="stock-expand-track">
-          <div class="track-cell">
-            <span class="tp ${thumbClass.replace('thumb-', 'p-')}">${pctText}</span>
-            <span class="tdesc">${desc}</span>
-          </div>
-          ${ma10Text ? `<div class="track-cell"><span class="tdesc">${ma10Text}</span></div>` : ''}
-          ${warnChain}
-          ${removeText ? `<div class="track-cell" style="border-color: #ff4d4d;"><span class="tdesc" style="color: #ff4d4d;">${removeText}</span></div>` : ''}
-        </div>
-      </div>`;
-    }).join('');
-    
     // 收集该板块所有股票代码
     const allCodes = b.stocks.map(s => s.code);
     
@@ -1139,7 +1097,7 @@ function renderRow(day, order){
         </div>
         <div class="stock-grid">${thumbs}</div>
         <button class="expand-btn" onclick="toggleAllExpand(this, event)">展开全部</button>
-        <div class="stock-expand-container">${expands}</div>
+        <div class="stock-expand-container" data-expand-key="${expandKey}"></div>
       </div>`;
   }).join('');
 
@@ -1190,31 +1148,110 @@ function renderRow(day, order){
   </div>`;
 }
 
+// 按需渲染单只股票的展开详情(lazy, 避免首屏渲染上万隐藏DOM)
+function renderStockExpand(s, lastDate){
+  const track = s.track[lastDate];
+  const pct = track ? track.pct : null;
+  const belowMa10 = track ? track.below_ma10 : false;
+  const ma10 = track ? track.ma10 : null;
+  const isRemoved = s.remove_date === lastDate;
+
+  let thumbClass = getThumbClass(pct, s.is_kcb_cyb);
+  if (isRemoved) {
+    thumbClass = 'below-ma10';
+  } else if (belowMa10) {
+    thumbClass = thumbClass + ' warn-ma10';
+  }
+
+  const pctText = pct !== null ? (pct > 0 ? '+' : '') + pct.toFixed(1) + '%' : '—';
+  const desc = track && track.present ? (track.desc || '') : '';
+  const ma10Text = ma10 !== null ? `MA10: ${ma10.toFixed(2)}` : '';
+  const removeText = isRemoved ? ' ⚠️ 已跌破10日线，次日不再跟踪' : '';
+
+  let warnChain = '';
+  if (s.warn_date) {
+    const datesArr = DATA.dates || [];
+    const warnIdx = datesArr.indexOf(s.warn_date);
+    const curIdx = datesArr.indexOf(lastDate);
+    const dayNum = (warnIdx >= 0 && curIdx >= 0) ? (curIdx - warnIdx + 1) : '?';
+    if (isRemoved) {
+      warnChain = `<div class="track-cell" style="border-color: #ff4d4d;">
+        <span class="tdesc" style="color: #ff6b6b;">⚠ ${s.warn_date.slice(4,6)}/${s.warn_date.slice(6)}预警 → ${lastDate.slice(4,6)}/${lastDate.slice(6)}(第${dayNum}天)移除</span></div>`;
+    } else {
+      warnChain = `<div class="track-cell" style="border-color: #eab308;">
+        <span class="tdesc" style="color: #facc15;">⚠ ${s.warn_date.slice(4,6)}/${s.warn_date.slice(6)}预警 (第${dayNum}天跌破MA10)</span></div>`;
+    }
+  }
+
+  return `<div class="stock-expand" data-code="${s.code}">
+    <div class="stock-expand-top">
+      <span class="stock-expand-name">${s.name}</span>
+      <span class="stock-expand-code">${s.code}</span>
+    </div>
+    <div class="stock-expand-track">
+      <div class="track-cell">
+        <span class="tp ${thumbClass.replace('thumb-', 'p-')}">${pctText}</span>
+        <span class="tdesc">${desc}</span>
+      </div>
+      ${ma10Text ? `<div class="track-cell"><span class="tdesc">${ma10Text}</span></div>` : ''}
+      ${warnChain}
+      ${removeText ? `<div class="track-cell" style="border-color: #ff4d4d;"><span class="tdesc" style="color: #ff4d4d;">${removeText}</span></div>` : ''}
+    </div>
+  </div>`;
+}
+
 function toggleExpand(el, event){
   event.stopPropagation();
   const code = el.dataset.code;
   const blockCard = el.closest('.block-card');
   const container = blockCard.querySelector('.stock-expand-container');
+  const expandKey = container.dataset.expandKey;
   const expand = container.querySelector(`[data-code="${code}"]`);
-  if(expand.classList.contains('show')){
+  if(expand && expand.classList.contains('show')){
     expand.classList.remove('show');
     el.style.borderColor = 'transparent';
   } else {
-    container.querySelectorAll('.stock-expand').forEach(e => e.classList.remove('show'));
+    // 隐藏当前显示的, 清除高亮
+    container.querySelectorAll('.stock-expand.show').forEach(e => e.classList.remove('show'));
     blockCard.querySelectorAll('.stock-thumb').forEach(t => t.style.borderColor = 'transparent');
-    expand.classList.add('show');
-    el.style.borderColor = '#fff';
+    // lazy: 若该股票 expand 尚未渲染, 现在生成
+    let target = expand;
+    if(!target){
+      const stocks = LAZY_EXPANDS[expandKey] || [];
+      const s = stocks.find(x => x.code === code);
+      if(s){
+        const lastDate = el.dataset.date;
+        container.insertAdjacentHTML('beforeend', renderStockExpand(s, lastDate));
+        target = container.querySelector(`[data-code="${code}"]`);
+      }
+    }
+    if(target){
+      target.classList.add('show');
+      el.style.borderColor = '#fff';
+    }
   }
 }
 
 function toggleAllExpand(btn, event){
   event.stopPropagation();
   const container = btn.parentElement.querySelector('.stock-expand-container');
+  const expandKey = container.dataset.expandKey;
+  const stocks = LAZY_EXPANDS[expandKey] || [];
+  const lastDate = btn.closest('.date-row').querySelector('.date-label').textContent.replace(/-/g,'');
+  // 取真实日期(从 thumb data-date 取更可靠)
+  const aThumb = btn.parentElement.querySelector('.stock-thumb');
+  const dayDate = aThumb ? aThumb.dataset.date : lastDate;
   const allShow = container.querySelectorAll('.stock-expand.show').length > 0;
   if(allShow){
     container.querySelectorAll('.stock-expand').forEach(e => e.classList.remove('show'));
     btn.textContent = '展开全部';
   } else {
+    // lazy: 确保所有 expand 已渲染
+    stocks.forEach(s => {
+      if(!container.querySelector(`[data-code="${s.code}"]`)){
+        container.insertAdjacentHTML('beforeend', renderStockExpand(s, dayDate));
+      }
+    });
     container.querySelectorAll('.stock-expand').forEach(e => e.classList.add('show'));
     btn.textContent = '收起全部';
   }
@@ -1222,6 +1259,7 @@ function toggleAllExpand(btn, event){
 
 function render(){
   if(!DATA) return;
+  LAZY_EXPANDS = {};   // 清空按需展开缓存(避免引用旧数据)
   const sortName = curSort==='total' ? '板块累计票数' : '板块累计次数';
   document.getElementById('meta').textContent =
     `区间 ${DATA.start} ~ ${DATA.end} | 交易日 ${DATA.dates.length} 天 | 入选板块 ${DATA.blocks_summary.length} 个 | 排序: ${sortName}(全局一致)`;
@@ -1587,10 +1625,7 @@ async function restoreServerResult(){
     const metaEl = document.getElementById('meta');
     metaEl.innerHTML =
       `<span style="color:var(--text-muted)">已恢复上次计算结果 (${j.start}~${j.end}${when?'，'+when:''})，如需最新请点「计算」</span>`;
-    // 新鲜度警告
-    if(j.stale){
-      showStaleBanner(j.stale_reason || '数据库已有新数据，当前结果可能不完整');
-    }
+    // 已恢复上次结果, 如需最新请点「计算」(不再弹 stale 误报)
     return true;
   }catch(e){ return false; }
 }
@@ -1604,7 +1639,12 @@ function showStaleBanner(msg){
     const meta = document.getElementById('meta');
     meta.parentNode.insertBefore(el, meta.nextSibling);
   }
-  el.innerHTML = `<span class="stale-icon">&#9888;</span><span class="stale-msg">${msg}</span><button class="stale-btn" onclick="triggerCompute()">重新计算</button>`;
+  el.innerHTML = `<span class="stale-icon">&#9888;</span><span class="stale-msg">${msg}</span><button class="stale-btn" onclick="triggerCompute()">重新计算</button><button class="stale-close" onclick="dismissStaleBanner()" title="本次会话不再提示">✕</button>`;
+}
+
+function dismissStaleBanner(){
+  sessionStorage.setItem('hotStaleDismissed', '1');
+  hideStaleBanner();
 }
 
 function hideStaleBanner(){

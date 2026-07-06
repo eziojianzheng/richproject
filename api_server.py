@@ -136,6 +136,17 @@ hot_last = None
 HOT_LAST_FILE = '.hot_last_result.json'
 
 
+def _slim_by_date_tracks(data):
+    """裁剪 by_date 里每只股票的 track 字段: 只保留当天数据。
+    前端只用 s.track[当天], 其余日期是冗余(可占总体积~90%)。原地修改。"""
+    for day in data.get('by_date', []):
+        day_date = day['date']
+        for block in day.get('blocks', []):
+            for stock in block.get('stocks', []):
+                tr = stock.get('track', {})
+                stock['track'] = {day_date: tr[day_date]} if day_date in tr else {}
+
+
 def _save_hot_last():
     try:
         with open(HOT_LAST_FILE, 'w', encoding='utf-8') as f:
@@ -150,6 +161,9 @@ def _load_hot_last():
         if os.path.exists(HOT_LAST_FILE):
             with open(HOT_LAST_FILE, 'r', encoding='utf-8') as f:
                 hot_last = json.load(f)
+            # 启动时裁剪旧缓存里冗余的 track 数据
+            if hot_last and hot_last.get('result'):
+                _slim_by_date_tracks(hot_last['result'])
     except Exception:
         hot_last = None
 
@@ -1551,6 +1565,376 @@ def ocr_recognize():
     })
 
 
+# ============== 盯盘页面 ==============
+
+@app.route('/monitor', methods=['GET'])
+def monitor_page():
+    """盯盘页面: 上证指数日K + 分时图"""
+    return render_template('monitor.html')
+
+
+# 分时时间轴生成 (9:30-11:30, 13:00-15:00 共240个点)
+def _minute_time_axis(n):
+    """生成 n 个分时时间点 (HH:MM)"""
+    from datetime import datetime, timedelta
+    times = []
+    # 上午 9:30-11:30 = 120 分钟, 下午 13:00-15:00 = 120 分钟
+    am_start = datetime(2026, 1, 1, 9, 30)
+    pm_start = datetime(2026, 1, 1, 13, 0)
+    for i in range(min(n, 240)):
+        if i < 120:
+            t = am_start + timedelta(minutes=i)
+        else:
+            t = pm_start + timedelta(minutes=i - 120)
+        times.append(t.strftime('%H:%M'))
+    return times
+
+
+@app.route('/api/monitor/index/daily', methods=['GET'])
+def monitor_index_daily():
+    """上证指数日K线 (mootdx index_bars)
+    参数: count=120 (取最近N根日K)
+    """
+    try:
+        import hot_track as ht
+        count = request.args.get('count', default=120, type=int)
+        count = max(20, min(count, 800))
+        with ht._get_tdx_lock():
+            client = ht._get_tdx_client()
+            df = client.index_bars(symbol='000001', frequency=9, start=0, offset=count)
+        if df is None or df.empty:
+            return jsonify({'success': False, 'error': '无数据'}), 404
+        bars = []
+        for _, row in df.iterrows():
+            bars.append({
+                'date': str(row['datetime'])[:10],   # YYYY-MM-DD
+                'open': round(float(row['open']), 2),
+                'close': round(float(row['close']), 2),
+                'high': round(float(row['high']), 2),
+                'low': round(float(row['low']), 2),
+                'vol': float(row['vol']),
+                'amount': float(row['amount']),
+            })
+        return jsonify({'success': True, 'bars': bars})
+    except Exception as e:
+        return jsonify({'success': False, 'error': f'{type(e).__name__}: {e}'}), 500
+
+
+@app.route('/api/monitor/index/minute', methods=['GET'])
+def monitor_index_minute():
+    """上证指数当日分时 (mootdx minute, 代码用 1A0001)"""
+    try:
+        import hot_track as ht
+        with ht._get_tdx_lock():
+            client = ht._get_tdx_client()
+            df = client.minute(symbol='1A0001')
+        if df is None or df.empty:
+            return jsonify({'success': False, 'error': '无当日分时数据(可能非交易时段)'}), 404
+        times = _minute_time_axis(len(df))
+        points = []
+        for i, row in df.iterrows():
+            points.append({
+                'time': times[i] if i < len(times) else str(i),
+                'price': round(float(row['price']), 2),
+                'vol': float(row['vol']),
+            })
+        return jsonify({'success': True, 'points': points, 'date': 'today'})
+    except Exception as e:
+        return jsonify({'success': False, 'error': f'{type(e).__name__}: {e}'}), 500
+
+
+@app.route('/api/monitor/index/minutes', methods=['GET'])
+def monitor_index_minutes():
+    """上证指数历史分时 (mootdx minutes, 代码用 1A0001)
+    参数: date=20260703 (YYYYMMDD)
+    """
+    date = request.args.get('date', '')
+    if not re.match(r'^\d{8}$', date):
+        return jsonify({'success': False, 'error': 'date 参数需为 YYYYMMDD'}), 400
+    try:
+        import hot_track as ht
+        with ht._get_tdx_lock():
+            client = ht._get_tdx_client()
+            df = client.minutes(symbol='1A0001', date=int(date))
+        if df is None or df.empty:
+            return jsonify({'success': False, 'error': f'{date} 无分时数据'}), 404
+        times = _minute_time_axis(len(df))
+        points = []
+        for i, row in df.iterrows():
+            points.append({
+                'time': times[i] if i < len(times) else str(i),
+                'price': round(float(row['price']), 2),
+                'vol': float(row['vol']),
+            })
+        # 格式化日期显示
+        date_fmt = f'{date[:4]}-{date[4:6]}-{date[6:8]}'
+        return jsonify({'success': True, 'points': points, 'date': date_fmt})
+    except Exception as e:
+        return jsonify({'success': False, 'error': f'{type(e).__name__}: {e}'}), 500
+
+
+@app.route('/api/monitor/index/leading', methods=['GET'])
+def monitor_index_leading():
+    """上证领先指标(小盘不加权平均): 拉全市场A股实时报价算算术平均涨跌幅。
+    返回 leading_pct(领先指标涨跌幅%) 和 index_last_close(上证昨收),
+    前端用 index_last_close * (1+leading_pct/100) 换算黄线点位。
+    60秒缓存避免频繁拉取全市场报价(单次约2s)。"""
+    global _leading_cache
+    import time as _time
+    if '_leading_cache' not in globals():
+        _leading_cache = None
+    if _leading_cache and (_time.time() - _leading_cache['ts'] < 60):
+        return jsonify(_leading_cache['data'])
+    import re as _re
+    try:
+        import hot_track as ht
+        lock = ht._get_tdx_lock()
+        with lock:
+            client = ht._get_tdx_client()
+            # 取沪深全部股票代码(缓存1小时, 代码列表变化少)
+            global _astock_codes_cache
+            if '_astock_codes_cache' not in globals():
+                _astock_codes_cache = None
+            if _astock_codes_cache and (_time.time() - _astock_codes_cache['ts'] < 3600):
+                codes = _astock_codes_cache['codes']
+            else:
+                sh = client.stocks(market=1)
+                sz = client.stocks(market=0)
+                def _is_a(code):
+                    return _re.match(r'^(60|00|30|68)\d{4}$', str(code)) is not None
+                codes = [c for c in sh['code'].tolist() if _is_a(c)] + \
+                        [c for c in sz['code'].tolist() if _is_a(c)]
+                _astock_codes_cache = {'codes': codes, 'ts': _time.time()}
+            # 批量拉报价(每次最多80只)
+            import pandas as pd
+            frames = []
+            for i in range(0, len(codes), 80):
+                batch = codes[i:i + 80]
+                df = client.quotes(symbol=batch)
+                if df is not None and not df.empty:
+                    frames.append(df)
+            if not frames:
+                return jsonify({'success': False, 'error': '无报价数据'}), 404
+            all_q = pd.concat(frames, ignore_index=True)
+            valid = all_q[(all_q['last_close'] > 0) & (all_q['price'] > 0)]
+            if valid.empty:
+                return jsonify({'success': False, 'error': '无有效报价'}), 404
+            pct = ((valid['price'] - valid['last_close']) / valid['last_close'] * 100).mean()
+            # 取上证指数昨收(用于前端换算黄线点位)
+            idx_q = client.quotes(symbol='1A0001')
+            idx_last_close = float(idx_q['last_close'].iloc[0]) if idx_q is not None and not idx_q.empty else 0
+        result = {
+            'success': True,
+            'leading_pct': round(float(pct), 3),
+            'index_last_close': round(idx_last_close, 2),
+        }
+        _leading_cache = {'data': result, 'ts': _time.time()}
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({'success': False, 'error': f'{type(e).__name__}: {e}'}), 500
+
+
+# ===== 个股相关接口 (盯盘第二列) =====
+
+_stock_list_cache = {}  # {(segment, sort): {'data':..., 'ts':...}}
+_all_quotes_cache = None  # 全市场A股报价缓存(60秒), 供cyb/kcb共用
+
+
+def _fetch_all_a_quotes():
+    """拉全市场A股实时报价并计算涨跌幅, 60秒缓存。cyb/kcb共用, 避免重复拉取。"""
+    import re as _re
+    import time as _time
+    global _all_quotes_cache, _astock_codes_cache
+    if _all_quotes_cache and (_time.time() - _all_quotes_cache['ts'] < 60):
+        return _all_quotes_cache['data']
+    import hot_track as ht
+    import pandas as pd
+    with ht._get_tdx_lock():
+        client = ht._get_tdx_client()
+        # 复用全市场代码缓存
+        if '_astock_codes_cache' not in globals():
+            _astock_codes_cache = None
+        if _astock_codes_cache and (_time.time() - _astock_codes_cache['ts'] < 3600):
+            all_codes = _astock_codes_cache['codes']
+            all_names = _astock_codes_cache.get('names', {})
+        else:
+            sh = client.stocks(market=1)
+            sz = client.stocks(market=0)
+            def _is_a(code):
+                return _re.match(r'^(60|00|30|68)\d{4}$', str(code)) is not None
+            all_codes = [c for c in sh['code'].tolist() if _is_a(c)] + \
+                        [c for c in sz['code'].tolist() if _is_a(c)]
+            all_names = {}
+            for _, row in sh.iterrows():
+                all_names[str(row['code'])] = str(row.get('name', ''))
+            for _, row in sz.iterrows():
+                all_names[str(row['code'])] = str(row.get('name', ''))
+            _astock_codes_cache = {'codes': all_codes, 'names': all_names, 'ts': _time.time()}
+        # 批量拉全市场报价
+        frames = []
+        for i in range(0, len(all_codes), 80):
+            batch = all_codes[i:i + 80]
+            df = client.quotes(symbol=batch)
+            if df is not None and not df.empty:
+                frames.append(df)
+    if not frames:
+        return None
+    all_q = pd.concat(frames, ignore_index=True)
+    valid = all_q[(all_q['last_close'] > 0) & (all_q['price'] > 0)].copy()
+    valid['pct'] = (valid['price'] - valid['last_close']) / valid['last_close'] * 100
+    # 组装记录列表
+    records = []
+    for _, row in valid.iterrows():
+        code = str(row.get('code', ''))
+        records.append({
+            'code': code,
+            'name': all_names.get(code, ''),
+            'price': round(float(row['price']), 2),
+            'pct': round(float(row['pct']), 2),
+            'amount': round(float(row.get('amount', 0)) / 1e8, 2),
+            'vol': float(row.get('vol', 0)),
+        })
+    _all_quotes_cache = {'data': records, 'ts': _time.time()}
+    return records
+
+
+@app.route('/api/monitor/stocks/list', methods=['GET'])
+def monitor_stocks_list():
+    """创业板/科创板个股列表, 按涨幅/成交额/成交量排序。
+    参数: segment=cyb(创业板30开头)|kcb(科创板688开头), sort=pct|amount|vol, limit=50"""
+    import time as _time
+    segment = request.args.get('segment', 'cyb')
+    sort = request.args.get('sort', 'pct')
+    limit = request.args.get('limit', default=50, type=int)
+    if segment not in ('cyb', 'kcb'):
+        return jsonify({'success': False, 'error': 'segment 需为 cyb 或 kcb'}), 400
+    if sort not in ('pct', 'amount', 'vol'):
+        sort = 'pct'
+    limit = max(5, min(limit, 200))
+    # 60秒缓存
+    cache_key = (segment, sort)
+    cached = _stock_list_cache.get(cache_key)
+    if cached and (_time.time() - cached['ts'] < 60):
+        return jsonify({'success': True, 'stocks': cached['data'][:limit]})
+    try:
+        all_records = _fetch_all_a_quotes()
+        if not all_records:
+            return jsonify({'success': False, 'error': '无报价数据'}), 404
+        # 按板块过滤
+        prefix = '30' if segment == 'cyb' else '688'
+        stocks = [r for r in all_records if r['code'].startswith(prefix)]
+        # 排序
+        stocks.sort(key=lambda r: r.get(sort, 0), reverse=True)
+        _stock_list_cache[cache_key] = {'data': stocks, 'ts': _time.time()}
+        return jsonify({'success': True, 'stocks': stocks[:limit]})
+    except Exception as e:
+        return jsonify({'success': False, 'error': f'{type(e).__name__}: {e}'}), 500
+
+
+@app.route('/api/monitor/stock/daily', methods=['GET'])
+def monitor_stock_daily():
+    """个股日K线 (mootdx bars, 注意 stocks 用 index 作 datetime)。
+    参数: code=300001, count=120"""
+    code = request.args.get('code', '')
+    if not re.match(r'^\d{6}$', code):
+        return jsonify({'success': False, 'error': 'code 需为6位数字'}), 400
+    count = request.args.get('count', default=120, type=int)
+    count = max(20, min(count, 800))
+    try:
+        import hot_track as ht
+        with ht._get_tdx_lock():
+            client = ht._get_tdx_client()
+            df = client.bars(symbol=code, frequency=9, offset=count)
+        if df is None or len(df) == 0:
+            return jsonify({'success': False, 'error': f'{code} 无数据'}), 404
+        df = df.sort_index()
+        bars = []
+        for idx, row in df.iterrows():
+            bars.append({
+                'date': str(idx)[:10],
+                'open': round(float(row['open']), 2),
+                'close': round(float(row['close']), 2),
+                'high': round(float(row['high']), 2),
+                'low': round(float(row['low']), 2),
+                'vol': float(row['vol']),
+                'amount': float(row.get('amount', 0)),
+            })
+        return jsonify({'success': True, 'bars': bars})
+    except Exception as e:
+        return jsonify({'success': False, 'error': f'{type(e).__name__}: {e}'}), 500
+
+
+@app.route('/api/monitor/stock/minute', methods=['GET'])
+def monitor_stock_minute():
+    """个股当日分时 (mootdx minute, 纯6位代码)。
+    参数: code=300001"""
+    code = request.args.get('code', '')
+    if not re.match(r'^\d{6}$', code):
+        return jsonify({'success': False, 'error': 'code 需为6位数字'}), 400
+    try:
+        import hot_track as ht
+        with ht._get_tdx_lock():
+            client = ht._get_tdx_client()
+            df = client.minute(symbol=code)
+        if df is None or df.empty:
+            return jsonify({'success': False, 'error': '无当日分时数据(可能非交易时段)'}), 404
+        times = _minute_time_axis(len(df))
+        points = []
+        for i, row in df.iterrows():
+            points.append({
+                'time': times[i] if i < len(times) else str(i),
+                'price': round(float(row['price']), 2),
+                'vol': float(row['vol']),
+            })
+        return jsonify({'success': True, 'points': points, 'date': 'today'})
+    except Exception as e:
+        return jsonify({'success': False, 'error': f'{type(e).__name__}: {e}'}), 500
+
+
+@app.route('/api/monitor/stock/minutes5', methods=['GET'])
+def monitor_stock_minutes5():
+    """个股5日分时拼接 (逐日拉 minutes, 拼成一条线)。
+    参数: code=300001"""
+    code = request.args.get('code', '')
+    if not re.match(r'^\d{6}$', code):
+        return jsonify({'success': False, 'error': 'code 需为6位数字'}), 400
+    try:
+        import hot_track as ht
+        lock = ht._get_tdx_lock()
+        with lock:
+            client = ht._get_tdx_client()
+            # 先取最近5个交易日日期
+            df_k = client.bars(symbol=code, frequency=9, offset=5)
+            if df_k is None or len(df_k) == 0:
+                return jsonify({'success': False, 'error': f'{code} 无K线数据'}), 404
+            df_k = df_k.sort_index()
+            dates = [str(idx)[:10].replace('-', '') for idx in df_k.index]
+            # 逐日拉分时, 拼接
+            all_points = []
+            day_labels = []
+            for d in dates:
+                try:
+                    df_m = client.minutes(symbol=code, date=int(d))
+                except Exception:
+                    df_m = None
+                if df_m is None or df_m.empty:
+                    continue
+                times = _minute_time_axis(len(df_m))
+                day_labels.append(f'{d[4:6]}-{d[6:8]}')
+                for i, row in df_m.iterrows():
+                    all_points.append({
+                        'time': times[i] if i < len(times) else str(i),
+                        'price': round(float(row['price']), 2),
+                        'vol': float(row['vol']),
+                        'day': f'{d[4:6]}-{d[6:8]}',
+                    })
+        if not all_points:
+            return jsonify({'success': False, 'error': '无5日分时数据'}), 404
+        return jsonify({'success': True, 'points': all_points, 'days': day_labels})
+    except Exception as e:
+        return jsonify({'success': False, 'error': f'{type(e).__name__}: {e}'}), 500
+
+
 # ============== 热门股追踪页面 ==============
 
 @app.route('/hot', methods=['GET'])
@@ -1623,6 +2007,9 @@ def api_hot_track():
                             'missing': missing
                         })
     
+    # 瘦身: by_date 里每只股票只保留当天的 track(前端只用 s.track[当天])
+    _slim_by_date_tracks(data)
+
     return jsonify({
         'success': True, 
         **data,
@@ -1842,6 +2229,8 @@ def hot_compute_task(task_id, start, end, with_price):
         t['result'] = final
         t['status'] = 'completed'
         t['progress'] = 100
+        # 瘦身: 裁剪 by_date 里非当天 track(前端只用 s.track[当天]), 减小体积~95%
+        _slim_by_date_tracks(final)
         # 服务端持久化最近结果(供刷新恢复)
         global hot_last
         hot_last = {'start': start, 'end': end, 'price': with_price,
@@ -1856,32 +2245,14 @@ def hot_compute_task(task_id, start, end, with_price):
 
 @app.route('/api/hot/last', methods=['GET'])
 def api_hot_last():
-    """返回最近一次计算结果(服务端缓存, 刷新恢复用)。无则 has=false。
-    额外检查新鲜度: 若DB日期范围超出缓存覆盖，返回 stale=true。"""
+    """返回最近一次计算结果(服务端缓存, 刷新恢复用)。"""
     if not hot_last or not hot_last.get('result'):
         return jsonify({'success': True, 'has': False})
-    # 新鲜度检查: 对比缓存覆盖范围 vs DB实际范围
-    stale = False
-    stale_reason = None
-    try:
-        import db as _db
-        db_dates = sorted(_db.get_submitted_dates())
-        if db_dates:
-            cached_start = hot_last.get('start', '')
-            cached_end = hot_last.get('end', '')
-            db_min, db_max = min(db_dates), max(db_dates)
-            if db_min < cached_start or db_max > cached_end:
-                stale = True
-                stale_reason = f'数据库已有新数据({db_min}~{db_max})，缓存仅覆盖{cached_start}~{cached_end}，需重新计算'
-    except Exception:
-        pass
     return jsonify({
         'success': True, 'has': True,
         'start': hot_last.get('start'), 'end': hot_last.get('end'),
         'price': hot_last.get('price', True), 'saved_at': hot_last.get('saved_at'),
         'result': hot_last['result'],
-        'stale': stale,
-        'stale_reason': stale_reason,
     })
 
 
