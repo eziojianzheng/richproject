@@ -154,7 +154,41 @@
 </div>
 
 <script>
-function toggleCard(id) { document.getElementById(id).classList.toggle('collapsed'); }
+function toggleCard(id) {
+  document.getElementById(id).classList.toggle('collapsed');
+  saveUpdateConfig();  // 保存卡片折叠状态
+}
+// ===== 状态持久化 (localStorage) =====
+function saveUpdateConfig() {
+  const config = {
+    startDate: document.getElementById('startDate').value,
+    endDate: document.getElementById('endDate').value,
+    uniStart: document.getElementById('uniStart').value,
+    uniEnd: document.getElementById('uniEnd').value,
+    cardDownload: document.getElementById('cardDownload').classList.contains('collapsed'),
+    cardExtract: document.getElementById('cardExtract').classList.contains('collapsed')
+  };
+  localStorage.setItem('updateConfig', JSON.stringify(config));
+}
+function loadUpdateConfig() {
+  const saved = localStorage.getItem('updateConfig');
+  if (!saved) return;
+  try {
+    const c = JSON.parse(saved);
+    if (c.startDate) document.getElementById('startDate').value = c.startDate;
+    if (c.endDate) document.getElementById('endDate').value = c.endDate;
+    if (c.uniStart) document.getElementById('uniStart').value = c.uniStart;
+    if (c.uniEnd) document.getElementById('uniEnd').value = c.uniEnd;
+    if (c.cardDownload) document.getElementById('cardDownload').classList.add('collapsed');
+    if (c.cardExtract) document.getElementById('cardExtract').classList.add('collapsed');
+  } catch(e) {}
+}
+// 页面加载时恢复配置
+loadUpdateConfig();
+// 日期变化时自动保存
+['startDate','endDate','uniStart','uniEnd'].forEach(id => {
+  document.getElementById(id).addEventListener('change', saveUpdateConfig);
+});
 function todayStr() {
   const d = new Date(), p = n => String(n).padStart(2, '0');
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;

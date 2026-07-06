@@ -313,6 +313,7 @@
   .thumb-mg { background: rgba(76,175,80,0.25); color: #4caf50; }
   .thumb-hg { background: rgba(27,94,32,0.25); color: #1b5e20; }
   .thumb-limit { background: rgba(255,214,10,0.3); color: #ffd60a; }
+  .thumb-limit-down { background: rgba(168,85,247,0.3); color: #a855f7; }   /* 跌停: 紫色 */
   .thumb-absent { background: var(--thumb-absent-bg); color: var(--thumb-absent-text); }
   
   /* 展开详情 */
@@ -350,6 +351,7 @@
   .p-hg { color:#1b5e20; }
   .p-flat { color:#9aa0a6; }
   .p-limit { color:#ffd60a; }
+  .p-limit-down { color:#a855f7; }   /* 跌停: 紫色 */
 
   /* 上下分屏 */
   .split { display:flex; flex-direction:column; gap:0; }
@@ -932,20 +934,33 @@ function pctClass(pct){
   return 'p-flat';
 }
 
+// 统一判定: 涨停(金) / 跌停(紫) / 普通涨跌色
+// code 用于判断科创板/创业板(688/300/301开头, 涨跌幅±20%)
+function stockPctClass(pct, code){
+  if(typeof pct !== 'number') return 'p-flat';
+  const is20 = code && /^(688|300|301)/.test(code);
+  const up = is20 ? 19.4 : 9.8;
+  const dn = is20 ? -19.4 : -9.8;
+  if(pct >= up && pct <= (is20 ? 20.6 : 10.6)) return 'p-limit';
+  if(pct <= dn && pct >= (is20 ? -20.6 : -10.6)) return 'p-limit-down';
+  return pctClass(pct);
+}
+
 function trackCell(d, cell, isKcbCyb){
   const pct = cell ? cell.pct : null;
   let ptxt = '—';
   if(typeof pct === 'number') ptxt = (pct>0?'+':'')+pct.toFixed(1)+'%';
 
   let limit = false;
+  let limitDown = false;
   if(typeof pct === 'number'){
-    if(isKcbCyb){ limit = pct >= 19.4; }
-    else { limit = pct >= 9.8 && pct <= 10.6; }
+    if(isKcbCyb){ limit = pct >= 19.4; limitDown = pct <= -19.4; }
+    else { limit = pct >= 9.8 && pct <= 10.6; limitDown = pct <= -9.8 && pct >= -10.6; }
   }
   const desc = (cell && cell.present) ? (cell.desc||'') : '';
   if(desc.includes('一字板')) limit = true;
 
-  const pcls = limit ? 'p-limit' : pctClass(pct);
+  const pcls = limit ? 'p-limit' : (limitDown ? 'p-limit-down' : pctClass(pct));
   const absent = (!cell || !cell.present) ? 'absent' : '';
   return `<div class="track-cell ${absent}">
     <div class="tp ${pcls}">${ptxt}</div>
@@ -966,6 +981,8 @@ function getThumbClass(pct, isKcbCyb){
   if(pct === null || pct === undefined) return 'thumb-absent';
   if(isKcbCyb && pct >= 19.4) return 'thumb-limit';
   if(!isKcbCyb && pct >= 9.8 && pct <= 10.6) return 'thumb-limit';
+  if(isKcbCyb && pct <= -19.4) return 'thumb-limit-down';
+  if(!isKcbCyb && pct <= -9.8 && pct >= -10.6) return 'thumb-limit-down';
   const a = Math.abs(pct);
   if(pct > 0){
     if(a >= 7) return 'thumb-hr';
@@ -1149,7 +1166,7 @@ function renderRow(day, order){
     return `<div class="hi-item" title="${s.name} ${s.lianban} ${s.block}"><span class="hi-lb">${s.lianban}</span> ${s.name}${tagHtml}</div>`;
   }).join('');
   const brokens = (sum.broken_stocks || []).map(s => {
-    const cls = pctClass(s.pct);
+    const cls = stockPctClass(s.pct, s.code);
     const ptxt = (typeof s.pct === 'number') ? ((s.pct > 0 ? '+' : '') + s.pct.toFixed(1) + '%') : '—';
     const lbTag = s.current ? `${s.current}进${s.current+1}断 ` : '断 ';
     const bTag = s.reason || (s.block === '市场连板股' ? '' : s.block || '');

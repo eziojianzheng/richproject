@@ -75,16 +75,40 @@
   </aside>
 
   <main class="content">
-    <iframe id="frame" src="/update" title="内容区"></iframe>
+    <iframe id="frame" src="" title="内容区"></iframe>
   </main>
 
 <script>
+  // hash -> iframe src 映射
+  const TAB_MAP = { '#/update': '/update', '#/hot': '/hot', '#/monitor': '/monitor' };
+  const DEFAULT_SRC = '/update';
+
+  // 根据 hash 设置 iframe src 并高亮对应导航项
+  function applyHash() {
+    const hash = location.hash || '#/update';
+    const src = TAB_MAP[hash] || DEFAULT_SRC;
+    document.getElementById('frame').src = src;
+    // 高亮对应导航项
+    document.querySelectorAll('.nav-item').forEach(n => {
+      n.classList.toggle('active', n.dataset.src === src);
+    });
+  }
+
   function nav(el) {
     if (el.classList.contains('disabled')) return;
-    document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
-    el.classList.add('active');
-    document.getElementById('frame').src = el.dataset.src;
+    // 写 hash 触发 applyHash (hashchange 监听会处理 src 和高亮)
+    const src = el.dataset.src;
+    const hash = Object.keys(TAB_MAP).find(k => TAB_MAP[k] === src) || '#/update';
+    if (location.hash !== hash) {
+      location.hash = hash;  // 触发 hashchange
+    } else {
+      applyHash();  // hash 未变也强制应用(同 tab 重复点击)
+    }
   }
+
+  // 启动时恢复 tab + 监听浏览器前进/后退
+  applyHash();
+  window.addEventListener('hashchange', applyHash);
 </script>
 </body>
 </html>
