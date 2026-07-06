@@ -26,11 +26,11 @@ python api_server.py          # 主服务, http://127.0.0.1:5000
 
 - 依赖见 `requirements.txt`；`bootstrap.py` 会在部分脚本启动时自动补装缺失依赖。
 - Windows + PowerShell 环境。命令分隔用 `;`（不是 `&&`）。
-- 关键依赖：flask, requests, beautifulsoup4, PyYAML, openpyxl, Pillow, numpy, **psycopg2-binary**（PostgreSQL）, **mootdx**（通达信行情）, akshare（旧，交易日历仍在用）, rapidocr_onnxruntime（旧本地 OCR，现主要用 GLM-OCR）。
+- 关键依赖：flask, requests, beautifulsoup4, PyYAML, openpyxl, Pillow, numpy, **psycopg2-binary**（PostgreSQL）, **mootdx**（通达信行情 + 交易日历）, rapidocr_onnxruntime（旧本地 OCR，现主要用 GLM-OCR）。
 
 ### 外部依赖服务
 - **智谱 GLM**：OCR(`glm-ocr`) + 视觉模型(`GLM-4.5V`)，key 在 `config.yml` 的 `ai.zhipu.api_key`。
-- **PostgreSQL**：跑在 Docker 容器 `postgres-local`，映射 `localhost:15432`，账号 `postgres/postgres`，库 `postgres`。**需先启动 Docker Desktop 且容器运行**，否则入库/追踪不可用。
+- **PostgreSQL**：跑在 Docker 容器 `some-postgres`，映射 `localhost:15432`，账号 `postgres/mysecretpassword`，库 `postgres`。**需先启动 Docker Desktop 且容器运行**，否则入库/追踪不可用。
 - **通达信 mootdx**：TCP 直连行情服务器（`Quotes.factory(market='std')`），取日线。
 
 ---

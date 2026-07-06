@@ -28,6 +28,11 @@ ensure_dependencies({
     'flask': 'flask>=3.0.0',
     'requests': 'requests>=2.31.0',
     'bs4': 'beautifulsoup4>=4.12.0',
+    'yaml': 'PyYAML>=6.0',
+    'openpyxl': 'openpyxl>=3.1.0',
+    'rapidocr_onnxruntime': 'rapidocr_onnxruntime>=1.3.0',
+    'mootdx': 'mootdx>=0.11.0',
+    'psycopg2': 'psycopg2-binary>=2.9.0',
 })
 
 from flask import Flask, request, jsonify, render_template
@@ -445,16 +450,17 @@ _TRADE_DAYS_MAX = None   # 日历覆盖的最大日期(用于判断"超出日历
 
 def get_trade_days():
     """
-    返回A股交易日集合(YYYYMMDD)，用 akshare 交易日历，带内存缓存。
+    返回A股交易日集合(YYYYMMDD)，用 mootdx 交易日历(新浪数据源)，带内存缓存。
     获取失败返回 None（调用方回退到工作日判断）。
     """
     global _TRADE_DAYS, _TRADE_DAYS_MAX
     if _TRADE_DAYS is not None:
         return _TRADE_DAYS
     try:
-        import akshare as ak
-        df = ak.tool_trade_date_hist_sina()
-        days = {str(d).replace('-', '') for d in df['trade_date']}
+        from mootdx.utils.holiday import holidays
+        df = holidays()
+        # mootdx holidays() 返回列 ['date', 'year'], date 为 datetime.date
+        days = {str(d).replace('-', '') for d in df['date']}
         if not days:
             return None
         _TRADE_DAYS = days
@@ -685,7 +691,37 @@ def extract_task(task_id, dates, submit_to_db=True, base_dir='dataresource',
         it = items[i]
         folder = os.path.join(base_dir, d)
         try:
-            if not os.path.isdir(folder) or not check_folder_has_images(folder):
+            # 默认跳过已存在 Excel(verified 或 manualcheck), 避免重复提取
+            exist_fp, exist_st = _db.find_excel(d, output_dir)
+            if exist_fp:
+                it['status'] = 'skipped'
+                it['message'] = f'已存在Excel({exist_st})，跳过提取'
+                extracted += 1
+                # 若需入库且尚未入库, 仍执行入库
+                if submit_to_db:
+                    submitted_dates = _db.get_submitted_dates()
+                    if d in submitted_dates:
+                        it['status'] = 'skipped'
+                        it['message'] = f'已存在Excel({exist_st})且已入库，跳过'
+                    else:
+                        it['status'] = 'submitting'
+                        it['message'] = 'Excel已存在，正在入库…'
+                        try:
+                            _db.submit_date(d, output_dir)
+                            submitted += 1
+                            it['status'] = 'submitted'
+                            it['message'] = f'入库成功(复用已有Excel {exist_st})'
+                            _invalidate_hot_cache()
+                        except _db.NotVerifiedError:
+                            it['status'] = 'need_review'
+                            it['message'] = f'已存在Excel({exist_st})，需人工复核后入库'
+                        except _db.DBError as e:
+                            it['status'] = 'failed'
+                            it['message'] = f'入库失败: {e}'
+                        except Exception as e:
+                            it['status'] = 'failed'
+                            it['message'] = f'入库异常: {e}'
+            elif not os.path.isdir(folder) or not check_folder_has_images(folder):
                 it['status'] = 'failed'
                 it['message'] = '未下载图片（无 dataresource 文件夹）'
             else:
@@ -753,9 +789,19 @@ def submit_batch_task(task_id, dates, output_dir='excelDataSource'):
     except Exception:
         pass
 
+    # 预取已入库日期集合, 跳过已入库的日期(避免重复覆盖入库)
+    try:
+        submitted_dates = _db.get_submitted_dates()
+    except Exception:
+        submitted_dates = set()
+
     for i, d in enumerate(dates):
         it = items[i]
         try:
+            if d in submitted_dates:
+                it['status'] = 'skipped'
+                it['message'] = '已入库，跳过'
+                continue
             fp, status = _db.find_excel(d, output_dir)
             if not fp:
                 it['status'] = 'no_excel'
@@ -1376,10 +1422,15 @@ def excel_list():
     db_connected = True
     db_msg = 'ok'
     try:
+        _db.init_db()  # 幂等建表, 避免表不存在导致查询抛 ProgrammingError
         submitted_status = _db.get_submitted_status()
     except _db.DBError as e:
         db_connected = False
         db_msg = str(e)
+    except Exception as e:
+        # 表不存在/连接失败等非 DBError 异常也降级, 避免接口 500
+        db_connected = False
+        db_msg = f'{type(e).__name__}: {e}'
 
     items = []
     for d in sorted(days, reverse=True):
@@ -2061,7 +2112,8 @@ def api_hot_sync_ma10():
     for i, code in enumerate(need_fetch):
         try:
             # 获取更长时间范围的数据以确保有足够历史数据计算MA10
-            if ht.fetch_range_akshare(code, start, end):
+            # 走统一入口 fetch_range (mootdx 远程 -> 本地通达信), 不再直调废弃的 akshare
+            if ht.fetch_range(code, start, end):
                 success += 1
             time.sleep(0.5)
             if (i + 1) % 10 == 0:

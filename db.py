@@ -45,7 +45,7 @@ _DEFAULT_DB = {
     'host': 'localhost',
     'port': 15432,
     'user': 'postgres',
-    'password': 'postgres',
+    'password': 'mysecretpassword',
     'dbname': 'postgres',
 }
 
@@ -272,6 +272,8 @@ def get_submitted_dates():
         with conn.cursor() as cur:
             cur.execute("SELECT to_char(trade_date, 'YYYYMMDD') FROM zt_daily")
             return {r[0] for r in cur.fetchall()}
+    except Exception as e:
+        raise DBError(f"查询已入库日期失败: {e}")
     finally:
         conn.close()
 
@@ -283,5 +285,7 @@ def get_submitted_status():
         with conn.cursor() as cur:
             cur.execute("SELECT to_char(trade_date, 'YYYYMMDD'), status FROM zt_daily")
             return {r[0]: r[1] for r in cur.fetchall()}
+    except Exception as e:
+        raise DBError(f"查询入库状态失败: {e}")
     finally:
         conn.close()

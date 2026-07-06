@@ -19,7 +19,7 @@ REQUIRED_PACKAGES = {
     'yaml': 'PyYAML>=6.0',
     'openpyxl': 'openpyxl>=3.1.0',
     'rapidocr_onnxruntime': 'rapidocr_onnxruntime>=1.3.0',
-    'akshare': 'akshare>=1.12.0',
+    'mootdx': 'mootdx>=0.11.0',
 }
 
 

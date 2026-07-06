@@ -308,85 +308,6 @@ def _save_price_cache():
         pass
 
 
-def fetch_range_akshare(code, start, end):
-    """
-    使用 akshare 获取个股历史数据，包括每日涨跌幅和20日/60日涨幅
-    
-    返回: True 成功 / False 失败
-    """
-    try:
-        import akshare as ak
-        from datetime import datetime, timedelta
-        
-        # 计算需要获取的起始日期（往前推70个交易日以确保有足够数据计算60日涨幅）
-        try:
-            s_dt = datetime.strptime(start, '%Y%m%d')
-            fetch_start = (s_dt - timedelta(days=100)).strftime('%Y%m%d')
-        except:
-            fetch_start = start
-        
-        # akshare 股票历史数据
-        df = ak.stock_zh_a_hist(symbol=code, period="daily", 
-                                start_date=fetch_start, end_date=end,
-                                adjust="qfq")
-        
-        if df is None or df.empty:
-            print(f"akshare {code} 无数据")
-            return False
-        
-        cache = _load_price_cache()
-        with _cache_lock:
-            # 存储每日涨跌幅和累计涨幅
-            for i in range(len(df)):
-                date_str = str(df.iloc[i]['日期']).replace('-', '')[:8]
-                pct = float(df.iloc[i]['涨跌幅'])
-                cache[f'{code}_{date_str}'] = round(pct, 2)
-                
-                # 计算20日涨幅（如果不足20日，从上市第一天算）
-                try:
-                    close_today = float(df.iloc[i]['收盘'])
-                    idx_20d = max(0, i - 19)  # 不足20天就从第0天算
-                    close_20d_ago = float(df.iloc[idx_20d]['收盘'])
-                    if close_20d_ago > 0 and i > 0:  # 排除第一天
-                        pct_20d = (close_today - close_20d_ago) / close_20d_ago * 100
-                        cache[f'{code}_{date_str}_20d'] = round(pct_20d, 2)
-                except:
-                    pass
-                
-                # 计算60日涨幅（如果不足60日，从上市第一天算）
-                try:
-                    close_today = float(df.iloc[i]['收盘'])
-                    idx_60d = max(0, i - 59)  # 不足60天就从第0天算
-                    close_60d_ago = float(df.iloc[idx_60d]['收盘'])
-                    if close_60d_ago > 0 and i > 0:  # 排除第一天
-                        pct_60d = (close_today - close_60d_ago) / close_60d_ago * 100
-                        cache[f'{code}_{date_str}_60d'] = round(pct_60d, 2)
-                except:
-                    pass
-                
-                # 计算10日均线并判断是否跌破
-                # 需要 at least 10 天数据来计算均线
-                try:
-                    close_today = float(df.iloc[i]['收盘'])
-                    if i >= 9:  # 有足够数据计算10日均线
-                        ma10 = sum(float(df.iloc[j]['收盘']) for j in range(i-9, i+1)) / 10
-                        cache[f'{code}_{date_str}_ma10'] = round(ma10, 2)
-                        # 判断是否跌破10日线（收盘价 < 10日均线）
-                        below_ma10 = close_today < ma10
-                        cache[f'{code}_{date_str}_below_ma10'] = below_ma10
-                    else:
-                        cache[f'{code}_{date_str}_ma10'] = None
-                        cache[f'{code}_{date_str}_below_ma10'] = False
-                except:
-                    pass
-            
-            _save_price_cache()
-        return True
-    except Exception as e:
-        print(f"akshare获取{code}失败: {e}")
-        return False
-
-
 # ============== 通达信 mootdx 行情 (TCP, 替代易被封的 akshare) ==============
 _tdx_client = None
 
@@ -789,7 +710,7 @@ def track_hot_stocks(start, end, sort='stock_count', with_price=True,
     参数:
         start, end: 8位日期字符串 YYYYMMDD
         sort: 'stock_count'(按板块内入选票数) | 'days'(按板块出现天数)
-        with_price: 是否获取涨幅(akshare)
+        with_price: 是否获取涨幅(mootdx)
 
     返回: dict
         {

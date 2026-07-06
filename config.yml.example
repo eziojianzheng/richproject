@@ -51,5 +51,5 @@ database:
   host: "localhost"
   port: 15432
   user: "postgres"
-  password: "postgres"
+  password: "mysecretpassword"
   dbname: "postgres"

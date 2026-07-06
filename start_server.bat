@@ -9,5 +9,5 @@ echo 启动中...
 echo 服务地址: http://127.0.0.1:5000
 echo 热门股追踪: http://127.0.0.1:5000/hot
 echo.
-python api_server.py
+py api_server.py
 pause

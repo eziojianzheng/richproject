@@ -98,7 +98,6 @@
       <div class="row">
         <label>开始日期 <input type="date" id="startDate"></label>
         <label>结束日期 <input type="date" id="endDate"></label>
-        <label><input type="checkbox" id="skipExisting" checked> 跳过已存在</label>
         <button id="btnDownload" onclick="startDownload()">开始下载</button>
         <button id="btnToday" class="ghost" onclick="downloadToday()">只下载今日</button>
       </div>
@@ -174,11 +173,11 @@ function downloadToday() {
   document.getElementById('endDate').value = t;
   startDownload();
 }
-async function startDownload() {
+async function startDownload(force) {
   const start = document.getElementById('startDate').value;
   const end = document.getElementById('endDate').value;
-  const skip = document.getElementById('skipExisting').checked;
-  const body = { skip_existing: skip };
+  // 默认跳过已存在(无需勾选); force=true 时强制重下(用于"再次下载")
+  const body = { skip_existing: !force };
   if (start) body.start_date = start;
   if (end) body.end_date = end;
   setBusy(true);
@@ -200,7 +199,13 @@ function pollStatus(taskId) {
     try {
       const resp = await fetch('/api/status/' + taskId);
       const s = await resp.json();
-      if (!s.success) return;
+      if (!s.success) {
+        // 任务状态丢失(常见于服务重启后内存字典被清空), 停止轮询避免无限 404
+        clearInterval(pollTimer);
+        setProgress(0, '任务状态丢失（服务可能已重启），请重新下载');
+        setBusy(false);
+        return;
+      }
       setProgress(s.progress, `状态: ${s.status} · 进度 ${s.progress}% · 已下载 ${s.downloaded} 张`);
       if (s.status === 'completed') {
         clearInterval(pollTimer);
@@ -210,7 +215,12 @@ function pollStatus(taskId) {
         renderFailures(s.failed_details || []);
         setBusy(false); loadFiles();
       }
-    } catch (e) {}
+    } catch (e) {
+      // 网络异常也停止轮询, 避免无限重试
+      clearInterval(pollTimer);
+      setProgress(0, '查询状态失败（网络异常）');
+      setBusy(false);
+    }
   }, 1200);
 }
 function setProgress(pct, text) {
@@ -236,8 +246,7 @@ function redownload(dateFolder) {
   const t = d8ToDash(dateFolder);
   document.getElementById('startDate').value = t;
   document.getElementById('endDate').value = t;
-  document.getElementById('skipExisting').checked = false;
-  startDownload();
+  startDownload(true);  // 强制重下(不跳过已存在)
 }
 async function loadFiles() {
   const box = document.getElementById('filesBox');
@@ -331,7 +340,13 @@ function pollUni(taskId, mode) {
     try {
       const resp = await fetch(statusUrl + taskId);
       const s = await resp.json();
-      if (!s.success) return;
+      if (!s.success) {
+        // 任务状态丢失(服务重启后内存清空), 停止轮询避免无限 404
+        clearInterval(uniPollTimer);
+        setUniProgress(0, '任务状态丢失（服务可能已重启），请重试');
+        setUniBusy(false);
+        return;
+      }
       let msg;
       if (mode === 'extract') {
         msg = `状态: ${s.status} · 进度 ${s.progress}% · 已提取 ${s.extracted} · 已入库 ${s.submitted}`;
@@ -351,7 +366,11 @@ function pollUni(taskId, mode) {
         setUniBusy(false);
         loadExcelList();
       }
-    } catch (e) {}
+    } catch (e) {
+      clearInterval(uniPollTimer);
+      setUniProgress(0, '查询状态失败（网络异常）');
+      setUniBusy(false);
+    }
   }, 1000);
 }
 async function fetchUniItems(taskId, mode) {
@@ -391,6 +410,7 @@ function itemBadge(it) {
   switch (it.status) {
     case 'submitted':
     case 'extracted':  return `<span class="st st-ok">✓ ${msg}</span>`;
+    case 'skipped':    return `<span class="st st-ok">⏭ ${msg}</span>`;
     case 'extracting':
     case 'submitting': return `<span class="st st-warn pulse">${msg}</span>`;
     case 'failed':     return `<span class="st st-bad">✗ ${msg}</span>`;
