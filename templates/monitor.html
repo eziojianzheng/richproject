@@ -6,6 +6,7 @@
 <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
 <meta http-equiv="Pragma" content="no-cache">
 <title>盯盘 · 上证指数</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/gridstack@11/dist/gridstack.min.css">
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
   :root {
@@ -71,24 +72,26 @@
     .chart-row { flex-direction: column; }
     .chart-row .chart-card { flex: 1 1 100%; }
   }
-  .chart-container { width: 100%; }
-  #dailyChart { height: 420px; }
-  #minuteChart { height: 420px; }
-  #histMinuteChart { height: 420px; }
-  #stockDailyChart { height: 360px; }
-  #stockMinute5Chart { height: 280px; }
-  #stockMinuteChart { height: 280px; }
+  .chart-container { width: 100%; height: 100%; }
+  /* gridstack 面板: 卡片填满 item-content */
+  .grid-stack-item-content { padding: 0; }
+  .grid-stack-item-content > .chart-card,
+  .grid-stack-item-content > .stock-list-panel {
+    width: 100%; height: 100%; margin: 0;
+    display: flex; flex-direction: column;
+  }
+  .grid-stack-item-content .chart-title { flex-shrink: 0; }
+  .grid-stack-item-content .chart-container { flex: 1; min-height: 0; }
+  .grid-stack-item-content .hint-bar { flex-shrink: 0; }
+  #dailyChart, #minuteChart, #histMinuteChart { height: 100%; }
+  #stockDailyChart, #stockMinute5Chart { height: 100%; }
+  /* 列表面板内部填满 */
+  .grid-stack-item-content > .stock-list-panel .stock-list { flex: 1; min-height: 0; }
 
   /* 第二列: 个股区 */
-  .stock-section {
-    display: flex; gap: 16px; align-items: flex-start; margin-top: 16px;
-  }
-  .stock-lists {
-    display: flex; gap: 12px; flex-shrink: 0; width: 520px;
-  }
   .stock-list-panel {
-    flex: 1; background: var(--bg-card); border: 1px solid var(--border-color);
-    border-radius: 10px; overflow: hidden;
+    background: var(--bg-card); border: 1px solid var(--border-color);
+    border-radius: 10px; overflow: hidden; display: flex; flex-direction: column;
   }
   .list-head {
     padding: 8px 10px; border-bottom: 1px solid var(--border-color);
@@ -103,7 +106,7 @@
   }
   .sort-tabs span.active { background: var(--accent); color: #fff; }
   .stock-list {
-    height: 420px; overflow-y: auto; padding: 4px 0;
+    flex: 1; min-height: 0; overflow-y: auto; padding: 4px 0;
   }
   .stock-list::-webkit-scrollbar { width: 5px; }
   .stock-list::-webkit-scrollbar-thumb { background: var(--border-color); border-radius: 3px; }
@@ -119,11 +122,6 @@
   .s-up { color: var(--up-color); }
   .s-down { color: var(--down-color); }
   .s-flat { color: var(--text-muted); }
-  .stock-charts { flex: 1; min-width: 0; }
-  @media (max-width: 1200px) {
-    .stock-section { flex-direction: column; }
-    .stock-lists { width: 100%; }
-  }
 
   .loading {
     text-align: center; color: var(--text-muted); padding: 40px;
@@ -136,6 +134,32 @@
   .hint-bar {
     font-size: 12px; color: var(--text-muted); margin-top: 8px;
   }
+
+  /* 占位面板 */
+  .col-placeholder {
+    width: 100%; height: 100%; display: flex; align-items: center; justify-content: center;
+    flex-direction: column; gap: 10px; color: var(--text-muted);
+    font-size: 14px;
+  }
+  .col-placeholder .ph-icon { font-size: 36px; opacity: 0.5; }
+
+  /* gridstack 拖拽手柄区域: 标题栏可拖动 */
+  .grid-stack-item-content .chart-title,
+  .grid-stack-item-content .list-head {
+    cursor: move;
+  }
+  /* 面板锁住按钮 */
+  .lock-btn {
+    margin-left: auto; cursor: pointer; padding: 0 6px; font-size: 13px;
+    color: var(--text-muted); user-select: none; flex-shrink: 0;
+    border-left: 1px solid var(--border-color); line-height: 1;
+  }
+  .lock-btn:hover { color: var(--text-primary); }
+  .lock-btn.locked { color: var(--accent); }
+  /* 锁定态: 隐藏缩放手柄, 标题栏改默认光标 */
+  .grid-stack-item.gs-locked > .grid-stack-item-content .chart-title,
+  .grid-stack-item.gs-locked > .grid-stack-item-content .list-head { cursor: default; }
+  .grid-stack-item.gs-locked > .ui-resizable-handle { display: none !important; }
 </style>
 </head>
 <body>
@@ -148,89 +172,113 @@
     </div>
   </div>
 
-  <!-- 日K线 + 分时图 并排 -->
-  <div class="chart-row">
-    <!-- 日K线图 -->
-    <div class="chart-card">
-      <div class="chart-title">
-        📈 日K线
-        <span class="date-tag">(双击图表加载该日分时 · 移动光标对准日期)</span>
-        <div class="indicator-toggle">
-          <label><input type="checkbox" data-series="MA5" checked><span style="color:#facc15">MA5</span></label>
-          <label><input type="checkbox" data-series="MA10" checked><span style="color:#60a5fa">MA10</span></label>
-          <label><input type="checkbox" data-series="MA20" checked><span style="color:#a855f7">MA20</span></label>
-          <label><input type="checkbox" data-series="成交量" checked><span style="color:#9aa0a6">量</span></label>
-          <label><input type="checkbox" data-series="缺口" checked><span style="color:#ef5350">缺口</span></label>
-        </div>
-      </div>
-      <div class="chart-container">
-        <div id="dailyChart"></div>
-      </div>
-    </div>
-
-    <!-- 分时图(当日) -->
-    <div class="chart-card">
-      <div class="chart-title">
-        ⏱️ 当日分时
-        <span class="date-tag" id="minuteDateTag">当日</span>
-      </div>
-      <div class="chart-container">
-        <div id="minuteChart"></div>
-      </div>
-      <div class="hint-bar" id="minuteHint"></div>
-    </div>
-
-    <!-- 历史分时(双击K线选中) -->
-    <div class="chart-card">
-      <div class="chart-title">
-        📅 历史分时
-        <span class="date-tag" id="histDateTag">双击左侧K线选择日期</span>
-      </div>
-      <div class="chart-container">
-        <div id="histMinuteChart"></div>
-      </div>
-      <div class="hint-bar" id="histHint"></div>
-    </div>
-  </div>
-
-  <!-- 第二列: 创业板/科创板个股 + 个股图表 -->
-  <div class="stock-section">
-    <!-- 左: 两个列表并排 -->
-    <div class="stock-lists">
-      <div class="stock-list-panel">
-        <div class="list-head">
-          <span class="list-title">创业板 Top50</span>
-          <div class="sort-tabs" data-seg="cyb">
-            <span data-sort="pct" class="active">涨幅</span>
-            <span data-sort="amount">成交额</span>
-            <span data-sort="vol">量</span>
+  <!-- 自由拖拽布局: 每个面板可拖动位置 + 调整大小 -->
+  <div class="grid-stack">
+    <!-- 日K线 -->
+    <div class="grid-stack-item" gs-x="0" gs-y="0" gs-w="6" gs-h="10" id="item-daily">
+      <div class="grid-stack-item-content">
+        <div class="chart-card">
+          <div class="chart-title">
+            📊 日K线
+            <span class="date-tag">(双击加载该日分时)</span>
+            <div class="indicator-toggle">
+              <label><input type="checkbox" data-series="MA5" checked><span style="color:#facc15">MA5</span></label>
+              <label><input type="checkbox" data-series="MA10" checked><span style="color:#60a5fa">MA10</span></label>
+              <label><input type="checkbox" data-series="MA20" checked><span style="color:#a855f7">MA20</span></label>
+              <label><input type="checkbox" data-series="成交量" checked><span style="color:#9aa0a6">量</span></label>
+              <label><input type="checkbox" data-series="缺口" checked><span style="color:#ef5350">缺口</span></label>
+            </div>
+          </div>
+          <div class="chart-container">
+            <div id="dailyChart"></div>
           </div>
         </div>
-        <div id="cybList" class="stock-list"></div>
-      </div>
-      <div class="stock-list-panel">
-        <div class="list-head">
-          <span class="list-title">科创板 Top50</span>
-          <div class="sort-tabs" data-seg="kcb">
-            <span data-sort="pct" class="active">涨幅</span>
-            <span data-sort="amount">成交额</span>
-            <span data-sort="vol">量</span>
-          </div>
-        </div>
-        <div id="kcbList" class="stock-list"></div>
       </div>
     </div>
-    <!-- 右: 选中个股图表 -->
-    <div class="stock-charts">
-      <div class="chart-card">
-        <div class="chart-title">
-          📊 <span id="stockDailyTitle">点击左侧选股</span>
-        </div>
-        <div class="chart-container">
-          <div id="stockDailyChart"></div>
+
+    <!-- 当日分时 -->
+    <div class="grid-stack-item" gs-x="6" gs-y="0" gs-w="3" gs-h="10" id="item-minute">
+      <div class="grid-stack-item-content">
+        <div class="chart-card">
+          <div class="chart-title">
+            ⏱️ 当日分时
+            <span class="date-tag" id="minuteDateTag">当日</span>
+          </div>
+          <div class="chart-container">
+            <div id="minuteChart"></div>
+          </div>
+          <div class="hint-bar" id="minuteHint"></div>
         </div>
       </div>
-      <div class="chart-row">
+    </div>
+
+    <!-- 历史分时 -->
+    <div class="grid-stack-item" gs-x="9" gs-y="0" gs-w="3" gs-h="10" id="item-hist">
+      <div class="grid-stack-item-content">
+        <div class="chart-card">
+          <div class="chart-title">
+            📅 历史分时
+            <span class="date-tag" id="histDateTag">双击日K线选择日期</span>
+          </div>
+          <div class="chart-container">
+            <div id="histMinuteChart"></div>
+          </div>
+          <div class="hint-bar" id="histHint"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 创业板列表 -->
+    <div class="grid-stack-item" gs-x="0" gs-y="10" gs-w="3" gs-h="12" id="item-cyb">
+      <div class="grid-stack-item-content">
+        <div class="stock-list-panel">
+          <div class="list-head">
+            <span class="list-title">创业板 Top50</span>
+            <div class="sort-tabs" data-seg="cyb">
+              <span data-sort="pct" class="active">涨幅</span>
+              <span data-sort="amount">成交额</span>
+              <span data-sort="vol">量</span>
+            </div>
+          </div>
+          <div id="cybList" class="stock-list"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 科创板列表 -->
+    <div class="grid-stack-item" gs-x="3" gs-y="10" gs-w="3" gs-h="12" id="item-kcb">
+      <div class="grid-stack-item-content">
+        <div class="stock-list-panel">
+          <div class="list-head">
+            <span class="list-title">科创板 Top50</span>
+            <div class="sort-tabs" data-seg="kcb">
+              <span data-sort="pct" class="active">涨幅</span>
+              <span data-sort="amount">成交额</span>
+              <span data-sort="vol">量</span>
+            </div>
+          </div>
+          <div id="kcbList" class="stock-list"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 个股日K -->
+    <div class="grid-stack-item" gs-x="6" gs-y="10" gs-w="3" gs-h="6" id="item-sdaily">
+      <div class="grid-stack-item-content">
+        <div class="chart-card">
+          <div class="chart-title">
+            📊 <span id="stockDailyTitle">点击左侧选股</span>
+          </div>
+          <div class="chart-container">
+            <div id="stockDailyChart"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 个股5日分时 -->
+    <div class="grid-stack-item" gs-x="6" gs-y="16" gs-w="3" gs-h="6" id="item-sm5">
+      <div class="grid-stack-item-content">
         <div class="chart-card">
           <div class="chart-title">
             📅 5日分时 <span class="date-tag" id="stockM5Tag">拼接</span>
@@ -239,24 +287,18 @@
             <div id="stockMinute5Chart"></div>
           </div>
         </div>
-        <div class="chart-card">
-          <div class="chart-title">
-            ⏱️ 当日分时 <span class="date-tag" id="stockMinuteTag">当日</span>
-          </div>
-          <div class="chart-container">
-            <div id="stockMinuteChart"></div>
-          </div>
-        </div>
       </div>
     </div>
+
   </div>
 
 <script src="https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/gridstack@11/dist/gridstack-all.min.js"></script>
 <script>
 const UP = '#ef5350', DOWN = '#26a69a';
 let dailyChart = null, minuteChart = null, histMinuteChart = null;
 let dailyData = [];   // 缓存日K数据
-let stockDailyChart = null, stockMinute5Chart = null, stockMinuteChart = null;
+let stockDailyChart = null, stockMinute5Chart = null;
 let curStockSeg = 'cyb', curStockCode = null;  // 当前选中板块/股票
 
 // ===== 日K线图 =====
@@ -432,8 +474,11 @@ function renderDaily(bars) {
   });
 }
 
-// ===== 当日分时图 =====
-let _minutePoints = null;  // 缓存当日分时数据, 供补黄线时重渲染
+// ===== 当日分时图(大盘白线 + 个股红线叠加) =====
+let _minutePoints = null;       // 缓存当日大盘分时, 供补黄线/叠加个股时重渲染
+let _stockMinutePoints = null;  // 缓存选中个股当日分时
+let _leadingInfo = null;        // 缓存领先指标 {leadingLine}
+
 async function loadMinute() {
   const tag = document.getElementById('minuteDateTag');
   const hint = document.getElementById('minuteHint');
@@ -449,17 +494,43 @@ async function loadMinute() {
       return;
     }
     _minutePoints = data.points;
-    renderMinute(minuteChart, 'minuteChart', data.points, data.date, null);
+    renderMinute(minuteChart, 'minuteChart', data.points, data.date, null, _stockMinutePoints);
     hint.textContent = `${data.points.length} 个数据点`;
     // 异步拉领先指标(不阻塞分时渲染), 到了重新渲染整图补上黄线
     fetch('/api/monitor/index/leading').then(r => r.ok ? r.json() : null).then(lj => {
       if (!lj || !lj.success || lj.index_last_close <= 0 || !_minutePoints) return;
       const leadingLine = +(lj.index_last_close * (1 + lj.leading_pct / 100)).toFixed(2);
-      renderMinute(minuteChart, 'minuteChart', _minutePoints, data.date, leadingLine);
+      _leadingInfo = { leadingLine };
+      renderMinute(minuteChart, 'minuteChart', _minutePoints, data.date, leadingLine, _stockMinutePoints);
       hint.textContent = `${_minutePoints.length} 个数据点 · 领先 ${lj.leading_pct}%`;
     }).catch(() => {});
   } catch (e) {
     hint.textContent = '⚠ 请求异常: ' + e.message;
+  }
+}
+
+// 拉选中个股当日分时, 叠加到上证当日分时图
+async function loadStockMinuteOverlay(code) {
+  const hint = document.getElementById('minuteHint');
+  try {
+    const resp = await fetch(`/api/monitor/stock/minute?code=${code}`);
+    const data = await resp.json();
+    if (!data.success) {
+      _stockMinutePoints = null;
+      if (_minutePoints) renderMinute(minuteChart, 'minuteChart', _minutePoints, 'today',
+        _leadingInfo ? _leadingInfo.leadingLine : null, null);
+      hint.textContent = '⚠ 个股分时: ' + (data.error || '无数据');
+      return;
+    }
+    _stockMinutePoints = data.points;
+    if (_minutePoints) {
+      renderMinute(minuteChart, 'minuteChart', _minutePoints, 'today',
+        _leadingInfo ? _leadingInfo.leadingLine : null, _stockMinutePoints);
+      const name = document.getElementById('stockDailyTitle').textContent;
+      hint.textContent = `${_minutePoints.length} 点 · 叠加 ${name}`;
+    }
+  } catch(e) {
+    hint.textContent = '⚠ 个股分时异常: ' + e.message;
   }
 }
 
@@ -488,7 +559,8 @@ async function loadHistMinute(date) {
 
 // 通用分时图渲染(复用于当日分时和历史分时)
 // leadingLine: 领先指标换算的指数点位(黄线横线), 仅当日分时有; 历史分时传 null
-function renderMinute(chartVar, domId, points, dateLabel, leadingLine) {
+// stockPoints: 选中个股的当日分时(可选), 有则在同图叠加红色线
+function renderMinute(chartVar, domId, points, dateLabel, leadingLine, stockPoints) {
   const times = points.map(p => p.time);
   const prices = points.map(p => p.price);
   const vols = points.map(p => p.vol);
@@ -509,6 +581,76 @@ function renderMinute(chartVar, domId, points, dateLabel, leadingLine) {
         formatter: `领先 ${leadingLine}` } });
   }
 
+  // 大盘成交量红绿柱: 价格>=昨收(第一个点)为红, 否则绿
+  const indexVols = vols.map(v => ({
+    value: v,
+    itemStyle: { color: '#ef5350' }  // 默认红, 下方按点修正
+  }));
+  // 实际按每点价格着色
+  prices.forEach((p, i) => {
+    indexVols[i].itemStyle.color = p >= basePrice ? 'rgba(239,83,80,0.6)' : 'rgba(38,166,154,0.6)';
+  });
+
+  // 个股分时叠加(红色线), 量能也红绿柱(独立 series, 双 y 轴避免量级差异)
+  let stockSeries = [];
+  let stockVolSeries = [];
+  let stockBasePrice = 0;
+  if (stockPoints && stockPoints.length > 0) {
+    const stockPrices = stockPoints.map(p => p.price);
+    const stockVols = stockPoints.map(p => p.vol);
+    stockBasePrice = stockPrices[0];
+    // 个股量红绿柱
+    const svols = stockVols.map((v, i) => ({
+      value: v,
+      itemStyle: { color: stockPrices[i] >= stockBasePrice ? 'rgba(239,83,80,0.5)' : 'rgba(38,166,154,0.5)' }
+    }));
+    stockSeries = [{
+      name: '个股', type: 'line', data: stockPrices, symbol: 'none',
+      lineStyle: { color: '#e63946', width: 1.5 },
+      // 个股用右 y 轴(独立刻度), 避免与大盘指数量级差异导致线压平
+      yAxisIndex: 2,
+    }];
+    stockVolSeries = [{
+      name: '个股量', type: 'bar', yAxisIndex: 3, data: svols,
+      barGap: '10%', barCategoryGap: '20%',
+    }];
+  }
+
+  // 计算 y 轴范围(含个股, 用各自昨收基准)
+  const stockMaxDev = stockPoints && stockPoints.length > 0
+    ? Math.max(...stockPoints.map(p => Math.abs(p.price - stockBasePrice))) || 1 : maxDev;
+
+  const seriesList = [
+    { name: '指数', type: 'line', data: prices, smooth: true, symbol: 'none',
+      lineStyle: { color: '#ffffff', width: 1.5 },
+      areaStyle: { color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
+        { offset: 0, color: 'rgba(255,255,255,0.10)' },
+        { offset: 1, color: 'rgba(255,255,255,0.01)' },
+      ])},
+      markLine: {
+        symbol: 'none', silent: true,
+        data: markLines,
+      }
+    },
+    { name: '成交量', type: 'bar', yAxisIndex: 1, data: indexVols },
+  ].concat(stockSeries).concat(stockVolSeries);
+
+  // y 轴配置: 0=大盘价(左), 1=大盘量(左隐藏), 2=个股价(右), 3=个股量(右隐藏)
+  const yAxis = [
+    { scale: true, min: basePrice - maxDev * 1.1, max: basePrice + maxDev * 1.1,
+      splitLine: { lineStyle: { color: '#252a33' } },
+      axisLabel: { color: '#9aa0a6' } },
+    { gridIndex: 0, splitLine: { show: false }, axisLabel: { show: false } },
+  ];
+  if (stockPoints && stockPoints.length > 0) {
+    yAxis.push(
+      { scale: true, position: 'right',
+        min: stockBasePrice - stockMaxDev * 1.1, max: stockBasePrice + stockMaxDev * 1.1,
+        splitLine: { show: false }, axisLabel: { color: '#e63946', fontSize: 10 } },
+      { gridIndex: 0, splitLine: { show: false }, axisLabel: { show: false } }
+    );
+  }
+
   chart.setOption({
     backgroundColor: 'transparent',
     animation: false,
@@ -519,48 +661,87 @@ function renderMinute(chartVar, domId, points, dateLabel, leadingLine) {
       formatter: function(params) {
         let s = params[0].axisValue + '<br/>';
         params.forEach(p => {
-          if (p.value !== undefined && p.value !== '-') s += `${p.marker}${p.seriesName}: <b>${p.value}</b><br/>`;
+          if (p.value !== undefined && p.value !== '-' && p.seriesName !== '成交量' && p.seriesName !== '个股量')
+            s += `${p.marker}${p.seriesName}: <b>${p.value}</b><br/>`;
         });
         return s;
       }
     },
-    legend: { show: false, data: ['指数', '成交量'] },
-    grid: { left: '6%', right: '4%', top: '12%', bottom: '20%' },
+    legend: { show: false, data: ['指数', '成交量', '个股', '个股量'] },
+    grid: { left: '6%', right: stockPoints && stockPoints.length > 0 ? '8%' : '4%', top: '12%', bottom: '20%' },
     xAxis: {
       type: 'category', data: times, boundaryGap: false,
       axisLine: { lineStyle: { color: '#2c313a' } },
       axisLabel: { color: '#9aa0a6', interval: 29 },
     },
-    yAxis: [
-      { scale: true, min: basePrice - maxDev * 1.1, max: basePrice + maxDev * 1.1,
-        splitLine: { lineStyle: { color: '#252a33' } },
-        axisLabel: { color: '#9aa0a6' } },
-      { splitLine: { show: false }, axisLabel: { show: false } },
-    ],
-    series: [
-      { name: '指数', type: 'line', data: prices, smooth: true, symbol: 'none',
-        lineStyle: { color: '#ffffff', width: 1.5 },
-        areaStyle: { color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
-          { offset: 0, color: 'rgba(255,255,255,0.10)' },
-          { offset: 1, color: 'rgba(255,255,255,0.01)' },
-        ])},
-        markLine: {
-          symbol: 'none', silent: true,
-          data: markLines,
-        }
-      },
-      { name: '成交量', type: 'bar', yAxisIndex: 1, data: vols,
-        itemStyle: { color: 'rgba(74,85,104,0.5)' } },
-    ],
+    yAxis: yAxis,
+    series: seriesList,
   });
 }
 
 // ===== 初始化 =====
-window.addEventListener('resize', function() {
-  if (dailyChart) dailyChart.resize();
-  if (minuteChart) minuteChart.resize();
-  if (histMinuteChart) histMinuteChart.resize();
-});
+// 统一 resize 所有 echarts 实例(列宽变化/折叠/窗口缩放时调用)
+function resizeAllCharts() {
+  [dailyChart, minuteChart, histMinuteChart,
+   stockDailyChart, stockMinute5Chart].forEach(c => c && c.resize());
+}
+window.addEventListener('resize', resizeAllCharts);
+
+// ===== gridstack 自由拖拽布局 =====
+let grid = null;
+function initGridStack() {
+  grid = GridStack.init({
+    column: 12,
+    cellHeight: 30,      // 固定单元格高度, 便于精确缩放
+    margin: 6,
+    float: true,         // 自由位置, 不自动上浮
+    disableOneColumnMode: true,
+    resizable: { handles: 'all' },
+    draggable: { handle: '.chart-title, .list-head' },  // 仅标题栏可拖动
+    animate: false,
+  });
+  // 恢复保存的布局
+  const saved = localStorage.getItem('monitor_gs_layout');
+  if (saved) {
+    try {
+      const layout = JSON.parse(saved);
+      if (Array.isArray(layout) && layout.length) grid.load(layout);
+    } catch(e) {}
+  }
+  // 给每个面板标题栏注入锁按钮
+  document.querySelectorAll('.grid-stack-item').forEach(el => {
+    const title = el.querySelector('.chart-title, .list-head');
+    if (!title || title.querySelector('.lock-btn')) return;
+    const btn = document.createElement('span');
+    btn.className = 'lock-btn';
+    btn.title = '点击锁定/解锁(锁定后不可拖动缩放)';
+    btn.textContent = '🔓';
+    // 已是 locked 态(从 localStorage 恢复)则显示锁
+    const locked = localStorage.getItem('monitor_lock_' + el.id) === '1';
+    if (locked) { el.classList.add('gs-locked'); btn.textContent = '🔒'; btn.classList.add('locked'); }
+    btn.addEventListener('click', function(e) {
+      e.stopPropagation();
+      const isLocked = el.classList.toggle('gs-locked');
+      btn.textContent = isLocked ? '🔒' : '🔓';
+      btn.classList.toggle('locked', isLocked);
+      // 锁定: 禁用该面板拖动+缩放; 解锁: 恢复
+      grid.movable(el, !isLocked);
+      grid.resizable(el, !isLocked);
+      try { localStorage.setItem('monitor_lock_' + el.id, isLocked ? '1' : '0'); } catch(e) {}
+    });
+    title.appendChild(btn);
+    // 若初始为锁定态, 同步禁用拖动缩放
+    if (locked) { grid.movable(el, false); grid.resizable(el, false); }
+  });
+  // 拖拽/缩放过程中实时 resize echarts
+  grid.on('change', () => resizeAllCharts());
+  // 拖拽/缩放结束: 保存布局 + resize
+  grid.on('dragstop resizestop', () => {
+    try { localStorage.setItem('monitor_gs_layout', JSON.stringify(grid.save(false))); } catch(e) {}
+    resizeAllCharts();
+  });
+}
+initGridStack();
 
 // 指标 checkbox 控制: 用 dispatchAction 显隐 series (legend 隐藏时仍有效)
 document.querySelectorAll('.indicator-toggle input[type="checkbox"]').forEach(function(cb) {
@@ -627,10 +808,10 @@ function selectStock(code, name) {
   document.getElementById('stockDailyTitle').textContent = `${code} ${name}`;
   // localStorage 保存
   try { localStorage.setItem('monitor_stock_code', code); localStorage.setItem('monitor_stock_name', name); } catch(e) {}
-  // 并行加载3图
+  // 并行加载: 个股日K + 5日分时 + 叠加当日分时到大盘图
   loadStockDaily(code);
   loadStockMinute5(code);
-  loadStockMinute(code);
+  loadStockMinuteOverlay(code);
 }
 
 async function loadStockDaily(code) {
@@ -685,42 +866,6 @@ function renderStockDaily(bars) {
       { name: 'MA10', type: 'line', data: calcMA(10), symbol: 'none', lineStyle: { color: '#60a5fa', width: 1 } },
       { name: 'MA20', type: 'line', data: calcMA(20), symbol: 'none', lineStyle: { color: '#a855f7', width: 1 } },
       { name: '成交量', type: 'bar', xAxisIndex: 1, yAxisIndex: 1, data: vols },
-    ],
-  }, true);
-}
-
-async function loadStockMinute(code) {
-  const el = document.getElementById('stockMinuteChart');
-  el.innerHTML = '';
-  try {
-    const resp = await fetch(`/api/monitor/stock/minute?code=${code}`);
-    const data = await resp.json();
-    if (!data.success) { el.innerHTML = '<div class="error-msg">' + (data.error||'无数据') + '</div>'; return; }
-    renderStockMinute(data.points);
-  } catch(e) { el.innerHTML = '<div class="error-msg">请求异常: ' + e.message + '</div>'; }
-}
-
-function renderStockMinute(points) {
-  const times = points.map(p => p.time);
-  const prices = points.map(p => p.price);
-  const vols = points.map(p => p.vol);
-  const basePrice = prices.length > 0 ? prices[0] : 0;
-  const maxDev = Math.max(...prices.map(p => Math.abs(p - basePrice))) || 1;
-  if (!stockMinuteChart) stockMinuteChart = echarts.init(document.getElementById('stockMinuteChart'), 'dark');
-  stockMinuteChart.setOption({
-    backgroundColor: 'transparent', animation: false,
-    tooltip: { trigger: 'axis' },
-    grid: { left: '6%', right: '4%', top: '8%', bottom: '22%' },
-    xAxis: { type: 'category', data: times, boundaryGap: false, axisLabel: { color: '#9aa0a6', interval: 59 } },
-    yAxis: [
-      { scale: true, min: basePrice - maxDev*1.1, max: basePrice + maxDev*1.1, splitLine: { lineStyle: { color: '#252a33' } }, axisLabel: { color: '#9aa0a6' } },
-      { splitLine: { show: false }, axisLabel: { show: false } },
-    ],
-    series: [
-      { name: '价格', type: 'line', data: prices, symbol: 'none', lineStyle: { color: '#e63946', width: 1.5 },
-        areaStyle: { color: new echarts.graphic.LinearGradient(0,0,0,1,[{offset:0,color:'rgba(230,57,70,0.2)'},{offset:1,color:'rgba(230,57,70,0.01)'}]) },
-        markLine: { symbol: 'none', silent: true, data: [{ yAxis: basePrice, lineStyle: { color: '#9aa0a6', type: 'dashed' } }] } },
-      { name: '成交量', type: 'bar', yAxisIndex: 1, data: vols, itemStyle: { color: 'rgba(74,85,104,0.5)' } },
     ],
   }, true);
 }
@@ -790,13 +935,6 @@ document.querySelectorAll('.sort-tabs span').forEach(el => {
   });
 });
 
-// resize 联动
-window.addEventListener('resize', function() {
-  if (stockDailyChart) stockDailyChart.resize();
-  if (stockMinute5Chart) stockMinute5Chart.resize();
-  if (stockMinuteChart) stockMinuteChart.resize();
-});
-
 // 页面加载: 先加载日K, 恢复上次选中的历史分时日期(如有), 再加载当日分时
 loadDaily().then(() => {
   // 恢复上次双击选中的历史分时
@@ -829,6 +967,8 @@ loadDaily().then(() => {
       const first = document.querySelector('#cybList .stock-item');
       if (first) selectStock(first.dataset.code, first.dataset.name);
     }
+    // 布局稳定后统一 resize 一次, 确保图表填满行高
+    requestAnimationFrame(() => requestAnimationFrame(resizeAllCharts));
   });
 });
 </script>
