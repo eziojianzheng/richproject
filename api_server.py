@@ -138,13 +138,23 @@ HOT_LAST_FILE = '.hot_last_result.json'
 
 def _slim_by_date_tracks(data):
     """裁剪 by_date 里每只股票的 track 字段: 只保留当天数据。
-    前端只用 s.track[当天], 其余日期是冗余(可占总体积~90%)。原地修改。"""
+    前端只用 s.track[当天], 其余日期是冗余(可占总体积~90%)。
+    注意: 同一股票在多个日期的 by_date 里共享同一对象(累积制),
+    必须用浅拷贝隔离, 否则先处理的日期会把 track 裁成 {date1:...},
+    后续日期找不到自己的 key 反而被清空成 {}。"""
     for day in data.get('by_date', []):
         day_date = day['date']
         for block in day.get('blocks', []):
+            new_stocks = []
             for stock in block.get('stocks', []):
                 tr = stock.get('track', {})
-                stock['track'] = {day_date: tr[day_date]} if day_date in tr else {}
+                if day_date in tr:
+                    slim = dict(stock)
+                    slim['track'] = {day_date: tr[day_date]}
+                    new_stocks.append(slim)
+                else:
+                    new_stocks.append(stock)
+            block['stocks'] = new_stocks
 
 
 def _save_hot_last():
@@ -1891,6 +1901,37 @@ def monitor_stock_minute():
         return jsonify({'success': False, 'error': f'{type(e).__name__}: {e}'}), 500
 
 
+@app.route('/api/monitor/stock/minutes', methods=['GET'])
+def monitor_stock_minutes():
+    """个股历史分时 (mootdx minutes, 纯6位代码)。
+    参数: code=300001, date=20260703 (YYYYMMDD)"""
+    code = request.args.get('code', '')
+    if not re.match(r'^\d{6}$', code):
+        return jsonify({'success': False, 'error': 'code 需为6位数字'}), 400
+    date = request.args.get('date', '')
+    if not re.match(r'^\d{8}$', date):
+        return jsonify({'success': False, 'error': 'date 参数需为 YYYYMMDD'}), 400
+    try:
+        import hot_track as ht
+        with ht._get_tdx_lock():
+            client = ht._get_tdx_client()
+            df = client.minutes(symbol=code, date=int(date))
+        if df is None or df.empty:
+            return jsonify({'success': False, 'error': f'{date} 无分时数据'}), 404
+        times = _minute_time_axis(len(df))
+        points = []
+        for i, row in df.iterrows():
+            points.append({
+                'time': times[i] if i < len(times) else str(i),
+                'price': round(float(row['price']), 2),
+                'vol': float(row['vol']),
+            })
+        date_fmt = f'{date[:4]}-{date[4:6]}-{date[6:8]}'
+        return jsonify({'success': True, 'points': points, 'date': date_fmt})
+    except Exception as e:
+        return jsonify({'success': False, 'error': f'{type(e).__name__}: {e}'}), 500
+
+
 @app.route('/api/monitor/stock/minutes5', methods=['GET'])
 def monitor_stock_minutes5():
     """个股5日分时拼接 (逐日拉 minutes, 拼成一条线)。
@@ -2153,7 +2194,7 @@ def hot_compute_task(task_id, start, end, with_price):
                         # 跳过: 保留 None 占位, 直接进第三步
 
                 missing_by_date, missing_codes = _build_missing_report(data)
-                if not missing_codes or t.get('_skip'):
+                if not missing_codes:
                     break
                 # 兜底: fetch 全部成功但缓存里仍有 None (理论上不应再触发)
                 n = sum(len(s['stocks']) for day in missing_by_date for s in day['blocks'])
@@ -2400,19 +2441,24 @@ def api_hot_sync():
     # 同步获取
     import time
     success = 0
+    failed_codes = []
     for c in need_fetch:
         try:
             if ht.fetch_range(c, date, date):
                 success += 1
+            else:
+                failed_codes.append(c)
             time.sleep(0.5)
         except Exception as e:
             print(f"同步{c}失败: {e}")
+            failed_codes.append(c)
     
     return jsonify({
         'success': True,
         'message': f'成功获取 {success}/{len(need_fetch)} 只股票数据',
         'fetched': success,
-        'total': len(need_fetch)
+        'total': len(need_fetch),
+        'failed_codes': failed_codes
     })
 
 

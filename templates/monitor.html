@@ -84,7 +84,7 @@
   .grid-stack-item-content .chart-container { flex: 1; min-height: 0; }
   .grid-stack-item-content .hint-bar { flex-shrink: 0; }
   #dailyChart, #minuteChart, #histMinuteChart { height: 100%; }
-  #stockDailyChart, #stockMinute5Chart { height: 100%; }
+  #stockDailyChart, #stockMinute5Chart, #stockHistChart { height: 100%; }
   /* 列表面板内部填满 */
   .grid-stack-item-content > .stock-list-panel .stock-list { flex: 1; min-height: 0; }
 
@@ -116,9 +116,10 @@
   }
   .stock-item:hover { background: rgba(255,255,255,0.04); }
   .stock-item.active { background: rgba(37,99,235,0.15); border-left-color: #2563eb; }
-  .stock-item .s-code { width: 52px; color: var(--text-secondary); flex-shrink: 0; }
-  .stock-item .s-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 0 6px; }
-  .stock-item .s-pct { width: 56px; text-align: right; font-weight: 600; flex-shrink: 0; }
+  .stock-item .s-code { width: 46px; color: var(--text-secondary); flex-shrink: 0; }
+  .stock-item .s-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 0 4px; }
+  .stock-item .s-price { width: 50px; text-align: right; color: var(--text-primary); flex-shrink: 0; }
+  .stock-item .s-pct { width: 50px; text-align: right; font-weight: 600; flex-shrink: 0; }
   .s-up { color: var(--up-color); }
   .s-down { color: var(--down-color); }
   .s-flat { color: var(--text-muted); }
@@ -268,6 +269,7 @@
         <div class="chart-card">
           <div class="chart-title">
             📊 <span id="stockDailyTitle">点击左侧选股</span>
+            <span class="date-tag">(双击加载该日分时)</span>
           </div>
           <div class="chart-container">
             <div id="stockDailyChart"></div>
@@ -290,6 +292,21 @@
       </div>
     </div>
 
+    <!-- 个股历史分时(双击个股日K线选日期) -->
+    <div class="grid-stack-item" gs-x="9" gs-y="10" gs-w="3" gs-h="12" id="item-shist">
+      <div class="grid-stack-item-content">
+        <div class="chart-card">
+          <div class="chart-title">
+            📅 个股历史分时 <span class="date-tag" id="stockHistTag">双击个股日K选日期</span>
+          </div>
+          <div class="chart-container">
+            <div id="stockHistChart"></div>
+          </div>
+          <div class="hint-bar" id="stockHistHint"></div>
+        </div>
+      </div>
+    </div>
+
   </div>
 
 <script src="https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"></script>
@@ -298,7 +315,7 @@
 const UP = '#ef5350', DOWN = '#26a69a';
 let dailyChart = null, minuteChart = null, histMinuteChart = null;
 let dailyData = [];   // 缓存日K数据
-let stockDailyChart = null, stockMinute5Chart = null;
+let stockDailyChart = null, stockMinute5Chart = null, stockHistChart = null;
 let curStockSeg = 'cyb', curStockCode = null;  // 当前选中板块/股票
 
 // ===== 日K线图 =====
@@ -683,7 +700,20 @@ function renderMinute(chartVar, domId, points, dateLabel, leadingLine, stockPoin
 // 统一 resize 所有 echarts 实例(列宽变化/折叠/窗口缩放时调用)
 function resizeAllCharts() {
   [dailyChart, minuteChart, histMinuteChart,
-   stockDailyChart, stockMinute5Chart].forEach(c => c && c.resize());
+   stockDailyChart, stockMinute5Chart, stockHistChart].forEach(c => c && c.resize());
+}
+// 图表错误显示(不破坏 echarts 实例: 用临时 overlay, 3秒后清除)
+function showChartError(el, msg) {
+  // 若有 echarts 实例先清空
+  const chart = echarts.getInstanceByDom(el);
+  if (chart) chart.clear();
+  const overlay = document.createElement('div');
+  overlay.className = 'error-msg';
+  overlay.style.cssText = 'position:absolute;inset:0;display:flex;align-items:center;justify-content:center;pointer-events:none;z-index:5;';
+  overlay.textContent = msg;
+  el.style.position = 'relative';
+  el.appendChild(overlay);
+  setTimeout(() => overlay.remove(), 4000);
 }
 window.addEventListener('resize', resizeAllCharts);
 
@@ -786,6 +816,7 @@ function renderStockList(seg, stocks) {
     return `<div class="stock-item${isActive}" data-code="${s.code}" data-name="${safeName}">
       <span class="s-code">${s.code}</span>
       <span class="s-name">${s.name}</span>
+      <span class="s-price">${s.price != null ? s.price.toFixed(2) : '—'}</span>
       <span class="s-pct ${cls}">${sign}${s.pct}%</span>
     </div>`;
   }).join('');
@@ -816,13 +847,14 @@ function selectStock(code, name) {
 
 async function loadStockDaily(code) {
   const el = document.getElementById('stockDailyChart');
-  el.innerHTML = '';
+  // 不用 innerHTML='' (会破坏 echarts 注入的 DOM), 用 clear 清数据
+  if (stockDailyChart) stockDailyChart.clear();
   try {
     const resp = await fetch(`/api/monitor/stock/daily?code=${code}&count=120`);
     const data = await resp.json();
-    if (!data.success) { el.innerHTML = '<div class="error-msg">' + (data.error||'无数据') + '</div>'; return; }
+    if (!data.success) { showChartError(el, data.error||'无数据'); return; }
     renderStockDaily(data.bars);
-  } catch(e) { el.innerHTML = '<div class="error-msg">请求异常: ' + e.message + '</div>'; }
+  } catch(e) { showChartError(el, '请求异常: ' + e.message); }
 }
 
 function renderStockDaily(bars) {
@@ -841,7 +873,11 @@ function renderStockDaily(bars) {
     }
     return r;
   }
-  if (!stockDailyChart) stockDailyChart = echarts.init(document.getElementById('stockDailyChart'), 'dark');
+  const dom = document.getElementById('stockDailyChart');
+  // 实例失效(容器被清空)则重新 init
+  if (!stockDailyChart || !dom.querySelector('canvas')) {
+    stockDailyChart = echarts.init(dom, 'dark');
+  }
   stockDailyChart.setOption({
     backgroundColor: 'transparent', animation: false,
     tooltip: { trigger: 'axis', axisPointer: { type: 'cross' } },
@@ -868,20 +904,53 @@ function renderStockDaily(bars) {
       { name: '成交量', type: 'bar', xAxisIndex: 1, yAxisIndex: 1, data: vols },
     ],
   }, true);
+  stockDailyChart.resize();
+
+  // 双击个股日K线 → 加载该日个股历史分时
+  let _stockHoveredIdx = -1;
+  stockDailyChart.off('updateAxisPointer');
+  stockDailyChart.on('updateAxisPointer', function(event) {
+    if (event.axesInfo && event.axesInfo.length > 0) {
+      const v = event.axesInfo[0].value;
+      _stockHoveredIdx = typeof v === 'number' ? v : dates.indexOf(v);
+    }
+  });
+  // 双击监听只绑一次(用 DOM 事件, 避免重复绑定)
+  const sdDom = document.getElementById('stockDailyChart');
+  if (!sdDom._dblBound) {
+    sdDom._dblBound = true;
+    sdDom.addEventListener('dblclick', function() {
+      if (_stockHoveredIdx < 0 || _stockHoveredIdx >= dates.length) return;
+      const dateStr = dates[_stockHoveredIdx].replace(/-/g, '');
+      if (curStockCode) loadStockHistMinute(curStockCode, dateStr);
+      // 高亮选中日(垂直黄线)
+      stockDailyChart.setOption({
+        series: [{
+          name: '日K',
+          markLine: {
+            symbol: 'none', silent: true, animation: false,
+            data: [{ xAxis: dates[_stockHoveredIdx] }],
+            lineStyle: { color: '#facc15', width: 1.5, type: 'solid' },
+            label: { show: false }
+          }
+        }]
+      });
+    });
+  }
 }
 
 async function loadStockMinute5(code) {
   const el = document.getElementById('stockMinute5Chart');
   const tag = document.getElementById('stockM5Tag');
-  el.innerHTML = '';
+  if (stockMinute5Chart) stockMinute5Chart.clear();
   tag.textContent = '加载中…';
   try {
     const resp = await fetch(`/api/monitor/stock/minutes5?code=${code}`);
     const data = await resp.json();
-    if (!data.success) { el.innerHTML = '<div class="error-msg">' + (data.error||'无数据') + '</div>'; tag.textContent=''; return; }
+    if (!data.success) { showChartError(el, data.error||'无数据'); tag.textContent=''; return; }
     tag.textContent = data.days.join(' / ');
     renderStockMinute5(data.points, data.days);
-  } catch(e) { el.innerHTML = '<div class="error-msg">请求异常: ' + e.message + '</div>'; tag.textContent=''; }
+  } catch(e) { showChartError(el, '请求异常: ' + e.message); tag.textContent=''; }
 }
 
 function renderStockMinute5(points, days) {
@@ -903,7 +972,20 @@ function renderStockMinute5(points, days) {
     }
     lastDay = p.day;
   });
-  if (!stockMinute5Chart) stockMinute5Chart = echarts.init(document.getElementById('stockMinute5Chart'), 'dark');
+  // 5日分时量红绿柱(按当日基准: 每天第一点为该日基准)
+  const dayBase = {};
+  let curDay = null;
+  points.forEach(p => {
+    if (p.day !== curDay) { curDay = p.day; dayBase[p.day] = p.price; }
+  });
+  const svols = points.map(p => ({
+    value: p.vol,
+    itemStyle: { color: p.price >= (dayBase[p.day]||p.price) ? 'rgba(239,83,80,0.5)' : 'rgba(38,166,154,0.5)' }
+  }));
+  const dom = document.getElementById('stockMinute5Chart');
+  if (!stockMinute5Chart || !dom.querySelector('canvas')) {
+    stockMinute5Chart = echarts.init(dom, 'dark');
+  }
   stockMinute5Chart.setOption({
     backgroundColor: 'transparent', animation: false,
     tooltip: { trigger: 'axis' },
@@ -917,9 +999,67 @@ function renderStockMinute5(points, days) {
     series: [
       { name: '价格', type: 'line', data: prices, symbol: 'none', lineStyle: { color: '#e63946', width: 1 },
         markLine: { symbol: 'none', silent: true, data: markLines } },
-      { name: '成交量', type: 'bar', yAxisIndex: 1, data: vols, itemStyle: { color: 'rgba(74,85,104,0.4)' } },
+      { name: '成交量', type: 'bar', yAxisIndex: 1, data: svols },
     ],
   }, true);
+  stockMinute5Chart.resize();
+}
+
+// ===== 个股历史分时(双击个股日K线选日期触发) =====
+async function loadStockHistMinute(code, date) {
+  const tag = document.getElementById('stockHistTag');
+  const hint = document.getElementById('stockHistHint');
+  tag.textContent = `${date.slice(0,4)}-${date.slice(4,6)}-${date.slice(6,8)}`;
+  hint.textContent = '加载中…';
+  if (stockHistChart) stockHistChart.clear();
+  try {
+    const resp = await fetch(`/api/monitor/stock/minutes?code=${code}&date=${date}`);
+    const data = await resp.json();
+    if (!data.success) {
+      hint.textContent = '⚠ ' + (data.error || '无数据');
+      return;
+    }
+    renderStockHistMinute(data.points, data.date);
+    hint.textContent = `${data.points.length} 个数据点`;
+  } catch(e) {
+    hint.textContent = '⚠ 请求异常: ' + e.message;
+  }
+}
+
+function renderStockHistMinute(points, dateLabel) {
+  const times = points.map(p => p.time);
+  const prices = points.map(p => p.price);
+  const basePrice = prices.length > 0 ? prices[0] : 0;
+  const maxDev = Math.max(...prices.map(p => Math.abs(p - basePrice))) || 1;
+  // 量能红绿柱(按价格相对昨收基准)
+  const vols = points.map((p, i) => ({
+    value: p.vol,
+    itemStyle: { color: prices[i] >= basePrice ? 'rgba(239,83,80,0.6)' : 'rgba(38,166,154,0.6)' }
+  }));
+  const dom = document.getElementById('stockHistChart');
+  if (!stockHistChart || !dom.querySelector('canvas')) {
+    stockHistChart = echarts.init(dom, 'dark');
+  }
+  stockHistChart.setOption({
+    backgroundColor: 'transparent', animation: false,
+    title: { text: dateLabel, left: 10, textStyle: { color: '#9aa0a6', fontSize: 12 } },
+    tooltip: { trigger: 'axis', backgroundColor: 'rgba(20,23,29,0.95)', borderColor: '#2c313a', textStyle: { color: '#e6e6e6' } },
+    grid: { left: '6%', right: '4%', top: '12%', bottom: '20%' },
+    xAxis: { type: 'category', data: times, boundaryGap: false,
+      axisLine: { lineStyle: { color: '#2c313a' } }, axisLabel: { color: '#9aa0a6', interval: 29 } },
+    yAxis: [
+      { scale: true, min: basePrice - maxDev*1.1, max: basePrice + maxDev*1.1,
+        splitLine: { lineStyle: { color: '#252a33' } }, axisLabel: { color: '#9aa0a6' } },
+      { splitLine: { show: false }, axisLabel: { show: false } },
+    ],
+    series: [
+      { name: '价格', type: 'line', data: prices, symbol: 'none', lineStyle: { color: '#e63946', width: 1.5 },
+        areaStyle: { color: new echarts.graphic.LinearGradient(0,0,0,1,[{offset:0,color:'rgba(230,57,70,0.15)'},{offset:1,color:'rgba(230,57,70,0.01)'}]) },
+        markLine: { symbol: 'none', silent: true, data: [{ yAxis: basePrice, lineStyle: { color: '#9aa0a6', type: 'dashed' } }] } },
+      { name: '成交量', type: 'bar', yAxisIndex: 1, data: vols },
+    ],
+  }, true);
+  stockHistChart.resize();
 }
 
 // 排序切换
