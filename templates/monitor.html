@@ -1647,35 +1647,10 @@ function initSocket() {
   _socket.on('index_minute', (data) => {
     if (!data || !data.points || data.points.length < 2) return;
     _minutePoints = data.points;
-    // 增量更新: 如果图表已存在, 只更新数据不重建配置(避免每秒全量重绘卡顿)
     const last = data.points[data.points.length - 1];
-    if (minuteChart && minuteChart.getOption()) {
-      const opt = minuteChart.getOption();
-      const prices = data.points.map(p => p.price);
-      const vols = data.points.map(p => p.vol);
-      // 红绿柱着色
-      const basePrice = prices[0];
-      const indexVols = vols.map((v, i) => ({
-        value: v,
-        itemStyle: { color: prices[i] >= basePrice ? 'rgba(239,83,80,0.6)' : 'rgba(38,166,154,0.6)' }
-      }));
-      // 更新 series data (index 0=指数线, 1=成交量)
-      const seriesData = [{data: prices}, {data: indexVols}];
-      // 个股叠加
-      if (_stockMinutePoints && _stockMinutePoints.length > 0) {
-        const sp = _stockMinutePoints.map(p => p.price);
-        const sv = _stockMinutePoints.map((p, i) => ({
-          value: p.vol,
-          itemStyle: { color: sp[i] >= sp[0] ? 'rgba(239,83,80,0.5)' : 'rgba(38,166,154,0.5)' }
-        }));
-        seriesData.push({data: sp}, {data: sv});
-      }
-      minuteChart.setOption({series: seriesData}, {replaceMerge: ['series']});
-    } else {
-      // 首次渲染
-      renderMinute(minuteChart, 'minuteChart', data.points, data.date,
-        _leadingInfo ? _leadingInfo.leadingLine : null, _stockMinutePoints);
-    }
+    // 全量重渲染分时图(220点 + animation:false, 性能足够)
+    renderMinute(minuteChart, 'minuteChart', data.points, data.date,
+      _leadingInfo ? _leadingInfo.leadingLine : null, _stockMinutePoints);
     document.getElementById('minuteHint').textContent = `实时 ${data.points.length} 点`;
     // 同步更新顶部大盘价格/涨幅(每秒跳动)
     if (last && dailyData.length >= 2) {
@@ -1695,26 +1670,15 @@ function initSocket() {
       }
     }
     // 同步更新日K线最后一根K线收盘价(实时跳动)
-    if (last && dailyData.length >= 1) {
+    if (last && dailyData.length >= 1 && dailyChart) {
       const lastBar = dailyData[dailyData.length - 1];
       if (lastBar && lastBar.close !== last.price) {
         lastBar.close = last.price;
-        // 同时更新high/low
         if (lastBar.high == null || last.price > lastBar.high) lastBar.high = last.price;
         if (lastBar.low == null || last.price < lastBar.low) lastBar.low = last.price;
-        // 增量更新K线图: 只更新最后一个数据点
-        if (dailyChart && dailyChart.getOption()) {
-          const opt = dailyChart.getOption();
-          const candleSeries = opt.series.find(s => s.type === 'candlestick');
-          if (candleSeries && candleSeries.data) {
-            const idx = candleSeries.data.length - 1;
-            const d = candleSeries.data[idx];
-            if (d && Array.isArray(d)) {
-              d[1] = lastBar.open; d[2] = lastBar.close; d[3] = lastBar.low; d[4] = lastBar.high;
-              dailyChart.setOption({series: [{type: 'candlestick', data: candleSeries.data}]}, {replaceMerge: ['series']});
-            }
-          }
-        }
+        // 增量更新: 只替换candlestick series的data (echarts默认merge, 保留其他配置)
+        const ohlc = dailyData.map(b => [b.open, b.close, b.low, b.high]);
+        dailyChart.setOption({series: [{type: 'candlestick', data: ohlc}]});
       }
     }
   });
