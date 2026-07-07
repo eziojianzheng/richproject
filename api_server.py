@@ -1653,14 +1653,17 @@ def monitor_index_daily():
         return jsonify({'success': False, 'error': f'{type(e).__name__}: {e}'}), 500
 
 
-_minute_cache = {'ts': 0, 'data': None}  # 大盘分时3秒缓存
+_minute_cache = {'ts': 0, 'data': None}  # 大盘分时缓存
+_minute_fail_streak = 0  # 连续失败次数(后端侧)
+_minute_cache_ttl = 3    # 动态缓存时间(秒), 失败时自动增大
 
 @app.route('/api/monitor/index/minute', methods=['GET'])
 def monitor_index_minute():
-    """上证指数当日分时 (mootdx minute, 代码用 1A0001)。3秒缓存。"""
+    """上证指数当日分时 (mootdx minute, 代码用 1A0001)。自适应缓存。"""
     import time as _time
-    # 3秒缓存, 盘中分时数据变化快但不需要每次都打TDX
-    if _minute_cache['data'] and (_time.time() - _minute_cache['ts'] < 3):
+    global _minute_fail_streak, _minute_cache_ttl
+    # 动态缓存: 正常3s, 连续失败后自动增大到15s(减轻服务器压力)
+    if _minute_cache['data'] and (_time.time() - _minute_cache['ts'] < _minute_cache_ttl):
         return jsonify(_minute_cache['data'])
     try:
         import hot_track as ht
@@ -1680,8 +1683,15 @@ def monitor_index_minute():
         result = {'success': True, 'points': points, 'date': 'today'}
         _minute_cache['data'] = result
         _minute_cache['ts'] = _time.time()
+        # 成功: 恢复正常缓存时间
+        _minute_fail_streak = 0
+        _minute_cache_ttl = 3
         return jsonify(result)
     except Exception as e:
+        # 失败: 增大缓存时间, 减轻服务器压力
+        _minute_fail_streak += 1
+        if _minute_fail_streak >= 2:
+            _minute_cache_ttl = 15
         # 连接异常: 尝试切换服务器
         try:
             import hot_track as ht
@@ -1689,6 +1699,9 @@ def monitor_index_minute():
                 ht._reconnect_tdx()
         except Exception:
             pass
+        # 缓存还有数据就返回旧数据(降级服务), 避免前端空白
+        if _minute_cache['data']:
+            return jsonify(_minute_cache['data'])
         return jsonify({'success': False, 'error': f'{type(e).__name__}: {e}'}), 500
 
 

@@ -1601,16 +1601,21 @@ function isTradeTime() {
 }
 
 // 分时图轻量刷新: 只更新数据, 不重建图表
+// 自适应频率: 正常3s, 连续失败自动降频到10s, 恢复后回到3s
 let _minuteTimer = null;
+let _minuteFailCount = 0;       // 连续失败次数
+let _minuteSuccessCount = 0;    // 连续成功次数(用于恢复频率)
+let _minuteInterval = 3000;     // 当前间隔(动态调整)
 function startMinuteRefresh() {
-  if (_minuteTimer) return;
+  if (_minuteTimer) clearInterval(_minuteTimer);
   _minuteTimer = setInterval(async () => {
     if (!isTradeTime()) return;
     try {
       // 大盘分时
       const resp = await fetch('/api/monitor/index/minute');
       const data = await resp.json();
-      if (data.success && data.points && data.points.length >= 2) {
+      if (!data.success) throw new Error(data.error || '失败');
+      if (data.points && data.points.length >= 2) {
         _minutePoints = data.points;
         renderMinute(minuteChart, 'minuteChart', data.points, data.date,
           _leadingInfo ? _leadingInfo.leadingLine : null, _stockMinutePoints);
@@ -1628,8 +1633,30 @@ function startMinuteRefresh() {
           }
         }
       }
-    } catch(e) { /* 静默, 下次重试 */ }
-  }, 3000);
+      // 成功: 重置失败计数, 连续成功5次后恢复高频
+      _minuteFailCount = 0;
+      _minuteSuccessCount++;
+      if (_minuteSuccessCount >= 5 && _minuteInterval > 3000) {
+        _minuteInterval = 3000;
+        restartMinuteTimer();
+        console.log('[刷新] 恢复3s高频');
+      }
+    } catch(e) {
+      // 失败: 累计失败次数, 连续3次降频
+      _minuteFailCount++;
+      _minuteSuccessCount = 0;
+      if (_minuteFailCount >= 3 && _minuteInterval < 10000) {
+        _minuteInterval = 10000;
+        restartMinuteTimer();
+        console.warn('[刷新] 连续失败, 降频到10s');
+      }
+    }
+  }, _minuteInterval);
+}
+function restartMinuteTimer() {
+  clearInterval(_minuteTimer);
+  _minuteTimer = null;
+  startMinuteRefresh();
 }
 
 // 个股列表轻量刷新: 原地更新价格/涨幅, 排序变化时重排(保持选中+滚动)
