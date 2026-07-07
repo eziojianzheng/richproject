@@ -604,10 +604,10 @@ async function loadMinute() {
     // 先拉分时数据并立即渲染(快)
     const minResp = await fetch('/api/monitor/index/minute');
     const data = await minResp.json();
-    if (!data.success) {
-      // 当日分时未就绪(盘前/早盘): 静默留空, 不显示红色错误
+    if (!data.success || !data.points || data.points.length < 2) {
+      // 当日分时未就绪(盘前/数据点不足): 静默留空, 不渲染
       if (minuteChart) minuteChart.clear();
-      hint.textContent = '当日分时数据待更新';
+      hint.textContent = '';
       return;
     }
     _minutePoints = data.points;
@@ -632,11 +632,9 @@ async function loadStockMinuteOverlay(code) {
   try {
     const resp = await fetch(`/api/monitor/stock/minute?code=${code}`);
     const data = await resp.json();
-    if (!data.success) {
+    if (!data.success || !data.points || data.points.length < 2) {
+      // 个股当日分时未就绪: 静默, 不覆盖已有的大盘分时
       _stockMinutePoints = null;
-      if (_minutePoints) renderMinute(minuteChart, 'minuteChart', _minutePoints, 'today',
-        _leadingInfo ? _leadingInfo.leadingLine : null, null);
-      // 个股分时未就绪: 静默, 不覆盖已有的大盘分时提示
       return;
     }
     _stockMinutePoints = data.points;
@@ -1323,8 +1321,8 @@ async function loadStockMinute5(code) {
   try {
     const resp = await fetch(`/api/monitor/stock/minutes5?code=${code}`);
     const data = await resp.json();
-    // 5日分时未就绪: 静默留空(清图表但不弹错误), 仅 tag 显示提示
-    if (!data.success) { if (stockMinute5Chart) stockMinute5Chart.clear(); tag.textContent='5日分时数据待更新'; return; }
+    // 5日分时未就绪: 静默留空(清图表但不弹错误)
+    if (!data.success) { if (stockMinute5Chart) stockMinute5Chart.clear(); tag.textContent=''; return; }
     tag.textContent = data.days.join(' / ');
     renderStockMinute5(data.points, data.days);
   } catch(e) { showChartError(el, '请求异常: ' + e.message); tag.textContent=''; }
@@ -1366,11 +1364,15 @@ function renderStockMinute5(points, days) {
   stockMinute5Chart.setOption({
     backgroundColor: 'transparent', animation: false,
     tooltip: { trigger: 'axis' },
-    grid: { left: '6%', right: '4%', top: '8%', bottom: '22%' },
+    // grid 用像素值, 小框也能紧凑显示; 底部留 dataZoom 空间
+    grid: { left: 38, right: 12, top: 18, bottom: 36 },
     xAxis: { type: 'category', data: xLabels, boundaryGap: false,
-      axisLabel: { color: '#9aa0a6', interval: 239 } },  // 每天显示一个标签
+      axisLabel: { color: '#9aa0a6', interval: 'auto', rotate: 0, hideOverlap: true },
+      axisLine: { lineStyle: { color: '#2c313a' } } },
     yAxis: [
-      { scale: true, min: basePrice - maxDev*1.1, max: basePrice + maxDev*1.1, splitLine: { lineStyle: { color: '#252a33' } }, axisLabel: { color: '#9aa0a6' } },
+      { scale: true, min: basePrice - maxDev*1.1, max: basePrice + maxDev*1.1,
+        splitLine: { lineStyle: { color: '#252a33' } },
+        axisLabel: { color: '#9aa0a6', fontSize: 10 } },
       { splitLine: { show: false }, axisLabel: { show: false } },
     ],
     series: [
@@ -1393,10 +1395,10 @@ async function loadStockHistMinute(code, date) {
   try {
     const resp = await fetch(`/api/monitor/stock/minutes?code=${code}&date=${date}`);
     const data = await resp.json();
-    // 个股历史分时未就绪: 静默留空, 仅 hint 轻提示
+    // 个股历史分时未就绪: 静默留空
     if (!data.success) {
       if (stockHistChart) stockHistChart.clear();
-      hint.textContent = '该日分时数据待更新';
+      hint.textContent = '';
       return;
     }
     renderStockHistMinute(data.points, data.date);
