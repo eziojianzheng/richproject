@@ -105,6 +105,22 @@
     color: var(--text-muted); font-size: 11px; font-weight: 400;
   }
   .sort-tabs span.active { background: var(--accent); color: #fff; }
+  /* 条件筛选栏 */
+  .filter-bar {
+    display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+    padding: 5px 10px; border-bottom: 1px solid var(--border-color);
+    background: rgba(0,0,0,0.15);
+  }
+  .filter-label { color: var(--text-muted); font-size: 11px; font-weight: 600; flex-shrink: 0; }
+  .filter-chip {
+    display: inline-flex; align-items: center; gap: 3px; cursor: pointer;
+    padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 400;
+    background: rgba(255,255,255,0.04); color: var(--text-secondary);
+    border: 1px solid var(--border-color); transition: all 0.1s;
+  }
+  .filter-chip:hover { background: rgba(255,255,255,0.08); }
+  .filter-chip input { margin: 0; cursor: pointer; accent-color: var(--accent); }
+  .filter-chip:has(input:checked) { background: rgba(37,99,235,0.25); color: #93c5fd; border-color: rgba(37,99,235,0.5); }
   .stock-list {
     flex: 1; min-height: 0; overflow-y: auto; padding: 4px 0;
   }
@@ -123,6 +139,43 @@
   .s-up { color: var(--up-color); }
   .s-down { color: var(--down-color); }
   .s-flat { color: var(--text-muted); }
+
+  /* 自选股: 个股列表行内 + 按钮 / 高亮 */
+  .stock-item .wl-add {
+    width: 18px; height: 18px; line-height: 16px; text-align: center;
+    border-radius: 4px; background: rgba(37,99,235,0.25); color: #60a5fa;
+    font-size: 13px; font-weight: 700; cursor: pointer; flex-shrink: 0;
+    margin-right: 6px; border: 1px solid rgba(37,99,235,0.4); user-select: none;
+  }
+  .stock-item .wl-add:hover { background: rgba(37,99,235,0.5); }
+  .stock-item.in-watchlist { background: rgba(250,204,21,0.10); border-left-color: rgba(250,204,21,0.5); }
+  .stock-item.in-watchlist.active { background: rgba(37,99,235,0.15); border-left-color: #2563eb; }
+  .stock-item.in-watchlist .wl-add { background: rgba(250,204,21,0.25); color: #facc15; border-color: rgba(250,204,21,0.5); }
+
+  /* 自选股面板行: [移除] 代码 名称 价格 涨幅 [买] */
+  .wl-item {
+    display: flex; align-items: center; padding: 4px 8px; gap: 6px;
+    font-size: 12px; border-left: 3px solid #facc15; cursor: pointer; transition: background 0.1s;
+  }
+  .wl-item:hover { background: rgba(255,255,255,0.04); }
+  .wl-item.active { background: rgba(37,99,235,0.15); border-left-color: #2563eb; }
+  .wl-item .wl-rm {
+    width: 18px; height: 18px; line-height: 16px; text-align: center;
+    border-radius: 4px; background: rgba(239,83,80,0.2); color: #ef5350;
+    font-size: 11px; cursor: pointer; flex-shrink: 0; border: 1px solid rgba(239,83,80,0.4); user-select: none;
+  }
+  .wl-item .wl-rm:hover { background: rgba(239,83,80,0.45); }
+  .wl-item .s-code { width: 46px; color: var(--text-secondary); flex-shrink: 0; }
+  .wl-item .s-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .wl-item .s-price { width: 50px; text-align: right; color: var(--text-primary); flex-shrink: 0; }
+  .wl-item .s-pct { width: 50px; text-align: right; font-weight: 600; flex-shrink: 0; }
+  .wl-item .wl-buy {
+    width: 32px; height: 18px; line-height: 18px; text-align: center;
+    border-radius: 4px; background: rgba(38,166,154,0.2); color: #26a69a;
+    font-size: 11px; cursor: pointer; flex-shrink: 0; border: 1px solid rgba(38,166,154,0.4); user-select: none;
+  }
+  .wl-item .wl-buy:hover { background: rgba(38,166,154,0.45); }
+  .wl-empty { text-align: center; color: var(--text-muted); padding: 30px 10px; font-size: 12px; line-height: 1.8; }
 
   .loading {
     text-align: center; color: var(--text-muted); padding: 40px;
@@ -183,11 +236,11 @@
             📊 日K线
             <span class="date-tag">(双击加载该日分时)</span>
             <div class="indicator-toggle">
-              <label><input type="checkbox" data-series="MA5" checked><span style="color:#facc15">MA5</span></label>
-              <label><input type="checkbox" data-series="MA10" checked><span style="color:#60a5fa">MA10</span></label>
-              <label><input type="checkbox" data-series="MA20" checked><span style="color:#a855f7">MA20</span></label>
-              <label><input type="checkbox" data-series="成交量" checked><span style="color:#9aa0a6">量</span></label>
-              <label><input type="checkbox" data-series="缺口" checked><span style="color:#ef5350">缺口</span></label>
+              <label><input type="checkbox" data-target="daily" data-series="MA5" checked><span style="color:#facc15">MA5</span></label>
+              <label><input type="checkbox" data-target="daily" data-series="MA10" checked><span style="color:#60a5fa">MA10</span></label>
+              <label><input type="checkbox" data-target="daily" data-series="MA20" checked><span style="color:#a855f7">MA20</span></label>
+              <label><input type="checkbox" data-target="daily" data-series="成交量" checked><span style="color:#9aa0a6">量</span></label>
+              <label><input type="checkbox" data-target="daily" data-series="缺口" checked><span style="color:#ef5350">缺口</span></label>
             </div>
           </div>
           <div class="chart-container">
@@ -241,6 +294,10 @@
               <span data-sort="vol">量</span>
             </div>
           </div>
+          <div class="filter-bar" data-seg="cyb">
+            <span class="filter-label">筛选</span>
+            <label class="filter-chip"><input type="checkbox" data-filter="vol_ratio_3x"><span>当日最高量&gt;5日均量×3</span></label>
+          </div>
           <div id="cybList" class="stock-list"></div>
         </div>
       </div>
@@ -258,7 +315,24 @@
               <span data-sort="vol">量</span>
             </div>
           </div>
+          <div class="filter-bar" data-seg="kcb">
+            <span class="filter-label">筛选</span>
+            <label class="filter-chip"><input type="checkbox" data-filter="vol_ratio_3x"><span>当日最高量&gt;5日均量×3</span></label>
+          </div>
           <div id="kcbList" class="stock-list"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 自选股列表 -->
+    <div class="grid-stack-item" gs-x="0" gs-y="22" gs-w="6" gs-h="8" id="item-watchlist">
+      <div class="grid-stack-item-content">
+        <div class="stock-list-panel">
+          <div class="list-head">
+            <span class="list-title">⭐ 自选股 <span id="wlCount" style="color:var(--text-muted);font-weight:400">(0)</span></span>
+            <span style="color:var(--text-muted);font-size:11px;font-weight:400">移除 / 代码 / 名称 / 价格 / 涨幅 / 买</span>
+          </div>
+          <div id="watchlistBox" class="stock-list"></div>
         </div>
       </div>
     </div>
@@ -270,6 +344,11 @@
           <div class="chart-title">
             📊 <span id="stockDailyTitle">点击左侧选股</span>
             <span class="date-tag">(双击加载该日分时)</span>
+            <div class="indicator-toggle">
+              <label><input type="checkbox" data-target="stock" data-series="MA5" checked><span style="color:#facc15">MA5</span></label>
+              <label><input type="checkbox" data-target="stock" data-series="MA10" checked><span style="color:#60a5fa">MA10</span></label>
+              <label><input type="checkbox" data-target="stock" data-series="MA20" checked><span style="color:#a855f7">MA20</span></label>
+            </div>
           </div>
           <div class="chart-container">
             <div id="stockDailyChart"></div>
@@ -434,12 +513,16 @@ function renderDaily(bars) {
       { gridIndex: 1, splitNumber: 2, axisLabel: { show: false },
         splitLine: { show: false } },
     ],
-    dataZoom: [
-      { type: 'inside', xAxisIndex: [0, 1], start: 0, end: 100 },
-      { type: 'slider', xAxisIndex: [0, 1], bottom: 8, height: 16, start: 0, end: 100,
-        borderColor: '#2c313a', fillerColor: 'rgba(230,57,70,0.15)',
-        handleStyle: { color: '#e63946' }, textStyle: { color: '#9aa0a6' } },
-    ],
+    dataZoom: (function() {
+      const saved = (localStorage.getItem('monitor_index_zoom') || '0,100').split(',');
+      const st = parseFloat(saved[0]) || 0, en = parseFloat(saved[1]) || 100;
+      return [
+        { type: 'inside', xAxisIndex: [0, 1], start: st, end: en },
+        { type: 'slider', xAxisIndex: [0, 1], bottom: 8, height: 16, start: st, end: en,
+          borderColor: '#2c313a', fillerColor: 'rgba(230,57,70,0.15)',
+          handleStyle: { color: '#e63946' }, textStyle: { color: '#9aa0a6' } },
+      ];
+    })(),
     series: [
       { name: '日K', type: 'candlestick', data: ohlc,
         itemStyle: { color: UP, color0: DOWN, borderColor: UP, borderColor0: DOWN } },
@@ -489,6 +572,20 @@ function renderDaily(bars) {
       }]
     });
   });
+  // dataZoom 范围持久化(防抖保存)
+  if (!dailyChart._zoomBound) {
+    dailyChart._zoomBound = true;
+    let _izTimer = null;
+    dailyChart.on('datazoom', function() {
+      clearTimeout(_izTimer);
+      _izTimer = setTimeout(function() {
+        try {
+          const opt = dailyChart.getOption().dataZoom[0];
+          localStorage.setItem('monitor_index_zoom', `${opt.start},${opt.end}`);
+        } catch(e) {}
+      }, 400);
+    });
+  }
 }
 
 // ===== 当日分时图(大盘白线 + 个股红线叠加) =====
@@ -716,6 +813,14 @@ function showChartError(el, msg) {
   setTimeout(() => overlay.remove(), 4000);
 }
 window.addEventListener('resize', resizeAllCharts);
+// 记录窗口大小(供布局参考, 浏览器自身会恢复窗口尺寸)
+let _winSizeTimer = null;
+window.addEventListener('resize', function() {
+  clearTimeout(_winSizeTimer);
+  _winSizeTimer = setTimeout(function() {
+    try { localStorage.setItem('monitor_win_size', `${window.innerWidth}x${window.innerHeight}`); } catch(e) {}
+  }, 500);
+});
 
 // ===== gridstack 自由拖拽布局 =====
 let grid = null;
@@ -773,20 +878,46 @@ function initGridStack() {
 }
 initGridStack();
 
-// 指标 checkbox 控制: 用 dispatchAction 显隐 series (legend 隐藏时仍有效)
+// 指标 checkbox 控制: 用 dispatchAction 显隐 series, 按 data-target 路由到对应图表
 document.querySelectorAll('.indicator-toggle input[type="checkbox"]').forEach(function(cb) {
   cb.addEventListener('change', function() {
-    if (!dailyChart) return;
+    const target = this.getAttribute('data-target');
     const name = this.getAttribute('data-series');
-    dailyChart.dispatchAction({
+    const chart = target === 'stock' ? stockDailyChart : dailyChart;
+    if (!chart) return;
+    chart.dispatchAction({
       type: this.checked ? 'legendSelect' : 'legendUnSelect',
       name: name
     });
+    // 持久化均线显隐状态
+    try {
+      const key = target === 'stock' ? 'monitor_stock_ma' : 'monitor_index_ma';
+      const saved = JSON.parse(localStorage.getItem(key) || '{}');
+      saved[name] = this.checked;
+      localStorage.setItem(key, JSON.stringify(saved));
+    } catch(e) {}
   });
 });
+// 恢复均线显隐状态(页面加载时)
+function restoreIndicatorState() {
+  document.querySelectorAll('.indicator-toggle input[type="checkbox"]').forEach(function(cb) {
+    const target = cb.getAttribute('data-target');
+    const name = cb.getAttribute('data-series');
+    const key = target === 'stock' ? 'monitor_stock_ma' : 'monitor_index_ma';
+    try {
+      const saved = JSON.parse(localStorage.getItem(key) || '{}');
+      if (name in saved) {
+        cb.checked = saved[name];
+        const chart = target === 'stock' ? stockDailyChart : dailyChart;
+        if (chart) chart.dispatchAction({ type: cb.checked ? 'legendSelect' : 'legendUnSelect', name });
+      }
+    } catch(e) {}
+  });
+}
 
 // ===== 第二列: 创业板/科创板个股 =====
 const STOCK_SORTS = { cyb: 'pct', kcb: 'pct' };  // 各板块当前排序
+let watchlistCodes = new Set();  // 自选股代码集合(用于列表高亮)
 
 async function loadStockList(seg) {
   const container = document.getElementById(seg === 'cyb' ? 'cybList' : 'kcbList');
@@ -800,6 +931,14 @@ async function loadStockList(seg) {
       return;
     }
     renderStockList(seg, data.stocks);
+    // 列表渲染后重新应用筛选(若量比条件已勾选但数据未就绪, 异步补上)
+    const active = getActiveFilters(seg);
+    if (active.size > 0) {
+      applyFilters(seg);
+      if (active.has('vol_ratio_3x') && !volRatioCache[seg]) {
+        ensureVolRatio(seg).then(() => applyFilters(seg));
+      }
+    }
   } catch (e) {
     container.innerHTML = '<div class="error-msg">请求异常: ' + e.message + '</div>';
   }
@@ -810,10 +949,13 @@ function renderStockList(seg, stocks) {
   container.innerHTML = stocks.map(s => {
     const cls = s.pct > 0 ? 's-up' : (s.pct < 0 ? 's-down' : 's-flat');
     const sign = s.pct > 0 ? '+' : '';
-    const isActive = s.code === curStockCode ? ' active' : '';
+    let clsStr = s.code === curStockCode ? ' active' : '';
+    if (watchlistCodes.has(s.code)) clsStr += ' in-watchlist';
+    const addLabel = watchlistCodes.has(s.code) ? '★' : '+';
     // name 转义防 XSS/引号破坏
     const safeName = s.name.replace(/"/g, '&quot;').replace(/'/g, '&#39;');
-    return `<div class="stock-item${isActive}" data-code="${s.code}" data-name="${safeName}">
+    return `<div class="stock-item${clsStr}" data-code="${s.code}" data-name="${safeName}">
+      <span class="wl-add" title="${watchlistCodes.has(s.code) ? '已在自选' : '加入自选'}">${addLabel}</span>
       <span class="s-code">${s.code}</span>
       <span class="s-name">${s.name}</span>
       <span class="s-price">${s.price != null ? s.price.toFixed(2) : '—'}</span>
@@ -822,9 +964,20 @@ function renderStockList(seg, stocks) {
   }).join('');
 }
 
-// 列表点击事件委托(避免 onclick 内联引号问题)
+// 列表点击事件委托: + 按钮加入自选; 其余点击选中个股
 document.querySelectorAll('.stock-list').forEach(list => {
   list.addEventListener('click', function(e) {
+    const addBtn = e.target.closest('.wl-add');
+    if (addBtn) {
+      e.stopPropagation();
+      const item = addBtn.closest('.stock-item');
+      if (item) {
+        const code = item.dataset.code;
+        if (watchlistCodes.has(code)) return;  // 已在自选, 忽略
+        addToWatchlist(code, item.dataset.name);
+      }
+      return;
+    }
     const item = e.target.closest('.stock-item');
     if (!item) return;
     selectStock(item.dataset.code, item.dataset.name);
@@ -833,9 +986,9 @@ document.querySelectorAll('.stock-list').forEach(list => {
 
 function selectStock(code, name) {
   curStockCode = code;
-  // 高亮选中行(两列都清除再激活)
-  document.querySelectorAll('.stock-item').forEach(el => el.classList.remove('active'));
-  document.querySelectorAll(`.stock-item[data-code="${code}"]`).forEach(el => el.classList.add('active'));
+  // 高亮选中行(两列 + 自选股面板都清除再激活)
+  document.querySelectorAll('.stock-item.active, .wl-item.active').forEach(el => el.classList.remove('active'));
+  document.querySelectorAll(`.stock-item[data-code="${code}"], .wl-item[data-code="${code}"]`).forEach(el => el.classList.add('active'));
   document.getElementById('stockDailyTitle').textContent = `${code} ${name}`;
   // localStorage 保存
   try { localStorage.setItem('monitor_stock_code', code); localStorage.setItem('monitor_stock_name', name); } catch(e) {}
@@ -844,6 +997,109 @@ function selectStock(code, name) {
   loadStockMinute5(code);
   loadStockMinuteOverlay(code);
 }
+
+// ===== 自选股 =====
+// 刷新个股列表中 .in-watchlist 高亮(增删后调用)
+function refreshWatchlistHighlight() {
+  document.querySelectorAll('.stock-item').forEach(el => {
+    el.classList.toggle('in-watchlist', watchlistCodes.has(el.dataset.code));
+    const btn = el.querySelector('.wl-add');
+    if (btn) {
+      const inWl = watchlistCodes.has(el.dataset.code);
+      btn.textContent = inWl ? '★' : '+';
+      btn.title = inWl ? '已在自选' : '加入自选';
+    }
+  });
+}
+
+// 渲染自选股面板行: [移除] 代码 名称 价格 涨幅 [买]
+function renderWatchlist(items) {
+  const box = document.getElementById('watchlistBox');
+  const cnt = document.getElementById('wlCount');
+  if (cnt) cnt.textContent = `(${items.length})`;
+  watchlistCodes = new Set(items.map(i => i.code));
+  if (!items.length) {
+    box.innerHTML = '<div class="wl-empty">暂无自选股<br>点击创业板/科创板列表行内 <b style="color:#60a5fa">+</b> 按钮添加</div>';
+    return;
+  }
+  box.innerHTML = items.map(s => {
+    const cls = (s.pct || 0) > 0 ? 's-up' : ((s.pct || 0) < 0 ? 's-down' : 's-flat');
+    const sign = (s.pct || 0) > 0 ? '+' : '';
+    const isActive = s.code === curStockCode ? ' active' : '';
+    const safeName = (s.name || '').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+    const priceStr = (s.price != null && !isNaN(s.price)) ? Number(s.price).toFixed(2) : '—';
+    const pctStr = (s.pct != null && !isNaN(s.pct)) ? `${sign}${Number(s.pct).toFixed(2)}%` : '—';
+    return `<div class="wl-item${isActive}" data-code="${s.code}" data-name="${safeName}">
+      <span class="wl-rm" title="移除自选">×</span>
+      <span class="s-code">${s.code}</span>
+      <span class="s-name">${s.name || ''}</span>
+      <span class="s-price">${priceStr}</span>
+      <span class="s-pct ${cls}">${pctStr}</span>
+      <span class="wl-buy" title="买入(功能开发中)">买</span>
+    </div>`;
+  }).join('');
+}
+
+// 拉取自选股并渲染
+async function loadWatchlist() {
+  try {
+    const resp = await fetch('/api/monitor/watchlist');
+    const data = await resp.json();
+    if (data.success) {
+      renderWatchlist(data.watchlist || []);
+      refreshWatchlistHighlight();
+    }
+  } catch (e) { console.error('加载自选股失败', e); }
+}
+
+// 加入自选
+async function addToWatchlist(code, name) {
+  try {
+    const resp = await fetch('/api/monitor/watchlist/add', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ code: code, name: name })
+    });
+    const data = await resp.json();
+    if (data.success) {
+      // 后端返回原始 wl(无 price/pct), 重新拉取含报价的完整列表
+      await loadWatchlist();
+    }
+  } catch (e) { console.error('加入自选失败', e); }
+}
+
+// 移除自选
+async function removeFromWatchlist(code) {
+  try {
+    const resp = await fetch('/api/monitor/watchlist/remove', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ code: code })
+    });
+    const data = await resp.json();
+    if (data.success) {
+      await loadWatchlist();
+    }
+  } catch (e) { console.error('移除自选失败', e); }
+}
+
+// 自选股面板事件委托: 移除/买/点击选中
+document.getElementById('watchlistBox').addEventListener('click', function(e) {
+  const rmBtn = e.target.closest('.wl-rm');
+  if (rmBtn) {
+    e.stopPropagation();
+    const item = rmBtn.closest('.wl-item');
+    if (item) removeFromWatchlist(item.dataset.code);
+    return;
+  }
+  const buyBtn = e.target.closest('.wl-buy');
+  if (buyBtn) {
+    e.stopPropagation();
+    alert('买入功能开发中');
+    return;
+  }
+  const item = e.target.closest('.wl-item');
+  if (!item) return;
+  selectStock(item.dataset.code, item.dataset.name);
+});
 
 async function loadStockDaily(code) {
   const el = document.getElementById('stockDailyChart');
@@ -892,10 +1148,14 @@ function renderStockDaily(bars) {
       { scale: true, splitLine: { lineStyle: { color: '#252a33' } }, axisLabel: { color: '#9aa0a6' } },
       { gridIndex: 1, splitNumber: 2, axisLabel: { show: false }, splitLine: { show: false } },
     ],
-    dataZoom: [
-      { type: 'inside', xAxisIndex: [0,1], start: 50, end: 100 },
-      { type: 'slider', xAxisIndex: [0,1], bottom: 4, height: 14, start: 50, end: 100, textStyle: { color: '#9aa0a6' } },
-    ],
+    dataZoom: (function() {
+      const saved = (localStorage.getItem('monitor_stock_zoom') || '50,100').split(',');
+      const st = parseFloat(saved[0]) || 50, en = parseFloat(saved[1]) || 100;
+      return [
+        { type: 'inside', xAxisIndex: [0,1], start: st, end: en },
+        { type: 'slider', xAxisIndex: [0,1], bottom: 4, height: 14, start: st, end: en, textStyle: { color: '#9aa0a6' } },
+      ];
+    })(),
     series: [
       { name: '日K', type: 'candlestick', data: ohlc, itemStyle: { color: UP, color0: DOWN, borderColor: UP, borderColor0: DOWN } },
       { name: 'MA5', type: 'line', data: calcMA(5), symbol: 'none', lineStyle: { color: '#facc15', width: 1 } },
@@ -935,6 +1195,20 @@ function renderStockDaily(bars) {
           }
         }]
       });
+    });
+  }
+  // dataZoom 范围持久化(防抖保存)
+  if (!stockDailyChart._zoomBound) {
+    stockDailyChart._zoomBound = true;
+    let _zoomTimer = null;
+    stockDailyChart.on('datazoom', function() {
+      clearTimeout(_zoomTimer);
+      _zoomTimer = setTimeout(function() {
+        try {
+          const opt = stockDailyChart.getOption().dataZoom[0];
+          localStorage.setItem('monitor_stock_zoom', `${opt.start},${opt.end}`);
+        } catch(e) {}
+      }, 400);
     });
   }
 }
@@ -1007,6 +1281,7 @@ function renderStockMinute5(points, days) {
 
 // ===== 个股历史分时(双击个股日K线选日期触发) =====
 async function loadStockHistMinute(code, date) {
+  try { localStorage.setItem('monitor_stock_hist_date', date); } catch(e) {}
   const tag = document.getElementById('stockHistTag');
   const hint = document.getElementById('stockHistHint');
   tag.textContent = `${date.slice(0,4)}-${date.slice(4,6)}-${date.slice(6,8)}`;
@@ -1075,6 +1350,88 @@ document.querySelectorAll('.sort-tabs span').forEach(el => {
   });
 });
 
+// ===== 条件筛选栏 =====
+const volRatioCache = { cyb: null, kcb: null };  // {code: {ratio, pass, ...}}
+const volRatioLoading = { cyb: false, kcb: false };
+
+// 拉取量比数据(带缓存, 避免重复请求)
+async function ensureVolRatio(seg) {
+  if (volRatioCache[seg]) return volRatioCache[seg];
+  if (volRatioLoading[seg]) {
+    // 等待正在进行的请求
+    while (volRatioLoading[seg]) { await new Promise(r => setTimeout(r, 100)); }
+    return volRatioCache[seg];
+  }
+  volRatioLoading[seg] = true;
+  try {
+    const resp = await fetch(`/api/monitor/stocks/volume-ratio?segment=${seg}`);
+    const data = await resp.json();
+    if (data.success) volRatioCache[seg] = data.ratios || {};
+  } catch (e) { console.error('量比数据加载失败', e); }
+  volRatioLoading[seg] = false;
+  return volRatioCache[seg];
+}
+
+// 当前激活的筛选条件集合(每个板块独立)
+function getActiveFilters(seg) {
+  const bar = document.querySelector(`.filter-bar[data-seg="${seg}"]`);
+  if (!bar) return new Set();
+  const active = new Set();
+  bar.querySelectorAll('input[type="checkbox"]:checked').forEach(cb => active.add(cb.dataset.filter));
+  return active;
+}
+
+// 应用筛选: 隐藏不满足条件的行
+function applyFilters(seg) {
+  const container = document.getElementById(seg === 'cyb' ? 'cybList' : 'kcbList');
+  if (!container) return;
+  const active = getActiveFilters(seg);
+  const items = container.querySelectorAll('.stock-item');
+  if (active.size === 0) {
+    // 无筛选: 全部显示
+    items.forEach(el => el.style.display = '');
+    return;
+  }
+  const ratios = volRatioCache[seg] || {};
+  items.forEach(el => {
+    const code = el.dataset.code;
+    let show = true;
+    // vol_ratio_3x: 当日分时最高量 > 5日均量 × 3
+    if (active.has('vol_ratio_3x') && !(ratios[code] && ratios[code].pass)) show = false;
+    el.style.display = show ? '' : 'none';
+  });
+}
+
+// 筛选 checkbox 变化
+document.querySelectorAll('.filter-bar input[type="checkbox"]').forEach(cb => {
+  cb.addEventListener('change', async function() {
+    const seg = this.closest('.filter-bar').dataset.seg;
+    // 持久化筛选状态
+    try {
+      const key = 'monitor_filter_' + seg;
+      const saved = JSON.parse(localStorage.getItem(key) || '{}');
+      saved[this.dataset.filter] = this.checked;
+      localStorage.setItem(key, JSON.stringify(saved));
+    } catch(e) {}
+    // 若勾选了量比条件但数据未加载, 先拉取
+    if (this.checked && this.dataset.filter === 'vol_ratio_3x' && !volRatioCache[seg]) {
+      await ensureVolRatio(seg);
+    }
+    applyFilters(seg);
+  });
+});
+
+// 恢复筛选状态
+function restoreFilterState() {
+  document.querySelectorAll('.filter-bar input[type="checkbox"]').forEach(cb => {
+    const seg = cb.closest('.filter-bar').dataset.seg;
+    try {
+      const saved = JSON.parse(localStorage.getItem('monitor_filter_' + seg) || '{}');
+      if (cb.dataset.filter in saved) cb.checked = saved[cb.dataset.filter];
+    } catch(e) {}
+  });
+}
+
 // 页面加载: 先加载日K, 恢复上次选中的历史分时日期(如有), 再加载当日分时
 loadDaily().then(() => {
   // 恢复上次双击选中的历史分时
@@ -1095,6 +1452,8 @@ loadDaily().then(() => {
     const sort = STOCK_SORTS[seg];
     tabs.querySelectorAll('span').forEach(s => s.classList.toggle('active', s.dataset.sort === sort));
   });
+  // 恢复筛选状态(在列表加载前, 这样 loadStockList 能感知已勾选条件并预取量比数据)
+  restoreFilterState();
   // 并行拉两个列表
   Promise.all([loadStockList('cyb'), loadStockList('kcb')]).then(() => {
     // 恢复上次选中的个股
@@ -1103,12 +1462,22 @@ loadDaily().then(() => {
     if (savedCode) {
       selectStock(savedCode, savedName || '');
     } else {
-      // 默认选创业板第1只
-      const first = document.querySelector('#cybList .stock-item');
+      // 默认选创业板第1只可见行(筛选可能隐藏了部分)
+      const first = document.querySelector('#cybList .stock-item:not([style*="display: none"])');
       if (first) selectStock(first.dataset.code, first.dataset.name);
     }
-    // 布局稳定后统一 resize 一次, 确保图表填满行高
-    requestAnimationFrame(() => requestAnimationFrame(resizeAllCharts));
+    // 恢复上次双击选中的个股历史分时
+    const savedStockHistDate = localStorage.getItem('monitor_stock_hist_date');
+    if (savedStockHistDate && /^\d{8}$/.test(savedStockHistDate) && curStockCode) {
+      loadStockHistMinute(curStockCode, savedStockHistDate);
+    }
+    // 加载自选股列表
+    loadWatchlist();
+    // 布局稳定后统一 resize 一次, 确保图表填满行高 + 恢复均线显隐
+    requestAnimationFrame(() => requestAnimationFrame(function() {
+      resizeAllCharts();
+      restoreIndicatorState();
+    }));
   });
 });
 </script>

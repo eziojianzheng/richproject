@@ -50,6 +50,7 @@ logs/
 # 运行时生成的缓存
 .price_cache.json
 .hot_last_result.json
+.watchlist.json
 *.glmocr.json
 *.sectors.json
 

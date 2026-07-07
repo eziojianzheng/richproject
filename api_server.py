@@ -192,6 +192,29 @@ def _invalidate_hot_cache():
 _load_hot_last()  # 启动时载入上次计算结果
 
 
+# ===== 自选股持久化 (.watchlist.json) =====
+WATCHLIST_FILE = '.watchlist.json'
+
+
+def _load_watchlist():
+    """读取自选股列表 [{code, name, added_at}]"""
+    try:
+        if os.path.exists(WATCHLIST_FILE):
+            with open(WATCHLIST_FILE, 'r', encoding='utf-8') as f:
+                return json.load(f)
+    except Exception:
+        pass
+    return []
+
+
+def _save_watchlist(wl):
+    try:
+        with open(WATCHLIST_FILE, 'w', encoding='utf-8') as f:
+            json.dump(wl, f, ensure_ascii=False)
+    except Exception as e:
+        print(f'保存自选股失败: {e}')
+
+
 def get_article_list(user_id='444409'):
     """获取博客文章列表（首页，最近约30篇）"""
     url = f'https://www.tgb.cn/blog/{user_id}'
@@ -1790,7 +1813,12 @@ def _fetch_all_a_quotes():
     if not frames:
         return None
     all_q = pd.concat(frames, ignore_index=True)
-    valid = all_q[(all_q['last_close'] > 0) & (all_q['price'] > 0)].copy()
+    # 强制数值列转 numeric(quotes 可能返回 None/字符串), 再丢弃无效行, 避免 None > 0 报错
+    for col in ('last_close', 'price', 'amount', 'vol'):
+        if col in all_q.columns:
+            all_q[col] = pd.to_numeric(all_q[col], errors='coerce')
+    valid = all_q.dropna(subset=['last_close', 'price'])
+    valid = valid[(valid['last_close'] > 0) & (valid['price'] > 0)].copy()
     valid['pct'] = (valid['price'] - valid['last_close']) / valid['last_close'] * 100
     # 组装记录列表
     records = []
@@ -1972,6 +2000,119 @@ def monitor_stock_minutes5():
         if not all_points:
             return jsonify({'success': False, 'error': '无5日分时数据'}), 404
         return jsonify({'success': True, 'points': all_points, 'days': day_labels})
+    except Exception as e:
+        return jsonify({'success': False, 'error': f'{type(e).__name__}: {e}'}), 500
+
+
+# ===== 自选股接口 =====
+
+@app.route('/api/monitor/watchlist', methods=['GET'])
+def monitor_watchlist():
+    """获取自选股列表(含实时 price/pct, 复用全市场报价缓存)。"""
+    try:
+        wl = _load_watchlist()
+        if not wl:
+            return jsonify({'success': True, 'watchlist': []})
+        all_records = _fetch_all_a_quotes()
+        quote_map = {r['code']: r for r in all_records} if all_records else {}
+        result = []
+        for item in wl:
+            code = item.get('code', '')
+            q = quote_map.get(code, {})
+            result.append({
+                'code': code,
+                'name': item.get('name', q.get('name', '')),
+                'added_at': item.get('added_at', ''),
+                'price': q.get('price'),
+                'pct': q.get('pct'),
+            })
+        return jsonify({'success': True, 'watchlist': result})
+    except Exception as e:
+        return jsonify({'success': False, 'error': f'{type(e).__name__}: {e}'}), 500
+
+
+@app.route('/api/monitor/watchlist/add', methods=['POST'])
+def monitor_watchlist_add():
+    """加入自选股 {code, name}"""
+    data = request.get_json(silent=True) or {}
+    code = str(data.get('code', '')).strip()
+    name = str(data.get('name', '')).strip()
+    if not re.match(r'^\d{6}$', code):
+        return jsonify({'success': False, 'error': 'code 需为6位数字'}), 400
+    wl = _load_watchlist()
+    if not any(w.get('code') == code for w in wl):
+        import time as _time
+        wl.append({'code': code, 'name': name, 'added_at': int(_time.time())})
+        _save_watchlist(wl)
+    return jsonify({'success': True, 'watchlist': wl})
+
+
+@app.route('/api/monitor/watchlist/remove', methods=['POST'])
+def monitor_watchlist_remove():
+    """移除自选股 {code}"""
+    data = request.get_json(silent=True) or {}
+    code = str(data.get('code', '')).strip()
+    if not re.match(r'^\d{6}$', code):
+        return jsonify({'success': False, 'error': 'code 需为6位数字'}), 400
+    wl = _load_watchlist()
+    wl = [w for w in wl if w.get('code') != code]
+    _save_watchlist(wl)
+    return jsonify({'success': True, 'watchlist': wl})
+
+
+# ===== 量比筛选接口 =====
+_volume_ratio_cache = {}  # {segment: {data, ts}}
+
+
+@app.route('/api/monitor/stocks/volume-ratio', methods=['GET'])
+def monitor_stocks_volume_ratio():
+    """计算板块内个股 当日分时最高量 / 5日均量 比值, 用于条件筛选。
+    参数: segment=cyb|kcb。60秒缓存。
+    返回 {success, ratios: {code: {day_max_vol, avg5_vol, ratio, pass}}}"""
+    import time as _time
+    segment = request.args.get('segment', 'cyb')
+    if segment not in ('cyb', 'kcb'):
+        return jsonify({'success': False, 'error': 'segment 需为 cyb 或 kcb'}), 400
+    cached = _volume_ratio_cache.get(segment)
+    if cached and (_time.time() - cached['ts'] < 60):
+        return jsonify({'success': True, 'ratios': cached['data']})
+    try:
+        import hot_track as ht
+        import pandas as pd
+        # 取板块股票列表(复用列表接口逻辑)
+        all_records = _fetch_all_a_quotes()
+        if not all_records:
+            return jsonify({'success': False, 'error': '无报价数据'}), 404
+        prefix = '30' if segment == 'cyb' else '688'
+        stocks = [r for r in all_records if r['code'].startswith(prefix)]
+        stocks.sort(key=lambda r: r.get('pct', 0), reverse=True)
+        stocks = stocks[:50]  # Top50, 与列表一致
+        ratios = {}
+        with ht._get_tdx_lock():
+            client = ht._get_tdx_client()
+            for s in stocks:
+                code = s['code']
+                try:
+                    # 当日分时最高量
+                    df_m = client.minute(symbol=code)
+                    day_max_vol = float(df_m['vol'].max()) if df_m is not None and not df_m.empty else 0
+                    # 5日K线均量
+                    df_k = client.bars(symbol=code, frequency=9, offset=5)
+                    if df_k is not None and len(df_k) > 0:
+                        avg5_vol = float(df_k['vol'].mean())
+                    else:
+                        avg5_vol = 0
+                    ratio = (day_max_vol / avg5_vol) if avg5_vol > 0 else 0
+                    ratios[code] = {
+                        'day_max_vol': round(day_max_vol, 0),
+                        'avg5_vol': round(avg5_vol, 0),
+                        'ratio': round(ratio, 2),
+                        'pass': ratio >= 3.0,  # 当日分时最高量 >= 5日均量 * 3
+                    }
+                except Exception:
+                    ratios[code] = {'day_max_vol': 0, 'avg5_vol': 0, 'ratio': 0, 'pass': False}
+        _volume_ratio_cache[segment] = {'data': ratios, 'ts': _time.time()}
+        return jsonify({'success': True, 'ratios': ratios})
     except Exception as e:
         return jsonify({'success': False, 'error': f'{type(e).__name__}: {e}'}), 500
 
