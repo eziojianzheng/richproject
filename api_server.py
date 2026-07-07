@@ -11,6 +11,8 @@ DEBUG_MODE = True
 
 import logging as _logging
 _dbg_logger = _logging.getLogger('ai_kanpan')
+# 抑制 tdxpy/mootdx 内部 NotImplementedError 噪音日志(不影响功能)
+_logging.getLogger('tdxpy').setLevel(_logging.CRITICAL)
 if DEBUG_MODE:
     _dbg_handler = _logging.FileHandler('_debug.log', encoding='utf-8')
     _dbg_handler.setFormatter(_logging.Formatter('%(asctime)s [%(levelname)s] %(message)s', '%H:%M:%S'))
@@ -46,6 +48,8 @@ from datetime import datetime, timedelta
 import threading
 
 app = Flask(__name__)
+from flask_socketio import SocketIO
+socketio = SocketIO(app, async_mode='threading', cors_allowed_origins='*')
 
 # 导入热门股追踪模块
 import hot_track as ht
@@ -2171,6 +2175,111 @@ def monitor_stocks_volume_ratio():
         return jsonify({'success': False, 'error': f'{type(e).__name__}: {e}'}), 500
 
 
+# ===== WebSocket 实时推送(后端单连接轮询, 前端零请求) =====
+_ws_push_thread = None
+_ws_subscribed_stocks = set()  # 前端订阅的个股代码
+
+@socketio.on('connect')
+def ws_connect():
+    print(f'[WS] 客户端连接')
+
+@socketio.on('disconnect')
+def ws_disconnect():
+    print(f'[WS] 客户端断开')
+
+@socketio.on('subscribe_stock')
+def ws_subscribe_stock(code):
+    """前端订阅个股分时"""
+    if code and re.match(r'^\d{6}$', code):
+        _ws_subscribed_stocks.add(code)
+
+@socketio.on('unsubscribe_stock')
+def ws_unsubscribe_stock(code):
+    _ws_subscribed_stocks.discard(code)
+
+def _is_trade_time():
+    """判断是否交易时段"""
+    from datetime import datetime
+    now = datetime.now()
+    h, m, w = now.hour, now.minute, now.weekday()
+    if w >= 5:
+        return False
+    mins = h * 60 + m
+    return (mins >= 555 and mins <= 695) or (mins >= 780 and mins <= 905)
+
+def _ws_push_loop():
+    """后台推送线程: 1秒间隔拉TDX数据, 通过WebSocket广播给前端。
+    只有一个mootdx长连接, 跟通达信客户端一样, 不怕高频。"""
+    import time
+    print('[WS] 推送线程启动')
+    while True:
+        try:
+            if not _is_trade_time():
+                time.sleep(10)
+                continue
+            t0 = time.time()
+            # 1. 大盘分时
+            try:
+                with ht._get_tdx_lock():
+                    client = ht._get_tdx_client()
+                    df = client.minute(symbol='1A0001')
+                if df is not None and not df.empty and len(df) >= 2:
+                    times = _minute_time_axis(len(df))
+                    points = []
+                    for i, row in df.iterrows():
+                        points.append({
+                            'time': times[i] if i < len(times) else str(i),
+                            'price': round(float(row['price']), 2),
+                            'vol': float(row['vol']),
+                        })
+                    _minute_cache['data'] = {'success': True, 'points': points, 'date': 'today'}
+                    _minute_cache['ts'] = time.time()
+                    socketio.emit('index_minute', _minute_cache['data'])
+            except Exception as e:
+                print(f'[WS] 大盘分时异常: {e}')
+                # 切换服务器
+                try:
+                    with ht._get_tdx_lock():
+                        ht._reconnect_tdx()
+                except Exception:
+                    pass
+
+            # 2. 订阅的个股分时
+            for code in list(_ws_subscribed_stocks):
+                try:
+                    with ht._get_tdx_lock():
+                        df = client.minute(symbol=code)
+                    if df is not None and not df.empty and len(df) >= 2:
+                        times = _minute_time_axis(len(df))
+                        points = []
+                        for i, row in df.iterrows():
+                            points.append({
+                                'time': times[i] if i < len(times) else str(i),
+                                'price': round(float(row['price']), 2),
+                                'vol': float(row['vol']),
+                            })
+                        result = {'success': True, 'points': points, 'date': 'today'}
+                        _stock_minute_cache[code] = {'ts': time.time(), 'data': result}
+                        socketio.emit('stock_minute', {'code': code, **result})
+                except Exception:
+                    pass
+
+            # 控制频率: 1秒一轮(跟通达信客户端一样)
+            elapsed = time.time() - t0
+            sleep_time = max(0.5, 1.0 - elapsed)
+            time.sleep(sleep_time)
+        except Exception as e:
+            print(f'[WS] 推送循环异常: {e}')
+            time.sleep(3)
+
+def start_ws_push():
+    """启动WebSocket推送线程"""
+    global _ws_push_thread
+    if _ws_push_thread is None:
+        _ws_push_thread = threading.Thread(target=_ws_push_loop, daemon=True)
+        _ws_push_thread.start()
+
+
 # ============== 热门股追踪页面 ==============
 
 @app.route('/hot', methods=['GET'])
@@ -2875,4 +2984,5 @@ if __name__ == '__main__':
     print('  curl "http://127.0.0.1:5000/api/hot/track?start=20260601&end=20260605"')
     print("=" * 60)
     
-    app.run(host='0.0.0.0', port=5000, debug=True)
+    start_ws_push()
+    socketio.run(app, host='0.0.0.0', port=5000, debug=True, allow_unsafe_werkzeug=True)

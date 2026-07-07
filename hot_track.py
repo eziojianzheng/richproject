@@ -28,6 +28,8 @@ except Exception:
 
 import logging as _logging
 _ht_logger = _logging.getLogger('ai_kanpan')
+# 抑制 tdxpy/mootdx 内部 NotImplementedError 噪音日志(不影响功能)
+_logging.getLogger('tdxpy').setLevel(_logging.CRITICAL)
 
 import os
 import re

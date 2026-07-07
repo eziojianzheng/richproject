@@ -391,6 +391,7 @@
 
 <script src="https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/gridstack@11/dist/gridstack-all.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/socket.io@4/dist/socket.io.min.js"></script>
 <script>
 const UP = '#ef5350', DOWN = '#26a69a';
 let dailyChart = null, minuteChart = null, histMinuteChart = null;
@@ -1010,6 +1011,11 @@ document.querySelectorAll('.stock-list').forEach(list => {
 });
 
 function selectStock(code, name) {
+  // 切换WebSocket订阅
+  if (_socket && _wsConnected) {
+    if (curStockCode) _socket.emit('unsubscribe_stock', curStockCode);
+    _socket.emit('subscribe_stock', code);
+  }
   curStockCode = code;
   // 高亮选中行(两列 + 自选股面板都清除再激活)
   document.querySelectorAll('.stock-item.active, .wl-item.active').forEach(el => el.classList.remove('active'));
@@ -1588,9 +1594,9 @@ loadDaily().then(() => {
   });
 });
 
-// ===== 自动刷新(仅交易时段) =====
-// 刷新频率: 分时3s / 个股列表10s / 日K线60s
-// 本地通达信优先(不限流), 远程有3s后端缓存兜底
+// ===== 自动刷新 =====
+// WebSocket推送: 后端1秒拉TDX → 主动推给前端(零请求, 零延迟, 跟通达信客户端一样)
+// 个股列表/日K线仍用轮询(频率低, 不影响)
 function isTradeTime() {
   const now = new Date();
   const h = now.getHours(), m = now.getMinutes(), w = now.getDay();
@@ -1600,18 +1606,64 @@ function isTradeTime() {
   return (mins >= 555 && mins <= 695) || (mins >= 780 && mins <= 905);
 }
 
-// 分时图轻量刷新: 只更新数据, 不重建图表
-// 自适应频率: 正常3s, 连续失败自动降频到10s, 恢复后回到3s
+// WebSocket连接
+let _socket = null;
+let _wsConnected = false;
+function initSocket() {
+  if (_socket) return;
+  _socket = io({
+    transports: ['websocket', 'polling'],
+    reconnection: true,
+    reconnectionDelay: 2000,
+    reconnectionAttempts: Infinity
+  });
+
+  _socket.on('connect', () => {
+    _wsConnected = true;
+    console.log('[WS] 已连接, 实时推送生效');
+    document.getElementById('minuteHint').textContent = '实时推送中';
+    // 订阅当前选中的个股
+    if (curStockCode) {
+      _socket.emit('subscribe_stock', curStockCode);
+    }
+  });
+
+  _socket.on('disconnect', () => {
+    _wsConnected = false;
+    console.warn('[WS] 断开, 降级为轮询');
+    document.getElementById('minuteHint').textContent = '连接断开, 降级轮询';
+    // 降级: 启动轮询兜底
+    if (!_minuteTimer) startMinutePolling();
+  });
+
+  // 接收大盘分时推送
+  _socket.on('index_minute', (data) => {
+    if (!data || !data.points || data.points.length < 2) return;
+    _minutePoints = data.points;
+    renderMinute(minuteChart, 'minuteChart', data.points, data.date,
+      _leadingInfo ? _leadingInfo.leadingLine : null, _stockMinutePoints);
+    document.getElementById('minuteHint').textContent = `实时 ${data.points.length} 点`;
+  });
+
+  // 接收个股分时推送
+  _socket.on('stock_minute', (data) => {
+    if (!data || !data.points || data.points.length < 2) return;
+    if (data.code !== curStockCode) return;
+    _stockMinutePoints = data.points;
+    if (_minutePoints) {
+      renderMinute(minuteChart, 'minuteChart', _minutePoints, 'today',
+        _leadingInfo ? _leadingInfo.leadingLine : null, _stockMinutePoints);
+    }
+  });
+}
+
+// 降级方案: WS断开时用轮询兜底(3s)
 let _minuteTimer = null;
-let _minuteFailCount = 0;       // 连续失败次数
-let _minuteSuccessCount = 0;    // 连续成功次数(用于恢复频率)
-let _minuteInterval = 3000;     // 当前间隔(动态调整)
-function startMinuteRefresh() {
-  if (_minuteTimer) clearInterval(_minuteTimer);
+function startMinutePolling() {
+  if (_minuteTimer) return;
   _minuteTimer = setInterval(async () => {
     if (!isTradeTime()) return;
     try {
-      // 大盘分时
       const resp = await fetch('/api/monitor/index/minute');
       const data = await resp.json();
       if (!data.success) throw new Error(data.error || '失败');
@@ -1621,7 +1673,6 @@ function startMinuteRefresh() {
           _leadingInfo ? _leadingInfo.leadingLine : null, _stockMinutePoints);
         document.getElementById('minuteHint').textContent = `${data.points.length} 个数据点`;
       }
-      // 个股分时叠加(如有选中)
       if (curStockCode) {
         const sr = await fetch(`/api/monitor/stock/minute?code=${curStockCode}`);
         const sd = await sr.json();
@@ -1633,30 +1684,11 @@ function startMinuteRefresh() {
           }
         }
       }
-      // 成功: 重置失败计数, 连续成功5次后恢复高频
-      _minuteFailCount = 0;
-      _minuteSuccessCount++;
-      if (_minuteSuccessCount >= 5 && _minuteInterval > 3000) {
-        _minuteInterval = 3000;
-        restartMinuteTimer();
-        console.log('[刷新] 恢复3s高频');
-      }
-    } catch(e) {
-      // 失败: 累计失败次数, 连续3次降频
-      _minuteFailCount++;
-      _minuteSuccessCount = 0;
-      if (_minuteFailCount >= 3 && _minuteInterval < 10000) {
-        _minuteInterval = 10000;
-        restartMinuteTimer();
-        console.warn('[刷新] 连续失败, 降频到10s');
-      }
-    }
-  }, _minuteInterval);
+    } catch(e) { /* 静默 */ }
+  }, 3000);
 }
-function restartMinuteTimer() {
-  clearInterval(_minuteTimer);
-  _minuteTimer = null;
-  startMinuteRefresh();
+function stopMinutePolling() {
+  if (_minuteTimer) { clearInterval(_minuteTimer); _minuteTimer = null; }
 }
 
 // 个股列表轻量刷新: 原地更新价格/涨幅, 排序变化时重排(保持选中+滚动)
@@ -1748,8 +1780,8 @@ function startDailyRefresh() {
   }, 60000);
 }
 
-// 启动自动刷新
-startMinuteRefresh();
+// 启动: 优先WebSocket推送, 断开时自动降级轮询
+initSocket();
 startListRefresh();
 startDailyRefresh();
 </script>
