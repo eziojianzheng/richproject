@@ -697,14 +697,20 @@ function renderMinute(chartVar, domId, points, dateLabel, leadingLine, stockPoin
         formatter: `领先 ${leadingLine}` } });
   }
 
-  // 大盘成交量红绿柱: 价格>=昨收(第一个点)为红, 否则绿
-  const indexVols = vols.map(v => ({
-    value: v,
-    itemStyle: { color: '#ef5350' }  // 默认红, 下方按点修正
-  }));
-  // 实际按每点价格着色
-  prices.forEach((p, i) => {
-    indexVols[i].itemStyle.color = p >= basePrice ? 'rgba(239,83,80,0.6)' : 'rgba(38,166,154,0.6)';
+  // 大盘成交量红绿柱: 本分钟收盘价 vs 上一分钟收盘价
+  // 红: 涨(c[i]>c[i-1])  绿: 跌(c[i]<c[i-1])  灰: 平(c[i]==c[i-1])
+  const indexVols = vols.map((v, i) => {
+    let color;
+    if (i === 0) {
+      color = 'rgba(158,158,158,0.5)';  // 第一根无法比较, 灰色
+    } else if (prices[i] > prices[i - 1]) {
+      color = 'rgba(239,83,80,0.6)';   // 涨 红
+    } else if (prices[i] < prices[i - 1]) {
+      color = 'rgba(38,166,154,0.6)';  // 跌 绿
+    } else {
+      color = 'rgba(158,158,158,0.5)'; // 平 灰
+    }
+    return { value: v, itemStyle: { color } };
   });
 
   // 个股分时叠加(红色线), 量能也红绿柱(独立 series, 双 y 轴避免量级差异)
@@ -715,11 +721,20 @@ function renderMinute(chartVar, domId, points, dateLabel, leadingLine, stockPoin
     const stockPrices = stockPoints.map(p => p.price);
     const stockVols = stockPoints.map(p => p.vol);
     stockBasePrice = stockPrices[0];
-    // 个股量红绿柱
-    const svols = stockVols.map((v, i) => ({
-      value: v,
-      itemStyle: { color: stockPrices[i] >= stockBasePrice ? 'rgba(239,83,80,0.5)' : 'rgba(38,166,154,0.5)' }
-    }));
+    // 个股量红绿柱: 同样按本分钟 vs 上一分钟
+    const svols = stockVols.map((v, i) => {
+      let color;
+      if (i === 0) {
+        color = 'rgba(158,158,158,0.4)';
+      } else if (stockPrices[i] > stockPrices[i - 1]) {
+        color = 'rgba(239,83,80,0.5)';
+      } else if (stockPrices[i] < stockPrices[i - 1]) {
+        color = 'rgba(38,166,154,0.5)';
+      } else {
+        color = 'rgba(158,158,158,0.4)';
+      }
+      return { value: v, itemStyle: { color } };
+    });
     stockSeries = [{
       name: '个股', type: 'line', data: stockPrices, symbol: 'none',
       lineStyle: { color: '#e63946', width: 1.5 },
@@ -1355,16 +1370,20 @@ function renderStockMinute5(points, days) {
     }
     lastDay = p.day;
   });
-  // 5日分时量红绿柱(按当日基准: 每天第一点为该日基准)
-  const dayBase = {};
-  let curDay = null;
-  points.forEach(p => {
-    if (p.day !== curDay) { curDay = p.day; dayBase[p.day] = p.price; }
+  // 5日分时量红绿柱: 本分钟收盘价 vs 上一分钟(跨日第一根灰色)
+  const svols = points.map((p, i) => {
+    let color;
+    if (i === 0 || points[i].day !== points[i-1].day) {
+      color = 'rgba(158,158,158,0.4)';  // 第一根/跨日第一根 灰色
+    } else if (prices[i] > prices[i - 1]) {
+      color = 'rgba(239,83,80,0.5)';   // 涨 红
+    } else if (prices[i] < prices[i - 1]) {
+      color = 'rgba(38,166,154,0.5)';  // 跌 绿
+    } else {
+      color = 'rgba(158,158,158,0.4)'; // 平 灰
+    }
+    return { value: p.vol, itemStyle: { color } };
   });
-  const svols = points.map(p => ({
-    value: p.vol,
-    itemStyle: { color: p.price >= (dayBase[p.day]||p.price) ? 'rgba(239,83,80,0.5)' : 'rgba(38,166,154,0.5)' }
-  }));
   const dom = document.getElementById('stockMinute5Chart');
   if (!stockMinute5Chart || !dom.querySelector('canvas')) {
     stockMinute5Chart = echarts.init(dom, 'dark');
@@ -1421,11 +1440,20 @@ function renderStockHistMinute(points, dateLabel) {
   const prices = points.map(p => p.price);
   const basePrice = prices.length > 0 ? prices[0] : 0;
   const maxDev = Math.max(...prices.map(p => Math.abs(p - basePrice))) || 1;
-  // 量能红绿柱(按价格相对昨收基准)
-  const vols = points.map((p, i) => ({
-    value: p.vol,
-    itemStyle: { color: prices[i] >= basePrice ? 'rgba(239,83,80,0.6)' : 'rgba(38,166,154,0.6)' }
-  }));
+  // 量能红绿柱: 本分钟收盘价 vs 上一分钟
+  const vols = points.map((p, i) => {
+    let color;
+    if (i === 0) {
+      color = 'rgba(158,158,158,0.5)';
+    } else if (prices[i] > prices[i - 1]) {
+      color = 'rgba(239,83,80,0.6)';
+    } else if (prices[i] < prices[i - 1]) {
+      color = 'rgba(38,166,154,0.6)';
+    } else {
+      color = 'rgba(158,158,158,0.5)';
+    }
+    return { value: p.vol, itemStyle: { color } };
+  });
   const dom = document.getElementById('stockHistChart');
   if (!stockHistChart || !dom.querySelector('canvas')) {
     stockHistChart = echarts.init(dom, 'dark');
