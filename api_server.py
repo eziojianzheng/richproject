@@ -2177,6 +2177,9 @@ def api_hot_track():
             for block in day.get('blocks', []):
                 for stock in block.get('stocks', []):
                     track = stock.get('track', {}).get(day['date'], {})
+                    # 停牌日不计为缺失
+                    if track.get('suspended'):
+                        continue
                     missing = []
                     
                     if track.get('pct') is None:
@@ -2226,6 +2229,7 @@ def _build_missing_report(result):
     返回: (missing_by_date, missing_codes)
       missing_by_date: [{date, blocks:[{block, stocks:[{code,name,missing:[...]}]}]}]
       missing_codes: 去重的缺失股票代码列表
+    注意: 停牌日(suspended=True)不计为缺失——当日无交易, 无涨幅/MA10 是正常的。
     """
     missing_by_date = []
     missing_codes = set()
@@ -2236,6 +2240,9 @@ def _build_missing_report(result):
             miss_stocks = []
             for s in b.get('stocks', []):
                 cell = s.get('track', {}).get(d) or {}
+                # 停牌日跳过: 当日无交易, 涨幅/MA10 缺失是正常的
+                if cell.get('suspended'):
+                    continue
                 # 不再跳过 present=False: 历史入榜跟踪股当日未涨停时仍需涨幅/MA10
                 missing = []
                 if cell.get('pct') is None:

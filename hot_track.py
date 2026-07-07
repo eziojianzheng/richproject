@@ -367,6 +367,8 @@ def fetch_range_mootdx(code, start, end):
 
         cache = _load_price_cache()
         with _cache_lock:
+            # 记录该股实际有交易的日期集合, 供完整性检查区分"停牌日"(正常None)与"真缺数据"
+            cache[f'{code}_tdays'] = dates
             n = len(closes)
             for i in range(n):
                 dstr = dates[i]
@@ -417,6 +419,7 @@ def fetch_range_local_tdx(code, start, end):
 
         cache = _load_price_cache()
         with _cache_lock:
+            cache[f'{code}_tdays'] = dates
             n = len(closes)
             for i in range(n):
                 dstr = dates[i]
@@ -491,6 +494,16 @@ def is_below_ma10(code, date):
     """判断某日是否跌破10日线, 未命中返回 None"""
     cache = _load_price_cache()
     return cache.get(f'{code}_{date}_below_ma10')
+
+
+def is_suspended(code, date):
+    """判断某股在某日是否停牌: 即该日不在 mootdx 返回的实际交易日列表中。
+    若无 _tdays 缓存(从未成功拉取过), 返回 None 表示未知。"""
+    cache = _load_price_cache()
+    tdays = cache.get(f'{code}_tdays')
+    if tdays is None:
+        return None
+    return date not in tdays
 
 
 def prefetch_prices(codes, start, end, progress=None, check_dates=None):
@@ -669,6 +682,9 @@ def apply_removal_rules(data, progress=None, manual_remove_codes=None):
                 if not track:
                     continue
                 pct = track.get('pct')
+                # 停牌日不参与跌破判断, 也不清除已有预警状态
+                if track.get('suspended'):
+                    continue
                 is_kcb_cyb = st.get('is_kcb_cyb', False)
                 is_limit_up = False
                 if pct is not None:
@@ -819,6 +835,7 @@ def track_hot_stocks(start, end, sort='stock_count', with_price=True,
             pct_60d = get_pct_60d(code, d) if with_price else None
             below_ma10 = is_below_ma10(code, d) if with_price else None
             ma10 = get_ma10(code, d) if with_price else None
+            suspended = is_suspended(code, d) if with_price else None
             if rec:
                 track[d] = {
                     'desc': make_desc(rec['连扳数'], rec['末次时间']),
@@ -830,6 +847,7 @@ def track_hot_stocks(start, end, sort='stock_count', with_price=True,
                     'pct_60d': pct_60d,
                     'ma10': ma10,
                     'below_ma10': below_ma10,
+                    'suspended': suspended,
                     'present': True,
                 }
             else:
@@ -839,7 +857,8 @@ def track_hot_stocks(start, end, sort='stock_count', with_price=True,
                     'pct_20d': pct_20d,
                     'pct_60d': pct_60d,
                     'ma10': ma10,
-                    'below_ma10': below_ma10
+                    'below_ma10': below_ma10,
+                    'suspended': suspended,
                 }
         return track
 

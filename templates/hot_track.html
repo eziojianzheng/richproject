@@ -1154,6 +1154,7 @@ function renderStockExpand(s, lastDate){
   const pct = track ? track.pct : null;
   const belowMa10 = track ? track.below_ma10 : false;
   const ma10 = track ? track.ma10 : null;
+  const isSuspended = track ? track.suspended : false;
   const isRemoved = s.remove_date === lastDate;
 
   let thumbClass = getThumbClass(pct, s.is_kcb_cyb);
@@ -1163,9 +1164,10 @@ function renderStockExpand(s, lastDate){
     thumbClass = thumbClass + ' warn-ma10';
   }
 
-  const pctText = pct !== null ? (pct > 0 ? '+' : '') + pct.toFixed(1) + '%' : '—';
-  const desc = track && track.present ? (track.desc || '') : '';
-  const ma10Text = ma10 !== null ? `MA10: ${ma10.toFixed(2)}` : '';
+  // 停牌日特殊显示: 涨幅显示"停牌", 不显示MA10
+  const pctText = isSuspended ? '停牌' : (pct !== null ? (pct > 0 ? '+' : '') + pct.toFixed(1) + '%' : '—');
+  const desc = (track && track.present && !isSuspended) ? (track.desc || '') : (isSuspended ? '当日停牌' : '');
+  const ma10Text = (!isSuspended && ma10 !== null) ? `MA10: ${ma10.toFixed(2)}` : '';
   const removeText = isRemoved ? ' ⚠️ 已跌破10日线，次日不再跟踪' : '';
 
   let warnChain = '';
