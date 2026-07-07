@@ -229,7 +229,7 @@
   <!-- 自由拖拽布局: 每个面板可拖动位置 + 调整大小 -->
   <div class="grid-stack">
     <!-- 日K线 -->
-    <div class="grid-stack-item" gs-x="0" gs-y="0" gs-w="6" gs-h="10" id="item-daily">
+    <div class="grid-stack-item" gs-id="item-daily" gs-x="0" gs-y="0" gs-w="6" gs-h="10" id="item-daily">
       <div class="grid-stack-item-content">
         <div class="chart-card">
           <div class="chart-title">
@@ -251,7 +251,7 @@
     </div>
 
     <!-- 当日分时 -->
-    <div class="grid-stack-item" gs-x="6" gs-y="0" gs-w="3" gs-h="10" id="item-minute">
+    <div class="grid-stack-item" gs-id="item-minute" gs-x="6" gs-y="0" gs-w="3" gs-h="10" id="item-minute">
       <div class="grid-stack-item-content">
         <div class="chart-card">
           <div class="chart-title">
@@ -267,7 +267,7 @@
     </div>
 
     <!-- 历史分时 -->
-    <div class="grid-stack-item" gs-x="9" gs-y="0" gs-w="3" gs-h="10" id="item-hist">
+    <div class="grid-stack-item" gs-id="item-hist" gs-x="9" gs-y="0" gs-w="3" gs-h="10" id="item-hist">
       <div class="grid-stack-item-content">
         <div class="chart-card">
           <div class="chart-title">
@@ -283,7 +283,7 @@
     </div>
 
     <!-- 创业板列表 -->
-    <div class="grid-stack-item" gs-x="0" gs-y="10" gs-w="3" gs-h="12" id="item-cyb">
+    <div class="grid-stack-item" gs-id="item-cyb" gs-x="0" gs-y="10" gs-w="3" gs-h="12" id="item-cyb">
       <div class="grid-stack-item-content">
         <div class="stock-list-panel">
           <div class="list-head">
@@ -304,7 +304,7 @@
     </div>
 
     <!-- 科创板列表 -->
-    <div class="grid-stack-item" gs-x="3" gs-y="10" gs-w="3" gs-h="12" id="item-kcb">
+    <div class="grid-stack-item" gs-id="item-kcb" gs-x="3" gs-y="10" gs-w="3" gs-h="12" id="item-kcb">
       <div class="grid-stack-item-content">
         <div class="stock-list-panel">
           <div class="list-head">
@@ -325,7 +325,7 @@
     </div>
 
     <!-- 自选股列表 -->
-    <div class="grid-stack-item" gs-x="0" gs-y="22" gs-w="6" gs-h="8" id="item-watchlist">
+    <div class="grid-stack-item" gs-id="item-watchlist" gs-x="0" gs-y="22" gs-w="6" gs-h="8" id="item-watchlist">
       <div class="grid-stack-item-content">
         <div class="stock-list-panel">
           <div class="list-head">
@@ -338,7 +338,7 @@
     </div>
 
     <!-- 个股日K -->
-    <div class="grid-stack-item" gs-x="6" gs-y="10" gs-w="3" gs-h="6" id="item-sdaily">
+    <div class="grid-stack-item" gs-id="item-sdaily" gs-x="6" gs-y="10" gs-w="3" gs-h="6" id="item-sdaily">
       <div class="grid-stack-item-content">
         <div class="chart-card">
           <div class="chart-title">
@@ -359,7 +359,7 @@
     </div>
 
     <!-- 个股5日分时 -->
-    <div class="grid-stack-item" gs-x="6" gs-y="16" gs-w="3" gs-h="6" id="item-sm5">
+    <div class="grid-stack-item" gs-id="item-sm5" gs-x="6" gs-y="16" gs-w="3" gs-h="6" id="item-sm5">
       <div class="grid-stack-item-content">
         <div class="chart-card">
           <div class="chart-title">
@@ -373,7 +373,7 @@
     </div>
 
     <!-- 个股历史分时(双击个股日K线选日期) -->
-    <div class="grid-stack-item" gs-x="9" gs-y="10" gs-w="3" gs-h="12" id="item-shist">
+    <div class="grid-stack-item" gs-id="item-shist" gs-x="9" gs-y="10" gs-w="3" gs-h="12" id="item-shist">
       <div class="grid-stack-item-content">
         <div class="chart-card">
           <div class="chart-title">
@@ -843,7 +843,31 @@ function initGridStack() {
   if (saved) {
     try {
       const layout = JSON.parse(saved);
-      if (Array.isArray(layout) && layout.length) grid.load(layout);
+      if (Array.isArray(layout) && layout.length) {
+        // 逐个更新面板位置/尺寸, 而非用 grid.load() (load 会删除 layout 里没有的面板)
+        const allEls = Array.from(document.querySelectorAll('.grid-stack-item'));
+        const layoutMap = {};
+        layout.forEach(n => { if (n.id) layoutMap[n.id] = n; });
+        const hasIds = Object.keys(layoutMap).length > 0;
+        allEls.forEach((el, i) => {
+          let n = null;
+          if (hasIds) {
+            // 新版: 用 gs-id 匹配
+            n = layoutMap[el.getAttribute('gs-id') || el.id];
+          } else if (i < layout.length) {
+            // 旧版兼容: layout 无 id 时按 DOM 顺序匹配
+            n = layout[i];
+          }
+          if (n) {
+            const opts = {};
+            if (n.x != null) opts.x = n.x;
+            if (n.y != null) opts.y = n.y;
+            if (n.w != null) opts.w = n.w;
+            if (n.h != null) opts.h = n.h;
+            if (Object.keys(opts).length) grid.update(el, opts);
+          }
+        });
+      }
     } catch(e) {}
   }
   // 给每个面板标题栏注入锁按钮
