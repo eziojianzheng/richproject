@@ -763,6 +763,20 @@ function renderMinute(chartVar, domId, points, dateLabel, leadingLine, stockPoin
               formatter: '跌停 ' + (stockBasePrice - stockLimitDev).toFixed(2) } },
         ]
       }
+    },
+    // 个股黄色均价线(VWAP: 累计成交额/累计成交量)
+    {
+      name: '个股均价', type: 'line', symbol: 'none',
+      yAxisIndex: 2,
+      lineStyle: { color: '#facc15', width: 1 },
+      data: (function() {
+        let cumAmt = 0, cumVol = 0;
+        return stockPoints.map(function(p) {
+          cumAmt += p.price * p.vol;
+          cumVol += p.vol;
+          return cumVol > 0 ? +(cumAmt / cumVol).toFixed(2) : p.price;
+        });
+      })(),
     }];
     stockVolSeries = [{
       name: '个股量', type: 'bar', yAxisIndex: 3, data: svols,
@@ -821,13 +835,25 @@ function renderMinute(chartVar, domId, points, dateLabel, leadingLine, stockPoin
       formatter: function(params) {
         let s = params[0].axisValue + '<br/>';
         params.forEach(p => {
-          if (p.value !== undefined && p.value !== '-' && p.seriesName !== '成交量' && p.seriesName !== '个股量')
-            s += `${p.marker}${p.seriesName}: <b>${p.value}</b><br/>`;
+          if (p.value !== undefined && p.value !== '-' && p.seriesName !== '成交量' && p.seriesName !== '个股量') {
+            // 显示价格 + 涨幅(相对昨收基准)
+            let base = 0;
+            if (p.seriesName === '指数') base = basePrice;
+            else if (p.seriesName === '个股' || p.seriesName === '个股均价') base = stockBasePrice;
+            if (base > 0) {
+              const pct = ((p.value - base) / base * 100);
+              const sign = pct >= 0 ? '+' : '';
+              const color = pct >= 0 ? '#ef5350' : '#26a69a';
+              s += `${p.marker}${p.seriesName}: <b>${p.value}</b> <span style="color:${color}">${sign}${pct.toFixed(2)}%</span><br/>`;
+            } else {
+              s += `${p.marker}${p.seriesName}: <b>${p.value}</b><br/>`;
+            }
+          }
         });
         return s;
       }
     },
-    legend: { show: false, data: ['指数', '成交量', '个股', '个股量'] },
+    legend: { show: false, data: ['指数', '成交量', '个股', '个股量', '个股均价'] },
     grid: { left: '6%', right: stockPoints && stockPoints.length > 0 ? '8%' : '4%', top: '12%', bottom: '20%' },
     xAxis: {
       type: 'category', data: times, boundaryGap: false,
@@ -1202,11 +1228,18 @@ function buildAssumeZtSeries(bars) {
   }
   const lastIdx = bars.length - 1;
   const last = bars[lastIdx];
-  const lastClose = last.last_close || last.open;
-  // 科创板688/创业板300涨20%, 主板10%
+  // 昨收价: 优先 last_close, 为0则用前一天close, 再不行用当天open
+  let lastClose = last.last_close;
+  if (!lastClose || lastClose <= 0) {
+    lastClose = bars.length >= 2 ? bars[lastIdx - 1].close : last.open;
+  }
+  if (!lastClose || lastClose <= 0) lastClose = last.open;
+  // 涨停幅度: 科创板688/创业板300 = 20%, 主板 = 10%
   const isKcb = curStockCode && (curStockCode.startsWith('688') || curStockCode.startsWith('300'));
   const limitRate = isKcb ? 1.2 : 1.1;
+  // 涨停价 = 昨收 × 涨幅, 四舍五入到分
   const ztPrice = +(lastClose * limitRate).toFixed(2);
+  const dtPrice = +(lastClose / limitRate).toFixed(2);  // 跌停价
   // 虚线K线: [open, close=涨停价, low, high]
   const ztOpen = last.open;
   const ztClose = ztPrice;
