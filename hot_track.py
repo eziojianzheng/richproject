@@ -311,14 +311,30 @@ def _save_price_cache():
 # ============== 通达信 mootdx 行情 (TCP, 替代易被封的 akshare) ==============
 _tdx_client = None
 _tdx_lock = None
+_tdx_local_ok = None  # 本地通达信可用性缓存(None=未检测)
 
 
 def _get_tdx_client():
-    """获取(并复用)mootdx 标准行情客户端"""
-    global _tdx_client
+    """获取(并复用)mootdx 行情客户端。
+    优先本地通达信(127.0.0.1:7709, 不限流不封IP), 不可用则回退远程标准服务器。"""
+    global _tdx_client, _tdx_local_ok
     if _tdx_client is None:
         from mootdx.quotes import Quotes
-        _tdx_client = Quotes.factory(market='std')
+        # 先尝试本地通达信客户端
+        if _tdx_local_ok is None:
+            try:
+                _tdx_client = Quotes.factory(market='std', host='127.0.0.1', port=7709)
+                # 快速验证: 拉一只票的日线, 能拿到数据说明本地客户端在线
+                _df = _tdx_client.bars(symbol='000001', frequency=9, offset=1)
+                _tdx_local_ok = _df is not None and len(_df) > 0
+            except Exception:
+                _tdx_local_ok = False
+            if _tdx_local_ok:
+                _ht_logger.info('使用本地通达信(127.0.0.1:7709)作为行情源')
+            else:
+                _ht_logger.info('本地通达信不可用, 回退远程标准服务器')
+        if not _tdx_local_ok:
+            _tdx_client = Quotes.factory(market='std')
     return _tdx_client
 
 

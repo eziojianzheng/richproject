@@ -1778,7 +1778,7 @@ def _fetch_all_a_quotes():
     import re as _re
     import time as _time
     global _all_quotes_cache, _astock_codes_cache
-    if _all_quotes_cache and (_time.time() - _all_quotes_cache['ts'] < 60):
+    if _all_quotes_cache and (_time.time() - _all_quotes_cache['ts'] < 10):
         return _all_quotes_cache['data']
     import hot_track as ht
     import pandas as pd
@@ -1799,9 +1799,9 @@ def _fetch_all_a_quotes():
                         [c for c in sz['code'].tolist() if _is_a(c)]
             all_names = {}
             for _, row in sh.iterrows():
-                all_names[str(row['code'])] = str(row.get('name', ''))
+                all_names[str(row['code'])] = str(row.get('name', '')).replace('\x00', '').strip()
             for _, row in sz.iterrows():
-                all_names[str(row['code'])] = str(row.get('name', ''))
+                all_names[str(row['code'])] = str(row.get('name', '')).replace('\x00', '').strip()
             _astock_codes_cache = {'codes': all_codes, 'names': all_names, 'ts': _time.time()}
         # 批量拉全市场报价
         frames = []
@@ -1855,10 +1855,10 @@ def monitor_stocks_list():
     if sort not in ('pct', 'amount', 'vol'):
         sort = 'pct'
     limit = max(5, min(limit, 200))
-    # 60秒缓存
+    # 10秒缓存(支持前端自动刷新, 又避免高频打TDX)
     cache_key = (segment, sort)
     cached = _stock_list_cache.get(cache_key)
-    if cached and (_time.time() - cached['ts'] < 60):
+    if cached and (_time.time() - cached['ts'] < 10):
         return jsonify({'success': True, 'stocks': cached['data'][:limit]})
     try:
         all_records = _fetch_all_a_quotes()

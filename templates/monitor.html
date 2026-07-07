@@ -1587,6 +1587,144 @@ loadDaily().then(() => {
     }));
   });
 });
+
+// ===== 自动刷新(仅交易时段) =====
+// 刷新频率: 分时8s / 个股列表15s / 日K线60s
+// 本地通达信优先, 不限流不封IP; 远程服务器有10s后端缓存兜底
+function isTradeTime() {
+  const now = new Date();
+  const h = now.getHours(), m = now.getMinutes(), w = now.getDay();
+  if (w === 0 || w === 6) return false;  // 周末
+  const mins = h * 60 + m;
+  // 9:15~11:35 + 13:00~15:05 (含集合竞价和尾盘)
+  return (mins >= 555 && mins <= 695) || (mins >= 780 && mins <= 905);
+}
+
+// 分时图轻量刷新: 只更新数据, 不重建图表
+let _minuteTimer = null;
+function startMinuteRefresh() {
+  if (_minuteTimer) return;
+  _minuteTimer = setInterval(async () => {
+    if (!isTradeTime()) return;
+    try {
+      // 大盘分时
+      const resp = await fetch('/api/monitor/index/minute');
+      const data = await resp.json();
+      if (data.success && data.points && data.points.length >= 2) {
+        _minutePoints = data.points;
+        renderMinute(minuteChart, 'minuteChart', data.points, data.date,
+          _leadingInfo ? _leadingInfo.leadingLine : null, _stockMinutePoints);
+        document.getElementById('minuteHint').textContent = `${data.points.length} 个数据点`;
+      }
+      // 个股分时叠加(如有选中)
+      if (curStockCode) {
+        const sr = await fetch(`/api/monitor/stock/minute?code=${curStockCode}`);
+        const sd = await sr.json();
+        if (sd.success && sd.points && sd.points.length >= 2) {
+          _stockMinutePoints = sd.points;
+          if (_minutePoints) {
+            renderMinute(minuteChart, 'minuteChart', _minutePoints, 'today',
+              _leadingInfo ? _leadingInfo.leadingLine : null, _stockMinutePoints);
+          }
+        }
+      }
+    } catch(e) { /* 静默, 下次重试 */ }
+  }, 8000);
+}
+
+// 个股列表轻量刷新: 原地更新价格/涨幅, 排序变化时重排(保持选中+滚动)
+let _listTimer = null;
+let _listScrollPos = { cyb: 0, kcb: 0 };
+function startListRefresh() {
+  if (_listTimer) return;
+  _listTimer = setInterval(async () => {
+    if (!isTradeTime()) return;
+    for (const seg of ['cyb', 'kcb']) {
+      try {
+        // 记住滚动位置
+        const container = document.getElementById(seg === 'cyb' ? 'cybList' : 'kcbList');
+        _listScrollPos[seg] = container.scrollTop;
+        const sort = STOCK_SORTS[seg];
+        const resp = await fetch(`/api/monitor/stocks/list?segment=${seg}&sort=${sort}&limit=50`);
+        const data = await resp.json();
+        if (!data.success || !data.stocks.length) continue;
+        // 检查排序是否变化: 对比新旧的 code 顺序
+        const oldItems = container.querySelectorAll('.stock-item');
+        const oldCodes = Array.from(oldItems).map(el => el.dataset.code);
+        const newCodes = data.stocks.map(s => s.code);
+        const orderChanged = oldCodes.length !== newCodes.length ||
+          oldCodes.some((c, i) => c !== newCodes[i]);
+        if (orderChanged) {
+          // 排序变了, 整体重建(但保持选中状态)
+          renderStockList(seg, data.stocks);
+          // 恢复筛选
+          const active = getActiveFilters(seg);
+          if (active.size > 0) {
+            applyFilters(seg);
+            if (active.has('vol_ratio_3x') && !volRatioCache[seg]) {
+              ensureVolRatio(seg).then(() => applyFilters(seg));
+            }
+          }
+        } else {
+          // 排序没变, 只原地更新价格/涨幅(不重建DOM, 不闪屏)
+          data.stocks.forEach((s, i) => {
+            const el = oldItems[i];
+            if (!el || el.dataset.code !== s.code) return;
+            const priceEl = el.querySelector('.s-price');
+            const pctEl = el.querySelector('.s-pct');
+            if (priceEl) priceEl.textContent = s.price != null ? s.price.toFixed(2) : '—';
+            if (pctEl) {
+              const cls = s.pct > 0 ? 's-up' : (s.pct < 0 ? 's-down' : 's-flat');
+              const sign = s.pct > 0 ? '+' : '';
+              pctEl.textContent = `${sign}${s.pct}%`;
+              pctEl.className = `s-pct ${cls}`;
+            }
+          });
+        }
+        // 恢复滚动位置
+        container.scrollTop = _listScrollPos[seg];
+      } catch(e) { /* 静默 */ }
+    }
+  }, 15000);
+}
+
+// 日K线轻量刷新: 只更新最后一根K线的收盘价(盘中实时变化)
+let _dailyTimer = null;
+function startDailyRefresh() {
+  if (_dailyTimer) return;
+  _dailyTimer = setInterval(async () => {
+    if (!isTradeTime()) return;
+    try {
+      const resp = await fetch('/api/monitor/index/daily?count=250');
+      const data = await resp.json();
+      if (!data.success || !data.bars || data.bars.length < 2) return;
+      const newBars = data.bars;
+      // 只有最后一根K线可能变化(盘中), 对比收盘价
+      const lastOld = dailyData[dailyData.length - 1];
+      const lastNew = newBars[newBars.length - 1];
+      if (lastOld && lastNew && lastOld.date === lastNew.date &&
+          lastOld.close !== lastNew.close) {
+        // 更新最后一根K线数据并重渲染(轻量, 不重建图表实例)
+        dailyData[dailyData.length - 1] = lastNew;
+        renderDaily(dailyData);
+        // 更新顶部价格
+        const prev = dailyData[dailyData.length - 2];
+        const pct = ((lastNew.close - prev.close) / prev.close * 100);
+        const cls = pct >= 0 ? 'up' : 'down';
+        const sign = pct >= 0 ? '+' : '';
+        document.getElementById('lastPrice').textContent = lastNew.close.toFixed(2);
+        document.getElementById('lastPrice').className = 'price ' + cls;
+        document.getElementById('lastPct').textContent = `${sign}${pct.toFixed(2)}%`;
+        document.getElementById('lastPct').className = 'pct ' + cls;
+      }
+    } catch(e) { /* 静默 */ }
+  }, 60000);
+}
+
+// 启动自动刷新
+startMinuteRefresh();
+startListRefresh();
+startDailyRefresh();
 </script>
 </body>
 </html>
