@@ -603,8 +603,9 @@ async function loadMinute() {
     const minResp = await fetch('/api/monitor/index/minute');
     const data = await minResp.json();
     if (!data.success) {
-      hint.textContent = '⚠ ' + (data.error || '无数据');
+      // 当日分时未就绪(盘前/早盘): 静默留空, 不显示红色错误
       if (minuteChart) minuteChart.clear();
+      hint.textContent = '当日分时数据待更新';
       return;
     }
     _minutePoints = data.points;
@@ -633,7 +634,7 @@ async function loadStockMinuteOverlay(code) {
       _stockMinutePoints = null;
       if (_minutePoints) renderMinute(minuteChart, 'minuteChart', _minutePoints, 'today',
         _leadingInfo ? _leadingInfo.leadingLine : null, null);
-      hint.textContent = '⚠ 个股分时: ' + (data.error || '无数据');
+      // 个股分时未就绪: 静默, 不覆盖已有的大盘分时提示
       return;
     }
     _stockMinutePoints = data.points;
@@ -1221,7 +1222,8 @@ async function loadStockMinute5(code) {
   try {
     const resp = await fetch(`/api/monitor/stock/minutes5?code=${code}`);
     const data = await resp.json();
-    if (!data.success) { showChartError(el, data.error||'无数据'); tag.textContent=''; return; }
+    // 5日分时未就绪: 静默留空(清图表但不弹错误), 仅 tag 显示提示
+    if (!data.success) { if (stockMinute5Chart) stockMinute5Chart.clear(); tag.textContent='5日分时数据待更新'; return; }
     tag.textContent = data.days.join(' / ');
     renderStockMinute5(data.points, data.days);
   } catch(e) { showChartError(el, '请求异常: ' + e.message); tag.textContent=''; }
@@ -1290,8 +1292,10 @@ async function loadStockHistMinute(code, date) {
   try {
     const resp = await fetch(`/api/monitor/stock/minutes?code=${code}&date=${date}`);
     const data = await resp.json();
+    // 个股历史分时未就绪: 静默留空, 仅 hint 轻提示
     if (!data.success) {
-      hint.textContent = '⚠ ' + (data.error || '无数据');
+      if (stockHistChart) stockHistChart.clear();
+      hint.textContent = '该日分时数据待更新';
       return;
     }
     renderStockHistMinute(data.points, data.date);
