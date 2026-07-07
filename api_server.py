@@ -1653,9 +1653,15 @@ def monitor_index_daily():
         return jsonify({'success': False, 'error': f'{type(e).__name__}: {e}'}), 500
 
 
+_minute_cache = {'ts': 0, 'data': None}  # 大盘分时3秒缓存
+
 @app.route('/api/monitor/index/minute', methods=['GET'])
 def monitor_index_minute():
-    """上证指数当日分时 (mootdx minute, 代码用 1A0001)"""
+    """上证指数当日分时 (mootdx minute, 代码用 1A0001)。3秒缓存。"""
+    import time as _time
+    # 3秒缓存, 盘中分时数据变化快但不需要每次都打TDX
+    if _minute_cache['data'] and (_time.time() - _minute_cache['ts'] < 3):
+        return jsonify(_minute_cache['data'])
     try:
         import hot_track as ht
         with ht._get_tdx_lock():
@@ -1671,8 +1677,18 @@ def monitor_index_minute():
                 'price': round(float(row['price']), 2),
                 'vol': float(row['vol']),
             })
-        return jsonify({'success': True, 'points': points, 'date': 'today'})
+        result = {'success': True, 'points': points, 'date': 'today'}
+        _minute_cache['data'] = result
+        _minute_cache['ts'] = _time.time()
+        return jsonify(result)
     except Exception as e:
+        # 连接异常: 尝试切换服务器
+        try:
+            import hot_track as ht
+            with ht._get_tdx_lock():
+                ht._reconnect_tdx()
+        except Exception:
+            pass
         return jsonify({'success': False, 'error': f'{type(e).__name__}: {e}'}), 500
 
 
@@ -1912,13 +1928,19 @@ def monitor_stock_daily():
         return jsonify({'success': False, 'error': f'{type(e).__name__}: {e}'}), 500
 
 
+_stock_minute_cache = {}  # {code: {'ts':.., 'data':..}} 个股分时3秒缓存
+
 @app.route('/api/monitor/stock/minute', methods=['GET'])
 def monitor_stock_minute():
-    """个股当日分时 (mootdx minute, 纯6位代码)。
+    """个股当日分时 (mootdx minute, 纯6位代码)。3秒缓存。
     参数: code=300001"""
+    import time as _time
     code = request.args.get('code', '')
     if not re.match(r'^\d{6}$', code):
         return jsonify({'success': False, 'error': 'code 需为6位数字'}), 400
+    cached = _stock_minute_cache.get(code)
+    if cached and (_time.time() - cached['ts'] < 3):
+        return jsonify(cached['data'])
     try:
         import hot_track as ht
         with ht._get_tdx_lock():
@@ -1934,8 +1956,17 @@ def monitor_stock_minute():
                 'price': round(float(row['price']), 2),
                 'vol': float(row['vol']),
             })
-        return jsonify({'success': True, 'points': points, 'date': 'today'})
+        result = {'success': True, 'points': points, 'date': 'today'}
+        _stock_minute_cache[code] = {'ts': _time.time(), 'data': result}
+        return jsonify(result)
     except Exception as e:
+        try:
+            import hot_track as ht
+            with ht._get_tdx_lock():
+                ht._reconnect_tdx()
+        except Exception:
+            pass
+        return jsonify({'success': False, 'error': f'{type(e).__name__}: {e}'}), 500
         return jsonify({'success': False, 'error': f'{type(e).__name__}: {e}'}), 500
 
 

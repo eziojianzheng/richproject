@@ -309,22 +309,33 @@ def _save_price_cache():
 
 
 # ============== 通达信 mootdx 行情 (TCP, 替代易被封的 akshare) ==============
+# bestip 测出的最快远程服务器(按优先级排列, 连接失败自动换下一个)
+_REMOTE_TDX_SERVERS = [
+    ('121.36.225.169', 7709),   # 上海双线主站9 (bestip最优)
+    ('110.41.147.114', 7709),   # 深圳双线主站1
+    ('124.70.199.56', 7709),    # 上海双线主站6
+]
 _tdx_client = None
 _tdx_lock = None
 _tdx_local_ok = None  # 本地通达信可用性缓存(None=未检测)
+_tdx_server_idx = 0   # 当前使用的远程服务器索引
 
 
 def _get_tdx_client():
     """获取(并复用)mootdx 行情客户端。
-    优先本地通达信(127.0.0.1:7709, 不限流不封IP), 不可用则回退远程标准服务器。"""
-    global _tdx_client, _tdx_local_ok
+    优先本地通达信(127.0.0.1:7709, 不限流不封IP), 不可用则用bestip最优远程服务器。"""
+    global _tdx_client, _tdx_local_ok, _tdx_server_idx
     if _tdx_client is None:
         from mootdx.quotes import Quotes
-        # 先尝试本地通达信客户端(需安装通达信PC客户端并运行)
-        # mootdx server 参数格式: (ip, port) tuple
+        # 先快速检测本地通达信(socket预检1秒, 避免mootdx connect卡5秒)
         if _tdx_local_ok is None:
+            import socket as _socket
+            _tdx_local_ok = False
             try:
-                _tdx_client = Quotes.factory(market='std', server=('127.0.0.1', 7709))
+                _sk = _socket.create_connection(('127.0.0.1', 7709), timeout=1)
+                _sk.close()
+                # socket通了再用mootdx连
+                _tdx_client = Quotes.factory(market='std', server=('127.0.0.1', 7709), timeout=3)
                 _df = _tdx_client.bars(symbol='000001', frequency=9, offset=1)
                 _tdx_local_ok = _df is not None and len(_df) > 0
             except Exception:
@@ -332,9 +343,36 @@ def _get_tdx_client():
             if _tdx_local_ok:
                 _ht_logger.info('使用本地通达信(127.0.0.1:7709)作为行情源')
             else:
-                _ht_logger.info('本地通达信不可用, 回退远程标准服务器')
+                _ht_logger.info('本地通达信不可用, 使用远程最优服务器')
         if not _tdx_local_ok:
-            _tdx_client = Quotes.factory(market='std')
+            srv = _REMOTE_TDX_SERVERS[_tdx_server_idx]
+            _tdx_client = Quotes.factory(market='std', server=srv, timeout=10)
+            _ht_logger.info(f'远程TDX服务器: {srv[0]}:{srv[1]}')
+    return _tdx_client
+
+
+def _reconnect_tdx():
+    """连接异常时切换到下一个远程服务器并重建客户端。本地通达信不切换。"""
+    global _tdx_client, _tdx_server_idx
+    if _tdx_local_ok:
+        # 本地通达信: 尝试重连同一地址
+        try:
+            _tdx_client.client.disconnect()
+        except Exception:
+            pass
+        from mootdx.quotes import Quotes
+        _tdx_client = Quotes.factory(market='std', server=('127.0.0.1', 7709), timeout=5)
+        return _tdx_client
+    # 远程: 切换到下一个服务器
+    _tdx_server_idx = (_tdx_server_idx + 1) % len(_REMOTE_TDX_SERVERS)
+    srv = _REMOTE_TDX_SERVERS[_tdx_server_idx]
+    try:
+        _tdx_client.client.disconnect()
+    except Exception:
+        pass
+    from mootdx.quotes import Quotes
+    _tdx_client = Quotes.factory(market='std', server=srv, timeout=10)
+    _ht_logger.warning(f'TDX连接异常, 切换服务器 -> {srv[0]}:{srv[1]}')
     return _tdx_client
 
 
