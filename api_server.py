@@ -1817,9 +1817,15 @@ def _fetch_all_a_quotes():
     for col in ('last_close', 'price', 'amount', 'vol'):
         if col in all_q.columns:
             all_q[col] = pd.to_numeric(all_q[col], errors='coerce')
-    valid = all_q.dropna(subset=['last_close', 'price'])
-    valid = valid[(valid['last_close'] > 0) & (valid['price'] > 0)].copy()
-    valid['pct'] = (valid['price'] - valid['last_close']) / valid['last_close'] * 100
+    # 至少 last_close 有效才能用; price 在非交易时段可能为 0, 届时回退用 last_close
+    valid = all_q.dropna(subset=['last_close'])
+    valid = valid[valid['last_close'] > 0].copy()
+    # 非交易时段 price=0: 回退用昨收价, pct 记 0(避免显示 0%/异常跌幅)
+    valid['price'] = valid.apply(
+        lambda r: r['price'] if pd.notna(r['price']) and r['price'] > 0 else r['last_close'], axis=1)
+    valid['pct'] = valid.apply(
+        lambda r: ((r['price'] - r['last_close']) / r['last_close'] * 100)
+                  if r['last_close'] > 0 and r['price'] != r['last_close'] else 0.0, axis=1)
     # 组装记录列表
     records = []
     for _, row in valid.iterrows():
@@ -1887,16 +1893,20 @@ def monitor_stock_daily():
             return jsonify({'success': False, 'error': f'{code} 无数据'}), 404
         df = df.sort_index()
         bars = []
+        prev_close = None
         for idx, row in df.iterrows():
+            close = round(float(row['close']), 2)
             bars.append({
                 'date': str(idx)[:10],
                 'open': round(float(row['open']), 2),
-                'close': round(float(row['close']), 2),
+                'close': close,
                 'high': round(float(row['high']), 2),
                 'low': round(float(row['low']), 2),
                 'vol': float(row['vol']),
                 'amount': float(row.get('amount', 0)),
+                'last_close': prev_close if prev_close is not None else round(float(row['open']), 2),
             })
+            prev_close = close
         return jsonify({'success': True, 'bars': bars})
     except Exception as e:
         return jsonify({'success': False, 'error': f'{type(e).__name__}: {e}'}), 500
