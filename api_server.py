@@ -1803,75 +1803,123 @@ def monitor_index_leading():
 # ===== 个股相关接口 (盯盘第二列) =====
 
 _stock_list_cache = {}  # {(segment, sort): {'data':..., 'ts':...}}
-_all_quotes_cache = None  # 全市场A股报价缓存(60秒), 供cyb/kcb共用
+_all_quotes_cache = None  # 全市场A股报价缓存(已废弃, 改用分板块缓存)
+_segment_quotes_cache = {}  # {'cyb': {'codes':[], 'names':{}, 'data':[], 'codes_ts':.., 'ts':..}, 'kcb': {...}}
+_segment_codes_cache = {}  # 板块代码列表缓存(1小时)
+
+
+def _get_segment_codes(segment):
+    """获取板块的股票代码和名称。优先本地文件缓存(永久), 其次内存缓存(1小时), 最后才拉TDX。"""
+    import re as _re
+    import time as _time
+    import os as _os
+    import json as _json
+    cached = _segment_codes_cache.get(segment)
+    if cached and (_time.time() - cached['ts'] < 3600):
+        return cached['codes'], cached['names']
+    # 本地文件缓存(新股上市才会变化, 每天更新一次足够)
+    cache_file = _os.path.join(_os.path.dirname(__file__), f'_codes_{segment}.json')
+    if _os.path.exists(cache_file):
+        mtime = _os.path.getmtime(cache_file)
+        if _time.time() - mtime < 86400:  # 24小时内有效
+            with open(cache_file, 'r', encoding='utf-8') as f:
+                data = _json.load(f)
+            codes = data['codes']
+            names = data['names']
+            _segment_codes_cache[segment] = {'codes': codes, 'names': names, 'ts': _time.time()}
+            return codes, names
+    # 拉 TDX
+    import hot_track as ht
+    with ht._get_tdx_lock():
+        client = ht._get_tdx_client()
+        if segment == 'cyb':
+            # 创业板300开头, 在深市market=0
+            sz = client.stocks(market=0)
+            codes = [c for c in sz['code'].tolist() if _re.match(r'^30\d{4}$', str(c))]
+            names = {}
+            for _, r in sz.iterrows():
+                if _re.match(r'^30\d{4}$', str(r['code'])):
+                    names[str(r['code'])] = str(r.get('name', '')).replace('\x00', '').strip()
+        else:
+            # 科创板688开头, 在沪市market=1
+            sh = client.stocks(market=1)
+            codes = [c for c in sh['code'].tolist() if _re.match(r'^688\d{3}$', str(c))]
+            names = {}
+            for _, r in sh.iterrows():
+                if _re.match(r'^688\d{3}$', str(r['code'])):
+                    names[str(r['code'])] = str(r.get('name', '')).replace('\x00', '').strip()
+    _segment_codes_cache[segment] = {'codes': codes, 'names': names, 'ts': _time.time()}
+    # 写入本地文件
+    try:
+        with open(cache_file, 'w', encoding='utf-8') as f:
+            _json.dump({'codes': codes, 'names': names}, f, ensure_ascii=False)
+    except Exception:
+        pass
+    return codes, names
 
 
 def _fetch_all_a_quotes():
-    """拉全市场A股实时报价并计算涨跌幅, 60秒缓存。cyb/kcb共用, 避免重复拉取。"""
-    import re as _re
+    """拉全市场A股实时报价并计算涨跌幅, 10秒缓存。cyb/kcb共用, 避免重复拉取。"""
     import time as _time
-    global _all_quotes_cache, _astock_codes_cache
+    global _all_quotes_cache
     if _all_quotes_cache and (_time.time() - _all_quotes_cache['ts'] < 10):
         return _all_quotes_cache['data']
-    import hot_track as ht
+    # 合并两个板块的缓存数据
+    all_records = []
+    for seg in ('cyb', 'kcb'):
+        seg_data = _fetch_segment_quotes(seg)
+        if seg_data:
+            all_records.extend(seg_data)
+    if not all_records:
+        return None
+    _all_quotes_cache = {'data': all_records, 'ts': _time.time()}
+    return all_records
+
+
+def _fetch_segment_quotes(segment):
+    """拉单个板块(创业板/科创板)的实时报价, 10秒缓存。只拉该板块, 不拉全市场。"""
+    import time as _time
     import pandas as pd
+    import hot_track as ht
+    cached = _segment_quotes_cache.get(segment)
+    if cached and (_time.time() - cached['ts'] < 10):
+        return cached['data']
+    codes, names = _get_segment_codes(segment)
+    if not codes:
+        return None
     with ht._get_tdx_lock():
         client = ht._get_tdx_client()
-        # 复用全市场代码缓存
-        if '_astock_codes_cache' not in globals():
-            _astock_codes_cache = None
-        if _astock_codes_cache and (_time.time() - _astock_codes_cache['ts'] < 3600):
-            all_codes = _astock_codes_cache['codes']
-            all_names = _astock_codes_cache.get('names', {})
-        else:
-            sh = client.stocks(market=1)
-            sz = client.stocks(market=0)
-            def _is_a(code):
-                return _re.match(r'^(60|00|30|68)\d{4}$', str(code)) is not None
-            all_codes = [c for c in sh['code'].tolist() if _is_a(c)] + \
-                        [c for c in sz['code'].tolist() if _is_a(c)]
-            all_names = {}
-            for _, row in sh.iterrows():
-                all_names[str(row['code'])] = str(row.get('name', '')).replace('\x00', '').strip()
-            for _, row in sz.iterrows():
-                all_names[str(row['code'])] = str(row.get('name', '')).replace('\x00', '').strip()
-            _astock_codes_cache = {'codes': all_codes, 'names': all_names, 'ts': _time.time()}
-        # 批量拉全市场报价
         frames = []
-        for i in range(0, len(all_codes), 80):
-            batch = all_codes[i:i + 80]
+        for i in range(0, len(codes), 80):
+            batch = codes[i:i + 80]
             df = client.quotes(symbol=batch)
             if df is not None and not df.empty:
                 frames.append(df)
     if not frames:
         return None
     all_q = pd.concat(frames, ignore_index=True)
-    # 强制数值列转 numeric(quotes 可能返回 None/字符串), 再丢弃无效行, 避免 None > 0 报错
     for col in ('last_close', 'price', 'amount', 'vol'):
         if col in all_q.columns:
             all_q[col] = pd.to_numeric(all_q[col], errors='coerce')
-    # 至少 last_close 有效才能用; price 在非交易时段可能为 0, 届时回退用 last_close
     valid = all_q.dropna(subset=['last_close'])
     valid = valid[valid['last_close'] > 0].copy()
-    # 非交易时段 price=0: 回退用昨收价, pct 记 0(避免显示 0%/异常跌幅)
     valid['price'] = valid.apply(
         lambda r: r['price'] if pd.notna(r['price']) and r['price'] > 0 else r['last_close'], axis=1)
     valid['pct'] = valid.apply(
         lambda r: ((r['price'] - r['last_close']) / r['last_close'] * 100)
                   if r['last_close'] > 0 and r['price'] != r['last_close'] else 0.0, axis=1)
-    # 组装记录列表
     records = []
     for _, row in valid.iterrows():
         code = str(row.get('code', ''))
         records.append({
             'code': code,
-            'name': all_names.get(code, ''),
+            'name': names.get(code, ''),
             'price': round(float(row['price']), 2),
             'pct': round(float(row['pct']), 2),
             'amount': round(float(row.get('amount', 0)) / 1e8, 2),
             'vol': float(row.get('vol', 0)),
         })
-    _all_quotes_cache = {'data': records, 'ts': _time.time()}
+    _segment_quotes_cache[segment] = {'data': records, 'ts': _time.time()}
     return records
 
 
@@ -1894,12 +1942,11 @@ def monitor_stocks_list():
     if cached and (_time.time() - cached['ts'] < 10):
         return jsonify({'success': True, 'stocks': cached['data'][:limit]})
     try:
-        all_records = _fetch_all_a_quotes()
+        # 直接拉对应板块(不拉全市场), 10秒缓存
+        all_records = _fetch_segment_quotes(segment)
         if not all_records:
             return jsonify({'success': False, 'error': '无报价数据'}), 404
-        # 按板块过滤
-        prefix = '30' if segment == 'cyb' else '688'
-        stocks = [r for r in all_records if r['code'].startswith(prefix)]
+        stocks = all_records
         # 排序
         stocks.sort(key=lambda r: r.get(sort, 0), reverse=True)
         _stock_list_cache[cache_key] = {'data': stocks, 'ts': _time.time()}
