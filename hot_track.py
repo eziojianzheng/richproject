@@ -320,11 +320,11 @@ def _get_tdx_client():
     global _tdx_client, _tdx_local_ok
     if _tdx_client is None:
         from mootdx.quotes import Quotes
-        # 先尝试本地通达信客户端
+        # 先尝试本地通达信客户端(需安装通达信PC客户端并运行)
+        # mootdx server 参数格式: (ip, port) tuple
         if _tdx_local_ok is None:
             try:
-                _tdx_client = Quotes.factory(market='std', host='127.0.0.1', port=7709)
-                # 快速验证: 拉一只票的日线, 能拿到数据说明本地客户端在线
+                _tdx_client = Quotes.factory(market='std', server=('127.0.0.1', 7709))
                 _df = _tdx_client.bars(symbol='000001', frequency=9, offset=1)
                 _tdx_local_ok = _df is not None and len(_df) > 0
             except Exception:
@@ -422,7 +422,7 @@ def fetch_range_local_tdx(code, start, end):
     """
     try:
         from mootdx.quotes import Quotes
-        client = Quotes.factory(market='std', host='127.0.0.1', port=7709)
+        client = Quotes.factory(market='std', server=('127.0.0.1', 7709))
         offset = _mootdx_offset(start)
         df = client.bars(symbol=code, frequency=9, offset=offset)
         if df is None or len(df) == 0:
