@@ -717,10 +717,15 @@ function renderMinute(chartVar, domId, points, dateLabel, leadingLine, stockPoin
   let stockSeries = [];
   let stockVolSeries = [];
   let stockBasePrice = 0;
+  let stockLimitDev = 0;  // 个股涨停幅度(用于Y轴尺度)
   if (stockPoints && stockPoints.length > 0) {
     const stockPrices = stockPoints.map(p => p.price);
     const stockVols = stockPoints.map(p => p.vol);
     stockBasePrice = stockPrices[0];
+    // 涨停幅度: 科创板688/创业板300 = 20%, 主板 = 10%
+    const isKcb = curStockCode && (curStockCode.startsWith('688') || curStockCode.startsWith('300'));
+    const limitRate = isKcb ? 0.2 : 0.1;
+    stockLimitDev = stockBasePrice * limitRate;  // 涨停价-昨收 = 跌停价到昨收的距离
     // 个股量红绿柱: 同样按本分钟 vs 上一分钟
     const svols = stockVols.map((v, i) => {
       let color;
@@ -740,6 +745,24 @@ function renderMinute(chartVar, domId, points, dateLabel, leadingLine, stockPoin
       lineStyle: { color: '#e63946', width: 1.5 },
       // 个股用右 y 轴(独立刻度), 避免与大盘指数量级差异导致线压平
       yAxisIndex: 2,
+      // 涨停/跌停标线
+      markLine: {
+        symbol: 'none', silent: true,
+        data: [
+          { yAxis: stockBasePrice + stockLimitDev,
+            lineStyle: { color: '#ef5350', type: 'dashed', width: 1 },
+            label: { show: true, position: 'insideEndTop', color: '#ef5350', fontSize: 9,
+              formatter: '涨停 ' + (stockBasePrice + stockLimitDev).toFixed(2) } },
+          { yAxis: stockBasePrice,
+            lineStyle: { color: '#9aa0a6', type: 'dashed', width: 1 },
+            label: { show: true, position: 'insideEndTop', color: '#9aa0a6', fontSize: 9,
+              formatter: '昨收 ' + stockBasePrice.toFixed(2) } },
+          { yAxis: stockBasePrice - stockLimitDev,
+            lineStyle: { color: '#26a69a', type: 'dashed', width: 1 },
+            label: { show: true, position: 'insideEndBottom', color: '#26a69a', fontSize: 9,
+              formatter: '跌停 ' + (stockBasePrice - stockLimitDev).toFixed(2) } },
+        ]
+      }
     }];
     stockVolSeries = [{
       name: '个股量', type: 'bar', yAxisIndex: 3, data: svols,
@@ -747,9 +770,7 @@ function renderMinute(chartVar, domId, points, dateLabel, leadingLine, stockPoin
     }];
   }
 
-  // 计算 y 轴范围(含个股, 用各自昨收基准)
-  const stockMaxDev = stockPoints && stockPoints.length > 0
-    ? Math.max(...stockPoints.map(p => Math.abs(p.price - stockBasePrice))) || 1 : maxDev;
+  // y 轴范围: 大盘按波动, 个股按涨停/跌停尺度(见下方 yAxis 配置)
 
   const seriesList = [
     { name: '指数', type: 'line', data: prices, smooth: true, symbol: 'none',
@@ -774,10 +795,18 @@ function renderMinute(chartVar, domId, points, dateLabel, leadingLine, stockPoin
     { gridIndex: 0, splitLine: { show: false }, axisLabel: { show: false } },
   ];
   if (stockPoints && stockPoints.length > 0) {
+    // Y轴按涨停/跌停尺度: 从跌停价到涨停价
+    const ztPrice = stockBasePrice + stockLimitDev;   // 涨停价
+    const dtPrice = stockBasePrice - stockLimitDev;   // 跌停价
     yAxis.push(
       { scale: true, position: 'right',
-        min: stockBasePrice - stockMaxDev * 1.1, max: stockBasePrice + stockMaxDev * 1.1,
-        splitLine: { show: false }, axisLabel: { color: '#e63946', fontSize: 10 } },
+        min: dtPrice, max: ztPrice,
+        splitLine: { show: false }, axisLabel: { color: '#e63946', fontSize: 10,
+          formatter: function(v) {
+            const pct = ((v - stockBasePrice) / stockBasePrice * 100);
+            return v.toFixed(2) + ' ' + (pct >= 0 ? '+' : '') + pct.toFixed(1) + '%';
+          }
+        } },
       { gridIndex: 0, splitLine: { show: false }, axisLabel: { show: false } }
     );
   }
@@ -1162,7 +1191,7 @@ async function loadStockDaily(code) {
 }
 
 // 假定涨停: 当天(最后一根)画虚线K线框, 开盘=当天open, 收盘=涨停价
-// 涨停价 = 昨收 × 1.1(主板/创业板10%) 或 × 1.2(科创板688 20%)
+// 涨停价 = 昨收 × 1.1(主板10%) 或 × 1.2(科创板688/创业板300 20%)
 // 随实体K线变化, 实体会逐步吞噬虚线框
 function buildAssumeZtSeries(bars) {
   const toggle = document.getElementById('assumeZtToggle');
@@ -1174,8 +1203,8 @@ function buildAssumeZtSeries(bars) {
   const lastIdx = bars.length - 1;
   const last = bars[lastIdx];
   const lastClose = last.last_close || last.open;
-  // 科创板688涨20%, 其余10%
-  const isKcb = curStockCode && curStockCode.startsWith('688');
+  // 科创板688/创业板300涨20%, 主板10%
+  const isKcb = curStockCode && (curStockCode.startsWith('688') || curStockCode.startsWith('300'));
   const limitRate = isKcb ? 1.2 : 1.1;
   const ztPrice = +(lastClose * limitRate).toFixed(2);
   // 虚线K线: [open, close=涨停价, low, high]
