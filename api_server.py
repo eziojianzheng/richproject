@@ -1629,13 +1629,24 @@ def _minute_time_axis(n):
 
 @app.route('/api/monitor/index/daily', methods=['GET'])
 def monitor_index_daily():
-    """上证指数日K线 (mootdx index_bars)
+    """上证指数日K线
+    优先 tqcenter (走自己账号不封IP), 回退 mootdx index_bars。
     参数: count=120 (取最近N根日K)
     """
     try:
         import hot_track as ht
         count = request.args.get('count', default=120, type=int)
         count = max(20, min(count, 800))
+        # 优先 tqcenter (需客户端下载盘后数据, 数据不足则回退 mootdx)
+        try:
+            import tdx_source as ts
+            if ts.is_available():
+                bars = ts.index_kline('000001.SH', count=count, period='1d')
+                if bars and len(bars) >= 5:
+                    return jsonify({'success': True, 'bars': bars})
+        except Exception as e:
+            print(f'[TQ] 指数K线异常: {e}')
+        # 回退 mootdx
         with ht._get_tdx_lock():
             client = ht._get_tdx_client()
             df = client.index_bars(symbol='000001', frequency=9, start=0, offset=count)
@@ -1685,6 +1696,19 @@ def monitor_index_minute():
                 'vol': float(row['vol']),
             })
         result = {'success': True, 'points': points, 'date': 'today'}
+        # tqcenter 补充: 涨跌幅/上涨下跌家数/均价(领先指标)
+        try:
+            import tdx_source as ts
+            if ts.is_available():
+                idx = ts.index_snapshot()
+                if idx:
+                    result['index_price'] = idx['price']
+                    result['index_pct'] = idx['pct']
+                    result['up_home'] = idx['up_home']
+                    result['down_home'] = idx['down_home']
+                    result['average'] = idx['average']
+        except Exception:
+            pass
         _minute_cache['data'] = result
         _minute_cache['ts'] = _time.time()
         # 成功: 恢复正常缓存时间
@@ -1809,7 +1833,7 @@ _segment_codes_cache = {}  # 板块代码列表缓存(1小时)
 
 
 def _get_segment_codes(segment):
-    """获取板块的股票代码和名称。优先本地文件缓存(永久), 其次内存缓存(1小时), 最后才拉TDX。"""
+    """获取板块的股票代码和名称。优先 tqcenter -> 本地文件缓存 -> mootdx。"""
     import re as _re
     import time as _time
     import os as _os
@@ -1828,7 +1852,22 @@ def _get_segment_codes(segment):
             names = data['names']
             _segment_codes_cache[segment] = {'codes': codes, 'names': names, 'ts': _time.time()}
             return codes, names
-    # 拉 TDX
+    # 优先 tqcenter (走自己账号, 不封IP)
+    try:
+        import tdx_source as ts
+        if ts.is_available():
+            codes, names = ts.segment_codes(segment)
+            if codes:
+                _segment_codes_cache[segment] = {'codes': codes, 'names': names, 'ts': _time.time()}
+                try:
+                    with open(cache_file, 'w', encoding='utf-8') as f:
+                        _json.dump({'codes': codes, 'names': names}, f, ensure_ascii=False)
+                except Exception:
+                    pass
+                return codes, names
+    except Exception as e:
+        print(f'[TQ] 板块代码 {segment} 异常: {e}')
+    # 回退 mootdx
     import hot_track as ht
     with ht._get_tdx_lock():
         client = ht._get_tdx_client()
@@ -1877,9 +1916,10 @@ def _fetch_all_a_quotes():
 
 
 def _fetch_segment_quotes(segment):
-    """拉单个板块(创业板/科创板)的实时报价, 10秒缓存。只拉该板块, 不拉全市场。"""
+    """拉单个板块(创业板/科创板)的实时报价, 10秒缓存。
+    用 tqcenter batch_pricevol 一次批量取全部(1400只1秒), 极快。
+    回退 mootdx 批量 quotes(80只一批)。"""
     import time as _time
-    import pandas as pd
     import hot_track as ht
     cached = _segment_quotes_cache.get(segment)
     if cached and (_time.time() - cached['ts'] < 10):
@@ -1887,6 +1927,31 @@ def _fetch_segment_quotes(segment):
     codes, names = _get_segment_codes(segment)
     if not codes:
         return None
+    # 优先 tqcenter batch_pricevol (一次取全部, 走自己账号不封IP)
+    try:
+        import tdx_source as ts
+        if ts.is_available():
+            pv = ts.batch_pricevol(codes)
+            if pv:
+                records = []
+                for c in codes:
+                    info = pv.get(c)
+                    if info:
+                        records.append({
+                            'code': c,
+                            'name': names.get(c, ''),
+                            'price': info['price'],
+                            'pct': info['pct'],
+                            'amount': 0.0,  # batch_pricevol 无 amount 字段
+                            'vol': info['vol'],
+                        })
+                if records:
+                    _segment_quotes_cache[segment] = {'data': records, 'ts': _time.time()}
+                    return records
+    except Exception as e:
+        print(f'[TQ] 板块报价 {segment} 异常: {e}')
+    # 回退 mootdx 批量 quotes
+    import pandas as pd
     with ht._get_tdx_lock():
         client = ht._get_tdx_client()
         frames = []
@@ -1957,13 +2022,27 @@ def monitor_stocks_list():
 
 @app.route('/api/monitor/stock/daily', methods=['GET'])
 def monitor_stock_daily():
-    """个股日K线 (mootdx bars, 注意 stocks 用 index 作 datetime)。
+    """个股日K线
+    优先 tqcenter (走自己账号不封IP), 回退 mootdx bars。
     参数: code=300001, count=120"""
     code = request.args.get('code', '')
     if not re.match(r'^\d{6}$', code):
         return jsonify({'success': False, 'error': 'code 需为6位数字'}), 400
     count = request.args.get('count', default=120, type=int)
     count = max(20, min(count, 800))
+    # 优先 tqcenter (需客户端下载盘后数据, 数据不足则回退 mootdx)
+    try:
+        import tdx_source as ts
+        if ts.is_available():
+            bars = ts.kline(code, count=count, period='1d', dividend_type='none')
+            if bars and len(bars) >= 5:
+                # 补 last_close (前一根收盘)
+                for i in range(len(bars)):
+                    bars[i]['last_close'] = bars[i-1]['close'] if i > 0 else bars[i]['open']
+                return jsonify({'success': True, 'bars': bars})
+    except Exception as e:
+        print(f'[TQ] 个股K线异常: {e}')
+    # 回退 mootdx
     try:
         import hot_track as ht
         with ht._get_tdx_lock():
@@ -2222,10 +2301,12 @@ def monitor_stocks_volume_ratio():
         return jsonify({'success': False, 'error': f'{type(e).__name__}: {e}'}), 500
 
 
-# ===== WebSocket 实时推送(后端单连接轮询, 前端零请求) =====
+# ===== WebSocket 实时推送 =====
+# tqcenter batch_pricevol 批量报价(1秒取1400只) + mootdx 分时(分时数据 tqcenter 盘中拿不到)
 _ws_push_thread = None
 _ws_subscribed_stocks = set()  # 前端订阅的个股分时代码
 _ws_subscribed_quote_codes = {}  # 前端订阅的报价股票: {'cyb': [code,...], 'kcb': [code,...]}
+_tq_emit_lock = threading.Lock()  # socketio.emit 线程安全
 
 @socketio.on('connect')
 def ws_connect():
@@ -2268,102 +2349,165 @@ def _is_trade_time():
     mins = h * 60 + m
     return (mins >= 555 and mins <= 695) or (mins >= 780 and mins <= 905)
 
+
+def _fetch_quotes_batch(codes):
+    """批量拉报价。优先 tqcenter batch_pricevol(1秒取1400只), 回退 mootdx quotes。"""
+    # 优先 tqcenter
+    try:
+        import tdx_source as ts
+        if ts.is_available():
+            pv = ts.batch_pricevol(codes)
+            if pv:
+                stocks = []
+                for c in codes:
+                    info = pv.get(c)
+                    if info:
+                        stocks.append({
+                            'code': c,
+                            'price': info['price'],
+                            'pct': info['pct'],
+                            'vol': info['vol'],
+                            'amount': 0.0,
+                        })
+                if stocks:
+                    return stocks
+    except Exception as e:
+        print(f'[TQ] 批量报价异常: {e}')
+    # 回退 mootdx
+    try:
+        import pandas as pd
+        with ht._get_tdx_lock():
+            client = ht._get_tdx_client()
+            frames = []
+            for i in range(0, len(codes), 80):
+                batch = codes[i:i + 80]
+                df = client.quotes(symbol=batch)
+                if df is not None and not df.empty:
+                    frames.append(df)
+        if not frames:
+            return []
+        all_q = pd.concat(frames, ignore_index=True)
+        for col in ('last_close', 'price', 'amount', 'vol'):
+            if col in all_q.columns:
+                all_q[col] = pd.to_numeric(all_q[col], errors='coerce')
+        stocks = []
+        for _, row in all_q.iterrows():
+            code = str(row.get('code', ''))
+            last_close = float(row.get('last_close', 0) or 0)
+            price = float(row.get('price', 0) or 0)
+            if last_close <= 0:
+                continue
+            if price <= 0:
+                price = last_close
+            pct = ((price - last_close) / last_close * 100) if last_close > 0 else 0
+            stocks.append({
+                'code': code,
+                'price': round(price, 2),
+                'pct': round(pct, 2),
+                'vol': float(row.get('vol', 0) or 0),
+                'amount': round(float(row.get('amount', 0) or 0) / 10000, 2),
+            })
+        return stocks
+    except Exception as e:
+        print(f'[WS] mootdx报价异常: {e}')
+        return []
+
+
+def _fetch_minute_mootdx(symbol):
+    """用 mootdx 拉分时数据。返回 points 列表或 None。"""
+    try:
+        with ht._get_tdx_lock():
+            client = ht._get_tdx_client()
+            df = client.minute(symbol=symbol)
+        if df is None or df.empty or len(df) < 2:
+            return None
+        times = _minute_time_axis(len(df))
+        points = []
+        for i, row in df.iterrows():
+            points.append({
+                'time': times[i] if i < len(times) else str(i),
+                'price': round(float(row['price']), 2),
+                'vol': float(row['vol']),
+            })
+        return points
+    except Exception:
+        return None
+
+
 def _ws_push_loop():
-    """后台推送线程: 1秒间隔拉TDX数据, 通过WebSocket广播给前端。
-    只有一个mootdx长连接, 跟通达信客户端一样, 不怕高频。"""
+    """后台推送线程。
+    tqcenter 可用: 报价走 batch_pricevol(2秒一轮全量推送), 分时走 mootdx。
+    tqcenter 不可用: 全走 mootdx 1秒轮询。"""
     import time
     print('[WS] 推送线程启动')
+    tq_mode = False
     while True:
         try:
             if not _is_trade_time():
                 time.sleep(10)
                 continue
+
+            # 检测 tqcenter 可用性
+            if not tq_mode:
+                try:
+                    import tdx_source as ts
+                    if ts.is_available():
+                        tq_mode = True
+                        print('[WS] tqcenter 可用, 报价走 batch_pricevol')
+                except Exception:
+                    pass
+
             t0 = time.time()
-            # 1. 大盘分时
+
+            # 1. 大盘分时 (mootdx minute)
             try:
-                with ht._get_tdx_lock():
-                    client = ht._get_tdx_client()
-                    df = client.minute(symbol='1A0001')
-                if df is not None and not df.empty and len(df) >= 2:
-                    times = _minute_time_axis(len(df))
-                    points = []
-                    for i, row in df.iterrows():
-                        points.append({
-                            'time': times[i] if i < len(times) else str(i),
-                            'price': round(float(row['price']), 2),
-                            'vol': float(row['vol']),
-                        })
+                points = _fetch_minute_mootdx('1A0001')
+                if points:
                     _minute_cache['data'] = {'success': True, 'points': points, 'date': 'today'}
                     _minute_cache['ts'] = time.time()
-                    socketio.emit('index_minute', _minute_cache['data'])
+                    # tqcenter 补充: 涨跌幅/上涨下跌家数/均价
+                    if tq_mode:
+                        try:
+                            import tdx_source as ts
+                            idx = ts.index_snapshot()
+                            if idx:
+                                _minute_cache['data']['index_price'] = idx['price']
+                                _minute_cache['data']['index_pct'] = idx['pct']
+                                _minute_cache['data']['up_home'] = idx['up_home']
+                                _minute_cache['data']['down_home'] = idx['down_home']
+                                _minute_cache['data']['average'] = idx['average']
+                        except Exception:
+                            pass
+                    with _tq_emit_lock:
+                        socketio.emit('index_minute', _minute_cache['data'])
             except Exception as e:
                 print(f'[WS] 大盘分时异常: {e}')
-                # 切换服务器
-                try:
-                    with ht._get_tdx_lock():
-                        ht._reconnect_tdx()
-                except Exception:
-                    pass
 
-            # 2. 订阅的个股分时
+            # 2. 订阅的个股分时 (mootdx minute)
             for code in list(_ws_subscribed_stocks):
                 try:
-                    with ht._get_tdx_lock():
-                        df = client.minute(symbol=code)
-                    if df is not None and not df.empty and len(df) >= 2:
-                        times = _minute_time_axis(len(df))
-                        points = []
-                        for i, row in df.iterrows():
-                            points.append({
-                                'time': times[i] if i < len(times) else str(i),
-                                'price': round(float(row['price']), 2),
-                                'vol': float(row['vol']),
-                            })
+                    points = _fetch_minute_mootdx(code)
+                    if points:
                         result = {'success': True, 'points': points, 'date': 'today'}
                         _stock_minute_cache[code] = {'ts': time.time(), 'data': result}
-                        socketio.emit('stock_minute', {'code': code, **result})
+                        with _tq_emit_lock:
+                            socketio.emit('stock_minute', {'code': code, **result})
                 except Exception:
                     pass
 
-            # 3. 订阅的板块报价(每秒拉列表里的股票, 前端价格跳动)
+            # 3. 板块报价 (batch_pricevol 批量, 2秒一轮)
             for seg, codes in list(_ws_subscribed_quote_codes.items()):
                 if not codes:
                     continue
-                try:
-                    with ht._get_tdx_lock():
-                        client = ht._get_tdx_client()
-                        df = client.quotes(symbol=codes)
-                    if df is not None and not df.empty:
-                        import pandas as pd
-                        for col in ('last_close', 'price', 'amount', 'vol'):
-                            if col in df.columns:
-                                df[col] = pd.to_numeric(df[col], errors='coerce')
-                        stocks = []
-                        for _, row in df.iterrows():
-                            code = str(row.get('code', ''))
-                            last_close = float(row.get('last_close', 0) or 0)
-                            price = float(row.get('price', 0) or 0)
-                            if last_close <= 0:
-                                continue
-                            if price <= 0:
-                                price = last_close
-                            pct = ((price - last_close) / last_close * 100) if last_close > 0 else 0
-                            stocks.append({
-                                'code': code,
-                                'price': round(price, 2),
-                                'pct': round(pct, 2),
-                                'vol': float(row.get('vol', 0) or 0),
-                                'amount': round(float(row.get('amount', 0) or 0) / 10000, 2),  # 万元
-                            })
-                        if stocks:
-                            socketio.emit('stock_quotes', {'segment': seg, 'stocks': stocks})
-                except Exception as e:
-                    print(f'[WS] 板块{seg}报价异常: {e}')
+                stocks = _fetch_quotes_batch(codes)
+                if stocks:
+                    with _tq_emit_lock:
+                        socketio.emit('stock_quotes', {'segment': seg, 'stocks': stocks})
 
-            # 控制频率: 1秒一轮(跟通达信客户端一样)
+            # 控制频率: tqcenter 模式 2秒, mootdx 模式 1秒
+            interval = 2.0 if tq_mode else 1.0
             elapsed = time.time() - t0
-            sleep_time = max(0.5, 1.0 - elapsed)
-            time.sleep(sleep_time)
+            time.sleep(max(0.5, interval - elapsed))
         except Exception as e:
             print(f'[WS] 推送循环异常: {e}')
             time.sleep(3)

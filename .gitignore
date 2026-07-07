@@ -53,6 +53,10 @@ logs/
 .watchlist.json
 *.glmocr.json
 *.sectors.json
+_tqcenter_init.py
+
+# 测试脚本
+_test_*.py
 
 # OS
 .DS_Store

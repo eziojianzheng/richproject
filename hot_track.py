@@ -311,12 +311,16 @@ def _save_price_cache():
 
 
 # ============== 通达信 mootdx 行情 (TCP, 替代易被封的 akshare) ==============
-# bestip 测出的最快远程服务器(按优先级排列, 连接失败自动换下一个)
+# 备用服务器(bestip失败时用, 按优先级排列)
 _REMOTE_TDX_SERVERS = [
-    ('121.36.225.169', 7709),   # 上海双线主站9 (bestip最优)
-    ('110.41.147.114', 7709),   # 深圳双线主站1
+    ('218.75.126.9', 7709),     # 杭州电信
+    ('115.238.90.165', 7709),   # 浙江电信
+    ('115.238.56.198', 7709),   # 浙江电信2
     ('124.70.199.56', 7709),    # 上海双线主站6
+    ('121.36.225.169', 7709),   # 上海双线主站9
+    ('110.41.147.114', 7709),   # 深圳双线主站1
 ]
+_bestip_done = False  # bestip是否已执行过(避免每次重连都跑bestip)
 _tdx_client = None
 _tdx_lock = None
 _tdx_local_ok = None  # 本地通达信可用性缓存(None=未检测)
@@ -325,8 +329,15 @@ _tdx_server_idx = 0   # 当前使用的远程服务器索引
 
 def _get_tdx_client():
     """获取(并复用)mootdx 行情客户端。
-    优先本地通达信(127.0.0.1:7709, 不限流不封IP), 不可用则用bestip最优远程服务器。"""
-    global _tdx_client, _tdx_local_ok, _tdx_server_idx
+    优先本地通达信(127.0.0.1:7709, 不限流不封IP), 不可用则用bestip自动测速选最快远程服务器。"""
+    global _tdx_client, _tdx_local_ok, _tdx_server_idx, _bestip_done
+    # 连接已断开: 重连
+    if _tdx_client is not None and getattr(_tdx_client, 'closed', False):
+        _ht_logger.warning('TDX连接已断开, 尝试重连')
+        try:
+            _reconnect_tdx()
+        except Exception:
+            _tdx_client = None
     if _tdx_client is None:
         from mootdx.quotes import Quotes
         # 先快速检测本地通达信(socket预检1秒, 避免mootdx connect卡5秒)
@@ -347,6 +358,23 @@ def _get_tdx_client():
             else:
                 _ht_logger.info('本地通达信不可用, 使用远程最优服务器')
         if not _tdx_local_ok:
+            # 首次: 用bestip自动测速选最快服务器(耗时约10秒, 但只跑一次)
+            if not _bestip_done:
+                _bestip_done = True
+                try:
+                    from mootdx.bestip import BestIP
+                    _bestip = BestIP()
+                    _bestip.run()
+                    # bestip会把最快服务器写入 ~/.mootdx/config.json
+                    # mootdx不传server时会自动读config.json
+                    _tdx_client = Quotes.factory(market='std', timeout=10, heartbeat=True)
+                    _df = _tdx_client.bars(symbol='000001', frequency=9, offset=1)
+                    if _df is not None and len(_df) > 0:
+                        _ht_logger.info('bestip自动选服务器成功')
+                        return _tdx_client
+                except Exception as e:
+                    _ht_logger.warning(f'bestip测速失败, 回退备用列表: {e}')
+            # 回退: 用备用服务器列表
             srv = _REMOTE_TDX_SERVERS[_tdx_server_idx]
             _tdx_client = Quotes.factory(market='std', server=srv, timeout=10, heartbeat=True)
             _ht_logger.info(f'远程TDX服务器: {srv[0]}:{srv[1]} (heartbeat)')
@@ -399,6 +427,65 @@ def _mootdx_offset(start):
     return min(max(approx, 90), 800)
 
 
+def _compute_and_cache_metrics(code, closes, dates):
+    """根据收盘价序列和日期序列, 计算涨跌幅/20日/60日/MA10 并写入缓存。
+    closes/dates 已按日期升序排列。供 tqcenter 和 mootdx 路径共用。"""
+    cache = _load_price_cache()
+    with _cache_lock:
+        cache[f'{code}_tdays'] = dates
+        n = len(closes)
+        for i in range(n):
+            dstr = dates[i]
+            # 当日涨跌幅
+            if i > 0 and closes[i - 1] > 0:
+                cache[f'{code}_{dstr}'] = round((closes[i] - closes[i - 1]) / closes[i - 1] * 100, 2)
+            # 20 日 / 60 日涨幅
+            if i > 0:
+                j20 = max(0, i - 19)
+                if closes[j20] > 0:
+                    cache[f'{code}_{dstr}_20d'] = round((closes[i] - closes[j20]) / closes[j20] * 100, 2)
+                j60 = max(0, i - 59)
+                if closes[j60] > 0:
+                    cache[f'{code}_{dstr}_60d'] = round((closes[i] - closes[j60]) / closes[j60] * 100, 2)
+            # MA10 及是否跌破
+            if i >= 9:
+                ma10 = sum(closes[i - 9:i + 1]) / 10
+                cache[f'{code}_{dstr}_ma10'] = round(ma10, 2)
+                cache[f'{code}_{dstr}_below_ma10'] = closes[i] < ma10
+            else:
+                cache[f'{code}_{dstr}_ma10'] = None
+                cache[f'{code}_{dstr}_below_ma10'] = False
+        _save_price_cache()
+
+
+def fetch_range_tqcenter(code, start, end):
+    """
+    用通达信官方量化接口(tqcenter)获取个股日线, 计算并缓存指标。
+    走自己账号, 不会被封IP。需要通达信量化版客户端开着且已下载盘后日线数据。
+    注意: tqcenter K线依赖客户端下载的盘后数据, 若未下载则返回数据不足, 会回退到 mootdx。
+    返回: True 成功 / False 失败 / 'bse' 北交所不支持
+    """
+    try:
+        import tdx_source as ts
+        if not ts.is_available():
+            return False
+        # 北交所 tqcenter 支持但需 .BJ 后缀, 这里先跳过保持与 mootdx 一致
+        if code.startswith('8') or code.startswith('4'):
+            return 'bse'
+        offset = _mootdx_offset(start)
+        bars = ts.kline(code, count=offset, period='1d', dividend_type='none')
+        # tqcenter 未下载盘后数据时只返回当天1根, 数据不足则回退 mootdx
+        if not bars or len(bars) < 5:
+            return False
+        closes = [b['close'] for b in bars]
+        dates = [b['date'].replace('-', '') for b in bars]
+        _compute_and_cache_metrics(code, closes, dates)
+        return True
+    except Exception as e:
+        _ht_logger.debug(f'tqcenter获取{code}失败: {e}')
+        return False
+
+
 def fetch_range_mootdx(code, start, end):
     """
     用通达信 mootdx 获取个股日线, 计算并缓存: 当日涨跌幅 / 20日 / 60日 / MA10 / 是否跌破MA10
@@ -420,34 +507,7 @@ def fetch_range_mootdx(code, start, end):
         df = df.sort_index()
         closes = [float(x) for x in df['close'].tolist()]
         dates = [str(idx)[:10].replace('-', '') for idx in df.index]
-
-        cache = _load_price_cache()
-        with _cache_lock:
-            # 记录该股实际有交易的日期集合, 供完整性检查区分"停牌日"(正常None)与"真缺数据"
-            cache[f'{code}_tdays'] = dates
-            n = len(closes)
-            for i in range(n):
-                dstr = dates[i]
-                # 当日涨跌幅
-                if i > 0 and closes[i - 1] > 0:
-                    cache[f'{code}_{dstr}'] = round((closes[i] - closes[i - 1]) / closes[i - 1] * 100, 2)
-                # 20 日涨幅
-                if i > 0:
-                    j20 = max(0, i - 19)
-                    if closes[j20] > 0:
-                        cache[f'{code}_{dstr}_20d'] = round((closes[i] - closes[j20]) / closes[j20] * 100, 2)
-                    j60 = max(0, i - 59)
-                    if closes[j60] > 0:
-                        cache[f'{code}_{dstr}_60d'] = round((closes[i] - closes[j60]) / closes[j60] * 100, 2)
-                # MA10 及是否跌破
-                if i >= 9:
-                    ma10 = sum(closes[i - 9:i + 1]) / 10
-                    cache[f'{code}_{dstr}_ma10'] = round(ma10, 2)
-                    cache[f'{code}_{dstr}_below_ma10'] = closes[i] < ma10
-                else:
-                    cache[f'{code}_{dstr}_ma10'] = None
-                    cache[f'{code}_{dstr}_below_ma10'] = False
-            _save_price_cache()
+        _compute_and_cache_metrics(code, closes, dates)
         return True
     except Exception as e:
         print(f"mootdx获取{code}失败: {e}")
@@ -472,30 +532,7 @@ def fetch_range_local_tdx(code, start, end):
         df = df.sort_index()
         closes = [float(x) for x in df['close'].tolist()]
         dates = [str(idx)[:10].replace('-', '') for idx in df.index]
-
-        cache = _load_price_cache()
-        with _cache_lock:
-            cache[f'{code}_tdays'] = dates
-            n = len(closes)
-            for i in range(n):
-                dstr = dates[i]
-                if i > 0 and closes[i - 1] > 0:
-                    cache[f'{code}_{dstr}'] = round((closes[i] - closes[i - 1]) / closes[i - 1] * 100, 2)
-                if i > 0:
-                    j20 = max(0, i - 19)
-                    if closes[j20] > 0:
-                        cache[f'{code}_{dstr}_20d'] = round((closes[i] - closes[j20]) / closes[j20] * 100, 2)
-                    j60 = max(0, i - 59)
-                    if closes[j60] > 0:
-                        cache[f'{code}_{dstr}_60d'] = round((closes[i] - closes[j60]) / closes[j60] * 100, 2)
-                if i >= 9:
-                    ma10 = sum(closes[i - 9:i + 1]) / 10
-                    cache[f'{code}_{dstr}_ma10'] = round(ma10, 2)
-                    cache[f'{code}_{dstr}_below_ma10'] = closes[i] < ma10
-                else:
-                    cache[f'{code}_{dstr}_ma10'] = None
-                    cache[f'{code}_{dstr}_below_ma10'] = False
-            _save_price_cache()
+        _compute_and_cache_metrics(code, closes, dates)
         return True
     except Exception as e:
         print(f"本地通达信获取{code}失败: {e}")
@@ -503,8 +540,18 @@ def fetch_range_local_tdx(code, start, end):
 
 
 def fetch_range(code, start, end):
-    """获取个股涨幅数据: 优先 mootdx 远程 -> 失败则尝试本地通达信 -> 仍失败返回 False"""
+    """获取个股涨幅数据: 优先 tqcenter(官方量化接口, 不封IP) -> mootdx -> 本地通达信 -> 失败返回 False"""
     _ht_logger.debug(f'fetch_range {code} {start}~{end}')
+    # 1. tqcenter (通达信官方量化接口, 走自己账号不封IP)
+    result = fetch_range_tqcenter(code, start, end)
+    if result is True:
+        _ht_logger.debug(f'fetch_range {code} tqcenter成功')
+        return True
+    if result == 'bse':
+        _ht_logger.debug(f'fetch_range {code} 北交所跳过')
+        return False
+    # 2. mootdx 远程
+    _ht_logger.debug(f'fetch_range {code} tqcenter不可用, 尝试mootdx')
     result = fetch_range_mootdx(code, start, end)
     if result is True:
         _ht_logger.debug(f'fetch_range {code} mootdx成功')
@@ -512,6 +559,7 @@ def fetch_range(code, start, end):
     if result == 'bse':
         _ht_logger.debug(f'fetch_range {code} 北交所跳过')
         return False
+    # 3. 本地通达信
     _ht_logger.debug(f'fetch_range {code} mootdx失败, 尝试本地通达信')
     print(f"{code} mootdx远程失败, 尝试本地通达信...")
     if fetch_range_local_tdx(code, start, end):
