@@ -957,6 +957,8 @@ async function loadStockList(seg) {
       return;
     }
     renderStockList(seg, data.stocks);
+    // 渲染后订阅报价推送(WS每秒推送这些股票的最新价)
+    subscribeQuotes(seg);
     // 列表渲染后重新应用筛选(若量比条件已勾选但数据未就绪, 异步补上)
     const active = getActiveFilters(seg);
     if (active.size > 0) {
@@ -1643,6 +1645,24 @@ function initSocket() {
     renderMinute(minuteChart, 'minuteChart', data.points, data.date,
       _leadingInfo ? _leadingInfo.leadingLine : null, _stockMinutePoints);
     document.getElementById('minuteHint').textContent = `实时 ${data.points.length} 点`;
+    // 同步更新顶部大盘价格/涨幅(每秒跳动)
+    const last = data.points[data.points.length - 1];
+    if (last && dailyData.length >= 2) {
+      const prev = dailyData[dailyData.length - 2];
+      const pct = ((last.price - prev.close) / prev.close * 100);
+      const cls = pct >= 0 ? 'up' : 'down';
+      const sign = pct >= 0 ? '+' : '';
+      const priceEl = document.getElementById('lastPrice');
+      const pctEl = document.getElementById('lastPct');
+      if (priceEl) {
+        priceEl.textContent = last.price.toFixed(2);
+        priceEl.className = 'price ' + cls;
+      }
+      if (pctEl) {
+        pctEl.textContent = `${sign}${pct.toFixed(2)}%`;
+        pctEl.className = 'pct ' + cls;
+      }
+    }
   });
 
   // 接收个股分时推送
@@ -1655,6 +1675,40 @@ function initSocket() {
         _leadingInfo ? _leadingInfo.leadingLine : null, _stockMinutePoints);
     }
   });
+
+  // 接收板块报价推送(每秒, 列表价格跳动)
+  _socket.on('stock_quotes', (data) => {
+    if (!data || !data.stocks) return;
+    const seg = data.segment;
+    const container = document.getElementById(seg === 'cyb' ? 'cybList' : 'kcbList');
+    if (!container) return;
+    // 原地更新价格/涨幅, 不重建DOM(不闪屏)
+    data.stocks.forEach(s => {
+      const el = container.querySelector(`.stock-item[data-code="${s.code}"]`);
+      if (!el) return;
+      const priceEl = el.querySelector('.s-price');
+      const pctEl = el.querySelector('.s-pct');
+      if (priceEl && s.price != null) priceEl.textContent = s.price.toFixed(2);
+      if (pctEl && s.pct != null) {
+        const cls = s.pct > 0 ? 's-up' : (s.pct < 0 ? 's-down' : 's-flat');
+        const sign = s.pct > 0 ? '+' : '';
+        pctEl.textContent = `${sign}${s.pct}%`;
+        pctEl.className = `s-pct ${cls}`;
+      }
+    });
+  });
+}
+
+// 订阅板块报价: 把当前列表里的股票代码发给后端, 后端每秒拉这些股票的报价
+function subscribeQuotes(seg) {
+  if (!_socket || !_wsConnected) return;
+  const container = document.getElementById(seg === 'cyb' ? 'cybList' : 'kcbList');
+  if (!container) return;
+  const codes = Array.from(container.querySelectorAll('.stock-item'))
+    .map(el => el.dataset.code).filter(c => c);
+  if (codes.length > 0) {
+    _socket.emit('subscribe_quotes', { segment: seg, codes: codes });
+  }
 }
 
 // 降级方案: WS断开时用轮询兜底(3s)
@@ -1724,27 +1778,14 @@ function startListRefresh() {
               ensureVolRatio(seg).then(() => applyFilters(seg));
             }
           }
-        } else {
-          // 排序没变, 只原地更新价格/涨幅(不重建DOM, 不闪屏)
-          data.stocks.forEach((s, i) => {
-            const el = oldItems[i];
-            if (!el || el.dataset.code !== s.code) return;
-            const priceEl = el.querySelector('.s-price');
-            const pctEl = el.querySelector('.s-pct');
-            if (priceEl) priceEl.textContent = s.price != null ? s.price.toFixed(2) : '—';
-            if (pctEl) {
-              const cls = s.pct > 0 ? 's-up' : (s.pct < 0 ? 's-down' : 's-flat');
-              const sign = s.pct > 0 ? '+' : '';
-              pctEl.textContent = `${sign}${s.pct}%`;
-              pctEl.className = `s-pct ${cls}`;
-            }
-          });
+          // 排序变化后重新订阅报价
+          subscribeQuotes(seg);
         }
         // 恢复滚动位置
         container.scrollTop = _listScrollPos[seg];
       } catch(e) { /* 静默 */ }
     }
-  }, 10000);
+  }, 30000);  // 30秒: 只管排序变化, 价格靠WS每秒推送
 }
 
 // 日K线轻量刷新: 只更新最后一根K线的收盘价(盘中实时变化)

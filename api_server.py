@@ -2177,7 +2177,8 @@ def monitor_stocks_volume_ratio():
 
 # ===== WebSocket 实时推送(后端单连接轮询, 前端零请求) =====
 _ws_push_thread = None
-_ws_subscribed_stocks = set()  # 前端订阅的个股代码
+_ws_subscribed_stocks = set()  # 前端订阅的个股分时代码
+_ws_subscribed_quote_codes = {}  # 前端订阅的报价股票: {'cyb': [code,...], 'kcb': [code,...]}
 
 @socketio.on('connect')
 def ws_connect():
@@ -2196,6 +2197,19 @@ def ws_subscribe_stock(code):
 @socketio.on('unsubscribe_stock')
 def ws_unsubscribe_stock(code):
     _ws_subscribed_stocks.discard(code)
+
+@socketio.on('subscribe_quotes')
+def ws_subscribe_quotes(data):
+    """前端订阅板块报价, data={'segment':'cyb', 'codes':['300001','300002',...]}"""
+    if isinstance(data, dict):
+        seg = data.get('segment')
+        codes = data.get('codes', [])
+        if seg in ('cyb', 'kcb') and isinstance(codes, list):
+            _ws_subscribed_quote_codes[seg] = [c for c in codes if re.match(r'^\d{6}$', str(c))][:80]
+
+@socketio.on('unsubscribe_quotes')
+def ws_unsubscribe_quotes(seg):
+    _ws_subscribed_quote_codes.pop(seg, None)
 
 def _is_trade_time():
     """判断是否交易时段"""
@@ -2263,6 +2277,41 @@ def _ws_push_loop():
                         socketio.emit('stock_minute', {'code': code, **result})
                 except Exception:
                     pass
+
+            # 3. 订阅的板块报价(每秒拉列表里的股票, 前端价格跳动)
+            for seg, codes in list(_ws_subscribed_quote_codes.items()):
+                if not codes:
+                    continue
+                try:
+                    with ht._get_tdx_lock():
+                        client = ht._get_tdx_client()
+                        df = client.quotes(symbol=codes)
+                    if df is not None and not df.empty:
+                        import pandas as pd
+                        for col in ('last_close', 'price', 'amount', 'vol'):
+                            if col in df.columns:
+                                df[col] = pd.to_numeric(df[col], errors='coerce')
+                        stocks = []
+                        for _, row in df.iterrows():
+                            code = str(row.get('code', ''))
+                            last_close = float(row.get('last_close', 0) or 0)
+                            price = float(row.get('price', 0) or 0)
+                            if last_close <= 0:
+                                continue
+                            if price <= 0:
+                                price = last_close
+                            pct = ((price - last_close) / last_close * 100) if last_close > 0 else 0
+                            stocks.append({
+                                'code': code,
+                                'price': round(price, 2),
+                                'pct': round(pct, 2),
+                                'vol': float(row.get('vol', 0) or 0),
+                                'amount': round(float(row.get('amount', 0) or 0) / 10000, 2),  # 万元
+                            })
+                        if stocks:
+                            socketio.emit('stock_quotes', {'segment': seg, 'stocks': stocks})
+                except Exception as e:
+                    print(f'[WS] 板块{seg}报价异常: {e}')
 
             # 控制频率: 1秒一轮(跟通达信客户端一样)
             elapsed = time.time() - t0
