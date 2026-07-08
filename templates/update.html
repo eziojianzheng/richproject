@@ -83,12 +83,42 @@
   .db-dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 6px; vertical-align: middle; }
   .db-on { background: #4ade80; } .db-off { background: #ff6b74; }
   .divider { border: none; border-top: 1px solid var(--border-color); margin: 18px 0; }
+  /* Tab 切换栏 */
+  .tab-bar { display: flex; gap: 0; margin-bottom: 18px; border-bottom: 2px solid var(--border-color); }
+  .tab {
+    background: transparent; border: none; color: var(--text-secondary);
+    padding: 10px 20px; font-size: 14px; font-weight: 600; cursor: pointer;
+    border-bottom: 2px solid transparent; margin-bottom: -2px; transition: all 0.15s;
+  }
+  .tab:hover { color: var(--text-primary); }
+  .tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+  .tab-content { display: none; }
+  .tab-content.active { display: block; }
+  /* 同花顺同步相关 */
+  .stat-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 12px; margin: 14px 0; }
+  .stat-card { background: var(--bg-input); border: 1px solid var(--border-color); border-radius: 8px; padding: 12px 14px; }
+  .stat-card .val { font-size: 22px; font-weight: 700; color: var(--text-primary); }
+  .stat-card .lbl { font-size: 11px; color: var(--text-muted); margin-top: 2px; }
+  .change-list { max-height: 320px; overflow-y: auto; margin-top: 10px; border: 1px solid var(--border-color); border-radius: 8px; }
+  .change-item { display: flex; align-items: center; gap: 10px; padding: 6px 12px; border-bottom: 1px solid var(--border-color); font-size: 13px; }
+  .change-item:last-child { border-bottom: none; }
+  .change-tag { font-size: 11px; padding: 1px 7px; border-radius: 999px; font-weight: 600; white-space: nowrap; }
+  .change-add { background: rgba(46,160,67,.15); color: #4ade80; }
+  .change-del { background: rgba(230,57,70,.15); color: #ff6b74; }
 </style>
 </head>
 <body>
 <div class="wrap">
   <div class="topbar"><h1>🔄 数据同步</h1></div>
 
+  <!-- Tab 切换栏 -->
+  <div class="tab-bar">
+    <button class="tab active" data-tab="hunan" onclick="switchTab('hunan')">湖南人涨停数据同步</button>
+    <button class="tab" data-tab="ths" onclick="switchTab('ths')">同花顺概念数据同步</button>
+  </div>
+
+  <!-- Tab 1: 湖南人涨停数据同步 -->
+  <div class="tab-content active" id="tab-hunan">
   <!-- ① 下载模块 -->
   <div class="card" id="cardDownload">
     <div class="card-head" onclick="toggleCard('cardDownload')">
@@ -151,6 +181,53 @@
       <div id="statusBox"><div class="empty">加载中…</div></div>
     </div>
   </div>
+  </div><!-- /tab-hunan -->
+
+  <!-- Tab 2: 同花顺概念数据同步 -->
+  <div class="tab-content" id="tab-ths">
+    <!-- 状态展示区 -->
+    <div class="card">
+      <div class="card-head" style="cursor:default;"><h2>📊 当前数据状态</h2><button class="refresh" style="margin-left:auto;" onclick="loadThsStatus()">刷新</button></div>
+      <div class="card-body">
+        <div class="stat-grid" id="thsStatGrid"><div class="empty">加载中…</div></div>
+        <div class="hint" id="thsUpdatedHint"></div>
+      </div>
+    </div>
+
+    <!-- 同步操作区 -->
+    <div class="card">
+      <div class="card-head" style="cursor:default;"><h2>🔄 同步同花顺接口</h2></div>
+      <div class="card-body">
+        <div class="row">
+          <button id="btnThsSync" onclick="startThsSync()">同步同花顺接口</button>
+          <button id="btnThsRefresh" class="ghost" onclick="startThsSync(true)">全量重抓(忽略断点)</button>
+        </div>
+        <div class="hint">点击「同步同花顺接口」从 adata 拉取全市场 A 股个股-概念映射, 写入数据库。支持断点续跑。</div>
+        <div class="progress-wrap" id="thsProgressWrap">
+          <div class="progress-bar"><div class="progress-fill" id="thsProgressFill"></div></div>
+          <div class="status-line" id="thsStatusLine">准备中…</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 改动展示区 -->
+    <div class="card" id="thsChangesCard" style="display:none;">
+      <div class="card-head" style="cursor:default;"><h2>📋 同步改动</h2></div>
+      <div class="card-body">
+        <div id="thsChangesSummary"></div>
+        <div class="change-list" id="thsChangesList"></div>
+      </div>
+    </div>
+
+    <!-- 概念列表 -->
+    <div class="card">
+      <div class="card-head" style="cursor:default;"><h2>📁 概念列表</h2><button class="refresh" style="margin-left:auto;" onclick="loadThsConcepts()">刷新</button></div>
+      <div class="card-body">
+        <div id="thsConceptsBox"><div class="empty">点击刷新加载…</div></div>
+      </div>
+    </div>
+  </div><!-- /tab-ths -->
+
 </div>
 
 <script>
@@ -542,6 +619,158 @@ async function uploadDate(date, btn) {
 
 loadFiles();
 loadExcelList();
+
+// ===== Tab 切换 =====
+function switchTab(tab) {
+  document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === tab));
+  document.querySelectorAll('.tab-content').forEach(c => c.classList.toggle('active', c.id === 'tab-' + tab));
+  try { localStorage.setItem('update_tab', tab); } catch(e) {}
+  if (tab === 'ths') loadThsStatus();
+}
+// 恢复上次选中的 Tab
+try { const t = localStorage.getItem('update_tab'); if (t) switchTab(t); } catch(e) {}
+
+// ===== 同花顺概念同步 =====
+let _thsPollTimer = null;
+
+async function loadThsStatus() {
+  try {
+    const resp = await fetch('/api/sync/ths/status');
+    const data = await resp.json();
+    if (!data.success) return;
+    const s = data.status;
+    const db = s.db || {};
+    const csv = s.csv || {};
+    const grid = document.getElementById('thsStatGrid');
+    const cards = [];
+    if (db.available) {
+      cards.push(`<div class="stat-card"><div class="val">${db.concept_count || 0}</div><div class="lbl">概念数 (DB)</div></div>`);
+      cards.push(`<div class="stat-card"><div class="val">${db.stock_count || 0}</div><div class="lbl">股票数 (DB)</div></div>`);
+      cards.push(`<div class="stat-card"><div class="val">${db.member_count || 0}</div><div class="lbl">成分记录 (DB)</div></div>`);
+    } else {
+      cards.push(`<div class="stat-card"><div class="val" style="color:#ff6b74;font-size:14px;">未连接</div><div class="lbl">数据库不可用</div></div>`);
+    }
+    cards.push(`<div class="stat-card"><div class="val">${csv.concepts_done || 0}</div><div class="lbl">已抓概念 (CSV)</div></div>`);
+    cards.push(`<div class="stat-card"><div class="val">${csv.wide_stocks || 0}</div><div class="lbl">股票数 (CSV)</div></div>`);
+    if (csv.concepts_failed > 0) cards.push(`<div class="stat-card"><div class="val" style="color:#ff6b74;">${csv.concepts_failed}</div><div class="lbl">失败概念</div></div>`);
+    grid.innerHTML = cards.join('');
+    const hint = document.getElementById('thsUpdatedHint');
+    hint.textContent = db.updated_at ? `最后入库: ${db.updated_at}` : (csv.concepts_done ? 'CSV 已有数据, 未入库' : '尚无数据');
+    // 如果正在同步, 持续轮询
+    if (data.syncing) {
+      showThsProgress(data.progress);
+      if (!_thsPollTimer) _thsPollTimer = setInterval(pollThsProgress, 1500);
+    }
+  } catch(e) { console.error('THS status error', e); }
+}
+
+async function startThsSync(refresh = false) {
+  const btn = document.getElementById('btnThsSync');
+  const btn2 = document.getElementById('btnThsRefresh');
+  btn.disabled = true; btn2.disabled = true;
+  btn.textContent = '同步中…';
+  document.getElementById('thsProgressWrap').style.display = 'block';
+  document.getElementById('thsStatusLine').textContent = '启动中…';
+  document.getElementById('thsProgressFill').style.width = '0%';
+  try {
+    const resp = await fetch('/api/sync/ths/concepts', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ refresh })
+    });
+    const data = await resp.json();
+    if (!data.success) {
+      alert('同步启动失败: ' + (data.error || '未知错误'));
+      btn.disabled = false; btn2.disabled = false; btn.textContent = '同步同花顺接口';
+      return;
+    }
+    // 开始轮询进度
+    if (!_thsPollTimer) _thsPollTimer = setInterval(pollThsProgress, 1500);
+  } catch(e) {
+    alert('请求异常: ' + e.message);
+    btn.disabled = false; btn2.disabled = false; btn.textContent = '同步同花顺接口';
+  }
+}
+
+function showThsProgress(p) {
+  if (!p) return;
+  const pct = p.total > 0 ? (p.current / p.total * 100) : 0;
+  document.getElementById('thsProgressFill').style.width = pct.toFixed(1) + '%';
+  const status = `[${p.current}/${p.total}] ${p.name}: ${p.ok ? p.count + ' 只' : '失败'}`;
+  document.getElementById('thsStatusLine').textContent = status;
+}
+
+async function pollThsProgress() {
+  try {
+    const resp = await fetch('/api/sync/ths/status');
+    const data = await resp.json();
+    if (!data.success) return;
+    if (data.syncing) {
+      showThsProgress(data.progress);
+    } else if (data.progress && data.progress.done) {
+      // 同步完成
+      clearInterval(_thsPollTimer); _thsPollTimer = null;
+      const btn = document.getElementById('btnThsSync');
+      const btn2 = document.getElementById('btnThsRefresh');
+      btn.disabled = false; btn2.disabled = false; btn.textContent = '同步同花顺接口';
+      const result = data.progress.result;
+      if (result && result.error) {
+        document.getElementById('thsStatusLine').textContent = '❌ 同步失败: ' + result.error;
+      } else if (result) {
+        const f = result.fetch || {};
+        const db = result.db || {};
+        document.getElementById('thsProgressFill').style.width = '100%';
+        document.getElementById('thsStatusLine').textContent =
+          `✅ 完成: 概念 ${f.done}/${f.total}, 股票 ${f.stock_count || 0}, 入库 ${db.stock_count || 0} 股 / ${db.member_count || 0} 条`;
+        // 显示改动
+        showThsChanges(f);
+      }
+      loadThsStatus();
+    }
+  } catch(e) { /* 静默 */ }
+}
+
+function showThsChanges(fetchResult) {
+  const card = document.getElementById('thsChangesCard');
+  const summary = document.getElementById('thsChangesSummary');
+  const list = document.getElementById('thsChangesList');
+  const added = (fetchResult.changes && fetchResult.changes.added) || [];
+  const removed = (fetchResult.changes && fetchResult.changes.removed) || [];
+  if (added.length === 0 && removed.length === 0) {
+    summary.innerHTML = '<div class="empty">无改动 (数据与上次一致)</div>';
+    list.innerHTML = '';
+    card.style.display = 'block';
+    return;
+  }
+  summary.innerHTML = `新增 <span style="color:#4ade80;font-weight:600;">${fetchResult.added}</span> 条, 删除 <span style="color:#ff6b74;font-weight:600;">${fetchResult.removed}</span> 条`;
+  const items = [];
+  for (const a of added) {
+    items.push(`<div class="change-item"><span class="change-tag change-add">+新增</span><span style="color:var(--text-secondary);">${a.code}</span><span>${a.concept}</span></div>`);
+  }
+  for (const r of removed) {
+    items.push(`<div class="change-item"><span class="change-tag change-del">-删除</span><span style="color:var(--text-secondary);">${r.code}</span><span>${r.concept}</span></div>`);
+  }
+  list.innerHTML = items.join('');
+  card.style.display = 'block';
+}
+
+async function loadThsConcepts() {
+  const box = document.getElementById('thsConceptsBox');
+  box.innerHTML = '<div class="empty">加载中…</div>';
+  try {
+    const resp = await fetch('/api/sync/ths/concepts/list?limit=200');
+    const data = await resp.json();
+    if (!data.success || !data.concepts || !data.concepts.length) {
+      box.innerHTML = '<div class="empty">无数据, 请先同步</div>';
+      return;
+    }
+    let html = `<table><thead><tr><th>概念</th><th>成分股数</th></tr></thead><tbody>`;
+    for (const c of data.concepts) {
+      html += `<tr><td>${c.concept}</td><td><span class="cnt">${c.count}</span></td></tr>`;
+    }
+    html += `</tbody></table><div class="hint">共 ${data.total} 个概念, 显示前 ${data.concepts.length} 个</div>`;
+    box.innerHTML = html;
+  } catch(e) { box.innerHTML = '<div class="empty">加载失败: ' + e.message + '</div>'; }
+}
 </script>
 </body>
 </html>
