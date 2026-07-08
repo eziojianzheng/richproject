@@ -428,6 +428,8 @@ let dailyData = [];   // 缓存日K数据
 let stockDailyChart = null, stockMinute5Chart = null, stockHistChart = null;
 let curStockSeg = 'cyb', curStockCode = null;  // 当前选中板块/股票
 let stockDailyBars = [];  // 缓存个股日K数据(供假定涨停toggle重渲染)
+// 个股数据前端缓存: 切换时先秒显缓存, 后台静默刷新
+const _stockCache = {};  // {code: {daily: bars, minute5: {points,days}, minute: {points,last_close}, ts: Date.now()}}
 
 // ===== 日K线图 =====
 async function loadDaily() {
@@ -660,25 +662,43 @@ async function loadMinute() {
 // 拉选中个股当日分时, 叠加到上证当日分时图
 async function loadStockMinuteOverlay(code) {
   const hint = document.getElementById('minuteHint');
-  try {
-    const resp = await fetch(`/api/monitor/stock/minute?code=${code}`);
-    const data = await resp.json();
-    if (!data.success || !data.points || data.points.length < 2) {
-      // 个股当日分时未就绪: 静默, 不覆盖已有的大盘分时
-      _stockMinutePoints = null;
-      _stockLastClose = 0;
-      return;
-    }
-    _stockMinutePoints = data.points;
-    _stockLastClose = data.last_close || 0;  // 后端返回的昨收, 不依赖 stockDailyBars 就绪
+  const cache = _stockCache[code];
+  // 1. 有缓存: 立刻叠加
+  if (cache && cache.minute) {
+    _stockMinutePoints = cache.minute.points;
+    _stockLastClose = cache.minute.last_close || 0;
     if (_minutePoints) {
       renderMinute(minuteChart, 'minuteChart', _minutePoints, 'today',
         _leadingInfo ? _leadingInfo.leadingLine : null, _stockMinutePoints, _stockLastClose);
       const name = document.getElementById('stockDailyTitle').textContent;
       hint.textContent = `${_minutePoints.length} 点 · 叠加 ${name}`;
     }
+  }
+  // 2. 后台静默刷新
+  try {
+    const resp = await fetch(`/api/monitor/stock/minute?code=${code}`);
+    const data = await resp.json();
+    if (!data.success || !data.points || data.points.length < 2) {
+      if (!cache || !cache.minute) {
+        _stockMinutePoints = null;
+        _stockLastClose = 0;
+      }
+      return;
+    }
+    if (!_stockCache[code]) _stockCache[code] = {};
+    _stockCache[code].minute = {points: data.points, last_close: data.last_close || 0};
+    if (curStockCode === code) {
+      _stockMinutePoints = data.points;
+      _stockLastClose = data.last_close || 0;
+      if (_minutePoints) {
+        renderMinute(minuteChart, 'minuteChart', _minutePoints, 'today',
+          _leadingInfo ? _leadingInfo.leadingLine : null, _stockMinutePoints, _stockLastClose);
+        const name = document.getElementById('stockDailyTitle').textContent;
+        hint.textContent = `${_minutePoints.length} 点 · 叠加 ${name}`;
+      }
+    }
   } catch(e) {
-    hint.textContent = '⚠ 个股分时异常: ' + e.message;
+    if (!cache || !cache.minute) hint.textContent = '⚠ 个股分时异常: ' + e.message;
   }
 }
 
@@ -1290,14 +1310,28 @@ document.getElementById('watchlistBox').addEventListener('click', function(e) {
 
 async function loadStockDaily(code) {
   const el = document.getElementById('stockDailyChart');
-  // 不用 innerHTML='' (会破坏 echarts 注入的 DOM), 用 clear 清数据
-  if (stockDailyChart) stockDailyChart.clear();
+  const cache = _stockCache[code];
+  // 1. 有缓存: 立刻渲染, 不闪白
+  if (cache && cache.daily) {
+    renderStockDaily(cache.daily);
+  } else if (stockDailyChart) {
+    stockDailyChart.clear();  // 首次加载仍需清空
+  }
+  // 2. 后台静默刷新
   try {
     const resp = await fetch(`/api/monitor/stock/daily?code=${code}&count=250`);
     const data = await resp.json();
-    if (!data.success) { showChartError(el, data.error||'无数据'); return; }
-    renderStockDaily(data.bars);
-  } catch(e) { showChartError(el, '请求异常: ' + e.message); }
+    if (!data.success) {
+      if (!cache || !cache.daily) showChartError(el, data.error||'无数据');
+      return;
+    }
+    if (!_stockCache[code]) _stockCache[code] = {};
+    _stockCache[code].daily = data.bars;
+    // 只有当前还在看这只票时才重绘(避免切走后覆盖)
+    if (curStockCode === code) renderStockDaily(data.bars);
+  } catch(e) {
+    if (!cache || !cache.daily) showChartError(el, '请求异常: ' + e.message);
+  }
 }
 
 // 假定涨停: 当天(最后一根)画灰色虚线K线框, 开盘=当天open, 收盘=涨停价
@@ -1509,16 +1543,32 @@ function renderStockDaily(bars) {
 async function loadStockMinute5(code) {
   const el = document.getElementById('stockMinute5Chart');
   const tag = document.getElementById('stockM5Tag');
-  if (stockMinute5Chart) stockMinute5Chart.clear();
-  tag.textContent = '加载中…';
+  const cache = _stockCache[code];
+  // 1. 有缓存: 立刻渲染
+  if (cache && cache.minute5) {
+    renderStockMinute5(cache.minute5.points, cache.minute5.days);
+    tag.textContent = cache.minute5.days.join(' / ');
+  } else {
+    if (stockMinute5Chart) stockMinute5Chart.clear();
+    tag.textContent = '加载中…';
+  }
+  // 2. 后台静默刷新
   try {
     const resp = await fetch(`/api/monitor/stock/minutes5?code=${code}`);
     const data = await resp.json();
-    // 5日分时未就绪: 静默留空(清图表但不弹错误)
-    if (!data.success) { if (stockMinute5Chart) stockMinute5Chart.clear(); tag.textContent=''; return; }
-    tag.textContent = data.days.join(' / ');
-    renderStockMinute5(data.points, data.days);
-  } catch(e) { showChartError(el, '请求异常: ' + e.message); tag.textContent=''; }
+    if (!data.success) {
+      if (!cache || !cache.minute5) { if (stockMinute5Chart) stockMinute5Chart.clear(); tag.textContent=''; }
+      return;
+    }
+    if (!_stockCache[code]) _stockCache[code] = {};
+    _stockCache[code].minute5 = {points: data.points, days: data.days};
+    if (curStockCode === code) {
+      renderStockMinute5(data.points, data.days);
+      tag.textContent = data.days.join(' / ');
+    }
+  } catch(e) {
+    if (!cache || !cache.minute5) { showChartError(el, '请求异常: ' + e.message); tag.textContent=''; }
+  }
 }
 
 function renderStockMinute5(points, days) {
@@ -2004,6 +2054,11 @@ function initSocket() {
     if (data.code !== curStockCode) return;
     _stockMinutePoints = data.points;
     if (data.last_close) _stockLastClose = data.last_close;  // 后端推送也可能带昨收
+    // 同步更新缓存(切回来时数据不过期)
+    const sc = _stockCache[data.code];
+    if (sc) {
+      sc.minute = {points: data.points, last_close: data.last_close || (sc.minute ? sc.minute.last_close : 0)};
+    }
     if (_minutePoints) {
       renderMinute(minuteChart, 'minuteChart', _minutePoints, 'today',
         _leadingInfo ? _leadingInfo.leadingLine : null, _stockMinutePoints, _stockLastClose);
