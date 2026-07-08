@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>热门股追踪</title>
+<script src="https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"></script>
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
   
@@ -74,6 +75,43 @@
     background: var(--bg-card);
   }
   .sort-tabs span.active { background: #2563eb; color: #fff; border-color: #2563eb; }
+
+  /* 主 Tab 切换条 */
+  .main-tabs { display: flex; gap: 4px; margin-bottom: 12px; }
+  .main-tabs span {
+    padding: 8px 20px; font-size: 14px; border-radius: 8px; cursor: pointer; font-weight: 600;
+    border: 1px solid var(--border-color); color: var(--text-secondary);
+    background: var(--bg-card); transition: all 0.2s;
+  }
+  .main-tabs span:hover { color: var(--text-primary); }
+  .main-tabs span.active { background: #e63946; color: #fff; border-color: #e63946; }
+  .tab-view { animation: fadeIn 0.2s; }
+  @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+
+  /* 概念追踪区块 */
+  .concept-day { background: var(--bg-card); border: 1px solid var(--border-color); border-radius: 10px; margin-bottom: 16px; overflow: hidden; }
+  .concept-day-head { padding: 10px 16px; font-size: 15px; font-weight: 700; color: var(--text-primary);
+    background: linear-gradient(135deg, rgba(230,57,70,0.15), rgba(181,23,158,0.1)); border-bottom: 1px solid var(--border-color); }
+  .concept-day-charts { display: flex; gap: 8px; padding: 8px; }
+  .concept-chart-box { flex: 1; min-width: 0; }
+  .concept-chart-box h4 { font-size: 12px; color: var(--text-muted); margin-bottom: 4px; text-align: center; }
+  .concept-chart-box .echart { width: 100%; height: 300px; }
+  .concept-loading { padding: 60px 20px; text-align: center; color: var(--text-muted); font-size: 14px; }
+
+  /* 概念追踪进度面板 */
+  .concept-progress-panel { background: var(--bg-card); border: 1px solid var(--border-color); border-radius: 10px; padding: 16px; margin-bottom: 16px; }
+  .concept-progress-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+  .concept-progress-head > span { font-size: 15px; font-weight: 700; color: var(--text-primary); }
+  .concept-cancel-btn { background: rgba(239,83,80,0.15); color: #ef5350; border: 1px solid rgba(239,83,80,0.4);
+    border-radius: 6px; padding: 4px 14px; font-size: 12px; cursor: pointer; }
+  .concept-cancel-btn:hover { background: rgba(239,83,80,0.3); }
+  .concept-cancel-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+  .concept-progress-bar-wrap { width: 100%; height: 8px; background: var(--bg-main); border-radius: 4px; overflow: hidden; margin-bottom: 8px; }
+  .concept-progress-bar { height: 100%; background: linear-gradient(90deg, #42a5f5, #ab47bc); transition: width 0.3s; }
+  .concept-progress-detail { font-size: 12px; color: var(--text-muted); margin-bottom: 8px; }
+  .concept-progress-logs { max-height: 200px; overflow-y: auto; background: var(--bg-main); border-radius: 6px; padding: 8px; font-size: 11px; }
+  .cp-log-line { color: var(--text-muted); line-height: 1.6; font-family: monospace; }
+
   .meta { font-size: 12px; color: var(--text-muted); margin-bottom: 12px; }
   .stale-banner {
     background: rgba(234,179,8,0.15); border: 1px solid rgba(234,179,8,0.4);
@@ -471,18 +509,6 @@
   .compute-actions .compute-remove { background: #6b7280; }
   .compute-actions .compute-remove:hover { background: #4b5563; }
 
-  /* ===== 视图切换 Tab ===== */
-  .view-tabs { display: flex; gap: 0; margin-bottom: 14px; border-bottom: 2px solid var(--border-color); }
-  .view-tabs .vtab {
-    background: transparent; border: none; color: var(--text-secondary);
-    padding: 10px 20px; font-size: 14px; font-weight: 600; cursor: pointer;
-    border-bottom: 2px solid transparent; margin-bottom: -2px; transition: all .15s;
-  }
-  .view-tabs .vtab:hover { color: var(--text-primary); }
-  .view-tabs .vtab.active { color: #e63946; border-bottom-color: #e63946; }
-  .view-content { display: none; }
-  .view-content.active { display: block; }
-
   /* ===== 历史爆发股票汇总 ===== */
   .exp-toolbar {
     display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
@@ -607,10 +633,11 @@
     </button>
   </div>
 
-  <!-- 视图切换 Tab -->
-  <div class="view-tabs">
-    <button class="vtab active" data-view="blocks" onclick="switchView('blocks')">板块统计</button>
-    <button class="vtab" data-view="explosive" onclick="switchView('explosive')">历史爆发股票汇总</button>
+  <!-- 主 Tab 切换条 -->
+  <div class="main-tabs">
+    <span class="main-tab active" data-tab="hnr" onclick="switchTab('hnr')">湖南人涨停复盘</span>
+    <span class="main-tab" data-tab="explosive" onclick="switchTab('explosive')">历史爆发股票汇总</span>
+    <span class="main-tab" data-tab="ths" onclick="switchTab('ths')">同花顺概念追踪</span>
   </div>
 
   <div class="meta" id="meta"></div>
@@ -634,26 +661,34 @@
     </div>
   </div>
 
-  <div class="view-content active" id="view-blocks">
-  <div class="split">
-    <div class="pane pane-top" id="paneTop">
-      <div class="pane-title" onclick="togglePane('paneTop')">
-        <span class="chev">▼</span>板块统计（最新 → 最早）
+  <!-- Tab 1: 湖南人涨停复盘 -->
+  <div id="view-hnr" class="tab-view">
+    <div class="split">
+      <div class="pane pane-top" id="paneTop">
+        <div class="pane-title" onclick="togglePane('paneTop')">
+          <span class="chev">▼</span>板块统计（最新 -> 最早）
+        </div>
+        <div id="rows" class="pane-body"></div>
       </div>
-      <div id="rows" class="pane-body"></div>
-    </div>
-    <div class="splitter" id="splitter" title="拖动调整上下高度"></div>
-    <div class="pane pane-bottom" id="paneBottom">
-      <div class="pane-title" onclick="togglePane('paneBottom')">
-        <span class="chev">▼</span>板块图表（与上方板块对齐）
+      <div class="splitter" id="splitter" title="拖动调整上下高度"></div>
+      <div class="pane pane-bottom" id="paneBottom">
+        <div class="pane-title" onclick="togglePane('paneBottom')">
+          <span class="chev">▼</span>板块图表（与上方板块对齐）
+        </div>
+        <div id="charts" class="pane-body"></div>
       </div>
-      <div id="charts" class="pane-body"></div>
     </div>
   </div>
-  </div><!-- /view-blocks -->
 
-  <!-- 历史爆发股票汇总 -->
-  <div class="view-content" id="view-explosive">
+  <!-- Tab 2: 同花顺概念追踪 -->
+  <div id="view-ths" class="tab-view" style="display:none">
+    <div id="conceptDays">
+      <div class="concept-loading">选择日期范围后点击「计算」查看概念涨停追踪</div>
+    </div>
+  </div>
+
+  <!-- Tab 3: 历史爆发股票汇总 -->
+  <div class="tab-view" id="view-explosive" style="display:none">
     <div class="exp-toolbar">
       <label>选择月份</label>
       <input type="month" id="expMonth">
@@ -695,6 +730,12 @@ let curSort = 'times';       // 板块排序
 let curStockSort = 'daily';  // 股票排序: daily/20d/60d
 let isDarkTheme = true;
 let LAZY_EXPANDS = {};       // 按需展开: { "日期||板块": sortedStocks[] }
+let _curTab = 'hnr';         // 当前 Tab: hnr / ths
+let _conceptTrackData = null; // 同花顺概念追踪数据
+let _conceptCharts = [];     // ECharts 实例(用于 resize/dispose)
+let _conceptTaskId = null;   // 当前异步任务ID
+let _conceptPollTimer = null; // 轮询定时器
+let _conceptLogSince = 0;    // 日志增量偏移
 
 // 控制台日志
 function logToConsole(message, type = 'info') {
@@ -1040,9 +1081,14 @@ function computeToday(){
   compute();
 }
 
-document.getElementById('go').onclick = () => {
+document.getElementById('go').onclick = (ev) => {
   saveConfig();
-  compute();
+  if (_curTab === 'ths') {
+    // Shift+点击 强制刷新(忽略缓存)
+    loadConceptTrack(ev && ev.shiftKey);
+  } else {
+    compute();
+  }
 };
 
 // 输入框变化时保存
@@ -2037,11 +2083,29 @@ let expCandidates = [];          // 待选(扫描结果)
 let expPicked = [];              // 已选
 const expCharts = {};            // key -> echarts 实例
 
-function switchView(view) {
-  document.querySelectorAll('.vtab').forEach(t => t.classList.toggle('active', t.dataset.view === view));
-  document.querySelectorAll('.view-content').forEach(c => c.classList.toggle('active', c.id === 'view-' + view));
-  try { localStorage.setItem('hot_view', view); } catch(e) {}
-  if (view === 'explosive') {
+// ===== Tab 切换 (统一管理 hnr/explosive/ths 三个视图) =====
+function switchTab(tab) {
+  _curTab = tab;
+  document.querySelectorAll('.main-tab').forEach(el => {
+    el.classList.toggle('active', el.dataset.tab === tab);
+  });
+  document.getElementById('view-hnr').style.display = tab === 'hnr' ? '' : 'none';
+  document.getElementById('view-ths').style.display = tab === 'ths' ? '' : 'none';
+  document.getElementById('view-explosive').style.display = tab === 'explosive' ? '' : 'none';
+  try { localStorage.setItem('hot_view', tab); } catch(e) {}
+  if (tab === 'ths') {
+    if (_conceptTrackData) {
+      // 已有数据, resize 图表
+      _conceptCharts.forEach(c => { try { c.resize(); } catch(e){} });
+    } else {
+      // 首次切换到 THS, 自动加载当前日期范围
+      const start = document.getElementById('start').value;
+      const end = document.getElementById('end').value;
+      if (start && end) {
+        loadConceptTrack(false);
+      }
+    }
+  } else if (tab === 'explosive') {
     // 默认月份填充为最近数据月份
     const mi = document.getElementById('expMonth');
     if (!mi.value) {
@@ -2263,7 +2327,299 @@ function renderExpKline(dom, key, bars, c) {
 window.addEventListener('resize', () => { Object.values(expCharts).forEach(c => c && c.resize()); });
 
 // 恢复上次视图
-try { const v = localStorage.getItem('hot_view'); if (v) switchView(v); } catch(e) {}
+try { const v = localStorage.getItem('hot_view'); if (v) switchTab(v); } catch(e) {}
+
+// ===== 同花顺概念追踪 =====
+function loadConceptTrack(forceRefresh) {
+  const start = document.getElementById('start').value;
+  const end = document.getElementById('end').value;
+  if (!start || !end) {
+    document.getElementById('conceptDays').innerHTML = '<div class="concept-loading">请先选择日期范围</div>';
+    return;
+  }
+  // 如果已有相同日期范围的数据, 直接用, 不重新请求 (除非强制刷新)
+  if (!forceRefresh && _conceptTrackData && _conceptTrackData.start === start && _conceptTrackData.end === end) {
+    _conceptCharts.forEach(c => { try { c.resize(); } catch(e){} });
+    return;
+  }
+  // 尝试从 localStorage 恢复 (除非强制刷新)
+  const cacheKey = `conceptTrack_${start}_${end}`;
+  if (!forceRefresh) {
+    try {
+      const cached = localStorage.getItem(cacheKey);
+      if (cached) {
+        _conceptTrackData = JSON.parse(cached);
+        renderConceptTrack(_conceptTrackData);
+        document.getElementById('meta').innerHTML =
+          `<span style="color:var(--text-muted)">已恢复缓存结果 (${start}~${end})，如需最新请 Shift+点击「计算」</span>`;
+        return;
+      }
+    } catch(e) {}
+  }
+
+  // 如果有正在运行的任务, 先取消
+  if (_conceptPollTimer) { clearInterval(_conceptPollTimer); _conceptPollTimer = null; }
+  _conceptTaskId = null;
+  _conceptLogSince = 0;
+
+  // dispose 旧图表
+  _conceptCharts.forEach(c => { try { c.dispose(); } catch(e){} });
+  _conceptCharts = [];
+
+  // 显示进度面板
+  const container = document.getElementById('conceptDays');
+  container.innerHTML = `
+    <div class="concept-progress-panel">
+      <div class="concept-progress-head">
+        <span id="cpStatus">⏳ 启动中...</span>
+        <button id="cpCancelBtn" class="concept-cancel-btn" onclick="cancelConceptTrack()">取消</button>
+      </div>
+      <div class="concept-progress-bar-wrap">
+        <div id="cpBar" class="concept-progress-bar" style="width:0%"></div>
+      </div>
+      <div id="cpDetail" class="concept-progress-detail"></div>
+      <div id="cpLogs" class="concept-progress-logs"></div>
+    </div>
+  `;
+
+  // 启动异步任务
+  fetch(`/api/hot/concept-track?start=${start}&end=${end}`)
+    .then(r => r.json())
+    .then(d => {
+      if (!d.success) {
+        document.getElementById('conceptDays').innerHTML = `<div class="concept-loading">❌ ${d.error || '启动失败'}</div>`;
+        return;
+      }
+      _conceptTaskId = d.task_id;
+      _conceptLogSince = 0;
+      // 开始轮询
+      _conceptPollTimer = setInterval(() => pollConceptTrack(start, end, cacheKey), 800);
+      pollConceptTrack(start, end, cacheKey); // 立即查一次
+    })
+    .catch(e => {
+      document.getElementById('conceptDays').innerHTML = `<div class="concept-loading">❌ ${e}</div>`;
+    });
+}
+
+function pollConceptTrack(start, end, cacheKey) {
+  if (!_conceptTaskId) return;
+  fetch(`/api/hot/concept-track/status/${_conceptTaskId}?since=${_conceptLogSince}`)
+    .then(r => r.json())
+    .then(d => {
+      if (!d.success) return;
+      _conceptLogSince = d.log_count;
+
+      // 更新进度UI
+      const pct = d.progress || 0;
+      const bar = document.getElementById('cpBar');
+      const status = document.getElementById('cpStatus');
+      const detail = document.getElementById('cpDetail');
+      const logsEl = document.getElementById('cpLogs');
+      if (bar) bar.style.width = pct + '%';
+      if (status) {
+        if (d.status === 'running') status.textContent = `⏳ 处理中... ${pct}%`;
+        else if (d.status === 'completed') status.textContent = '✅ 完成';
+        else if (d.status === 'cancelled') status.textContent = '⚠️ 已取消';
+        else if (d.status === 'failed') status.textContent = '❌ 失败';
+      }
+      if (detail) {
+        let txt = '';
+        if (d.total_dates > 0) txt += `进度: ${d.cur_idx}/${d.total_dates}`;
+        if (d.cur_date) {
+          const ds = d.cur_date;
+          txt += ` | 当前: ${ds.slice(0,4)}-${ds.slice(4,6)}-${ds.slice(6,8)}`;
+        }
+        detail.textContent = txt;
+      }
+      // 追加新日志
+      if (logsEl && d.logs && d.logs.length) {
+        for (const line of d.logs) {
+          const div = document.createElement('div');
+          div.className = 'cp-log-line';
+          div.textContent = line;
+          logsEl.appendChild(div);
+        }
+        logsEl.scrollTop = logsEl.scrollHeight;
+      }
+
+      // 任务结束
+      if (d.status === 'completed') {
+        if (d.result && d.result.success) {
+          clearInterval(_conceptPollTimer); _conceptPollTimer = null;
+          _conceptTrackData = d.result;
+          try { localStorage.setItem(cacheKey, JSON.stringify(d.result)); } catch(e) {}
+          renderConceptTrack(d.result);
+        } else {
+          // result 还没就绪, 继续轮询 (不clearInterval)
+          if (status) status.textContent = '⏳ 等待结果...';
+        }
+      } else if (d.status === 'failed' || d.status === 'cancelled') {
+        clearInterval(_conceptPollTimer); _conceptPollTimer = null;
+        _conceptTaskId = null;
+        if (status) status.textContent = d.status === 'cancelled' ? '⚠️ 已取消' : '❌ 失败';
+        // 显示错误, 保留日志
+        if (logsEl) {
+          const div = document.createElement('div');
+          div.className = 'cp-log-line';
+          div.style.color = '#ef5350';
+          div.textContent = d.error || '';
+          logsEl.appendChild(div);
+        }
+      }
+    })
+    .catch(e => {});
+}
+
+function cancelConceptTrack() {
+  if (!_conceptTaskId) return;
+  fetch(`/api/hot/concept-track/cancel/${_conceptTaskId}`, { method: 'POST' })
+    .then(r => r.json())
+    .then(d => {
+      const btn = document.getElementById('cpCancelBtn');
+      if (btn) { btn.disabled = true; btn.textContent = '取消中...'; }
+    })
+    .catch(e => {});
+}
+
+function renderConceptTrack(data) {
+  const container = document.getElementById('conceptDays');
+  const days = data.days || [];
+  if (days.length === 0) {
+    container.innerHTML = '<div class="concept-loading">该日期范围无概念涨停数据</div>';
+    return;
+  }
+  let html = '';
+  days.forEach((day, idx) => {
+    const dateStr = day.date;
+    const d = dateStr.length === 8 ? `${dateStr.slice(0,4)}-${dateStr.slice(4,6)}-${dateStr.slice(6,8)}` : dateStr;
+    html += `<div class="concept-day">`;
+    html += `<div class="concept-day-head">📅 ${d} — 概念涨停 Top10</div>`;
+    html += `<div class="concept-day-charts">`;
+    html += `<div class="concept-chart-box"><h4>涨停数柱状图</h4><div id="cbar-${idx}" class="echart"></div></div>`;
+    html += `<div class="concept-chart-box"><h4>分时涨停轨迹</h4><div id="cline-${idx}" class="echart"></div></div>`;
+    html += `</div></div>`;
+  });
+  container.innerHTML = html;
+
+  // 渲染图表
+  days.forEach((day, idx) => {
+    renderConceptBar(idx, day);
+    renderConceptLine(idx, day);
+  });
+}
+
+function renderConceptBar(idx, day) {
+  const el = document.getElementById(`cbar-${idx}`);
+  if (!el) return;
+  const chart = echarts.init(el, isDarkTheme ? 'dark' : null);
+  _conceptCharts.push(chart);
+  const top = day.top10 || [];
+  chart.setOption({
+    backgroundColor: 'transparent',
+    animation: false,
+    tooltip: {
+      trigger: 'axis',
+      formatter: function(params) {
+        const i = params[0].dataIndex;
+        const c = top[i];
+        let html = `<b>${c.concept}</b> 涨停${c.zt_count}只<br>`;
+        if (c.zt_stocks && c.zt_stocks.length > 0) {
+          html += c.zt_stocks.map(s => `${s.code} ${s.name||''}`).join('<br>');
+        }
+        return html;
+      },
+    },
+    grid: { left: 40, right: 15, top: 20, bottom: 60 },
+    xAxis: {
+      type: 'category',
+      data: top.map(c => c.concept),
+      axisLabel: { color: '#9aa0a6', rotate: 35, fontSize: 10, interval: 0 },
+      axisLine: { lineStyle: { color: '#444' } },
+    },
+    yAxis: { type: 'value', name: '涨停数', nameTextStyle: { color: '#9aa0a6' }, axisLabel: { color: '#9aa0a6' }, splitLine: { lineStyle: { color: '#333' } } },
+    series: [{
+      type: 'bar',
+      data: top.map(c => ({ value: c.zt_count, itemStyle: { color: c.zt_count >= 5 ? '#ef5350' : c.zt_count >= 3 ? '#ff9800' : '#666' } })),
+      label: { show: true, position: 'top', color: '#ccc', fontSize: 11 },
+      barWidth: '60%',
+    }],
+  }, true);
+}
+
+function renderConceptLine(idx, day) {
+  const el = document.getElementById(`cline-${idx}`);
+  if (!el) return;
+  const chart = echarts.init(el, isDarkTheme ? 'dark' : null);
+  _conceptCharts.push(chart);
+  const timeline = day.timeline || [];
+  const ever = day.top10_ever || [];
+  const colors = ['#ef5350','#ff9800','#42a5f5','#ab47bc','#26a69a','#ffee58','#8d6e63','#ec407a','#5c6bc0','#9ccc65'];
+
+  if (timeline.length < 2) {
+    chart.setOption({
+      backgroundColor: 'transparent',
+      title: { text: '数据点不足', left: 'center', top: 'center', textStyle: { color: '#666', fontSize: 13 } },
+    }, true);
+    return;
+  }
+
+  function tradeMinToTime(m) {
+    let h, mi;
+    if (m <= 125) { h = 9; mi = 25 + m; }
+    else { h = 13; mi = (m - 126); }
+    h += Math.floor(mi / 60); mi = mi % 60;
+    return h + ':' + String(mi).padStart(2, '0');
+  }
+
+  const series = ever.map((con, i) => ({
+    name: con,
+    type: 'line',
+    data: timeline.map(t => [t.trade_min, (t.counts || {})[con] || 0]),
+    smooth: false,
+    symbol: 'none',
+    step: false,
+    lineStyle: { width: 1.5 },
+    itemStyle: { color: colors[i % colors.length] },
+    endLabel: { show: true, formatter: con, color: colors[i % colors.length], fontSize: 9 },
+  }));
+
+  chart.setOption({
+    backgroundColor: 'transparent',
+    animation: false,
+    tooltip: {
+      trigger: 'axis',
+      formatter: function(params) {
+        const tm = params[0].axisValue;
+        let html = `<b>${tradeMinToTime(tm)}</b><br>`;
+        params.sort((a, b) => b.data[1] - a.data[1]);
+        for (const p of params) {
+          if (p.data[1] > 0) html += `${p.marker}${p.seriesName}: ${p.data[1]}<br>`;
+        }
+        return html;
+      },
+    },
+    legend: { type: 'scroll', bottom: 0, textStyle: { color: '#9aa0a6', fontSize: 9 }, itemWidth: 10, itemHeight: 8 },
+    grid: { left: 40, right: 80, top: 15, bottom: 50 },
+    xAxis: {
+      type: 'value', min: 0, max: 246,
+      axisLabel: {
+        color: '#9aa0a6', fontSize: 9,
+        formatter: function(v) { return tradeMinToTime(v); },
+        interval: function(index, value) {
+          return [0, 30, 60, 90, 120, 126, 156, 186, 216, 246].includes(value);
+        },
+      },
+      axisLine: { lineStyle: { color: '#444' } },
+    },
+    yAxis: { type: 'value', name: '涨停数', nameTextStyle: { color: '#9aa0a6' }, axisLabel: { color: '#9aa0a6' }, splitLine: { lineStyle: { color: '#333' } } },
+    series: series,
+  }, true);
+}
+
+// 窗口 resize 时刷新概念图表
+window.addEventListener('resize', () => {
+  _conceptCharts.forEach(c => { try { c.resize(); } catch(e){} });
+});
 
 // 初始化: 载入可选日期(不自动计算)
 populateDates();

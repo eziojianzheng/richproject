@@ -85,6 +85,10 @@
   .grid-stack-item-content .hint-bar { flex-shrink: 0; }
   #dailyChart, #minuteChart, #histMinuteChart { height: 100%; }
   #stockDailyChart, #stockMinute5Chart, #stockHistChart { height: 100%; }
+  #conceptZtChart, #conceptDistChart { height: 100%; }
+  /* 图表标题栏内的切换按钮 */
+  .chart-toggle { float: right; font-size: 11px; color: var(--text-muted); cursor: pointer; font-weight: 400; }
+  .chart-toggle:hover { color: var(--up-color); }
   /* 列表面板内部填满 */
   .grid-stack-item-content > .stock-list-panel .stock-list { flex: 1; min-height: 0; }
 
@@ -403,6 +407,38 @@
       </div>
     </div>
 
+    <!-- 概念涨停数 Top10 (柱状/折线切换) -->
+    <div class="grid-stack-item" gs-id="item-czt" gs-x="0" gs-y="30" gs-w="6" gs-h="10" id="item-czt">
+      <div class="grid-stack-item-content">
+        <div class="chart-card">
+          <div class="chart-title">
+            🔥 概念涨停数 Top10
+            <span class="chart-toggle" id="cztToggle" onclick="toggleCztChart()">📊 柱状</span>
+          </div>
+          <div class="chart-container">
+            <div id="conceptZtChart"></div>
+          </div>
+          <div class="hint-bar" id="conceptZtHint">等待数据…</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 概念涨跌幅分布 Top10 -->
+    <div class="grid-stack-item" gs-id="item-cdist" gs-x="6" gs-y="30" gs-w="6" gs-h="10" id="item-cdist">
+      <div class="grid-stack-item-content">
+        <div class="chart-card">
+          <div class="chart-title">
+            📊 概念涨跌幅分布 Top10
+            <span style="float:right;font-size:10px;color:var(--text-muted);font-weight:400">灰&lt;3% 橙3-5% 红5-7%</span>
+          </div>
+          <div class="chart-container">
+            <div id="conceptDistChart"></div>
+          </div>
+          <div class="hint-bar" id="conceptDistHint">等待数据…</div>
+        </div>
+      </div>
+    </div>
+
   </div>
 
 <script src="https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"></script>
@@ -413,15 +449,39 @@ const UP = '#ef5350', DOWN = '#26a69a';
 let dailyChart = null, minuteChart = null, histMinuteChart = null;
 let dailyData = [];   // 缓存日K数据
 let stockDailyChart = null, stockMinute5Chart = null, stockHistChart = null;
+let conceptZtChart = null, conceptDistChart = null;
+let _cztChartMode = 'bar';  // 'bar' | 'line'
+let _conceptZtData = null;  // 缓存最近一次接口数据
+let _conceptRefreshTimer = null;
 let curStockSeg = 'cyb', curStockCode = null;  // 当前选中板块/股票
 let stockDailyBars = [];  // 缓存个股日K数据(供假定涨停toggle重渲染)
 // 个股数据前端缓存: 切换时先秒显缓存, 后台静默刷新
 const _stockCache = {};  // {code: {daily: bars, minute5: {points,days}, minute: {points,last_close}, ts: Date.now()}}
 
-// ===== 日K线图 =====
-async function loadDaily() {
+// ===== fetch 超时保护 =====
+// 给 fetch 加超时, 超时后中止请求并抛出错误, 避免图表区域永久"加载中…"
+async function fetchWithTimeout(url, opts, ms) {
+  if (typeof opts === 'number') { ms = opts; opts = undefined; }  // fetchWithTimeout(url, 10000)
+  ms = ms || 10000;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), ms);
   try {
-    const resp = await fetch('/api/monitor/index/daily?count=250');
+    const resp = await fetch(url, { ...(opts || {}), signal: controller.signal });
+    return resp;
+  } catch (e) {
+    if (e.name === 'AbortError') {
+      throw new Error(`请求超时(${(ms/1000)|0}s)，数据源可能卡死`);
+    }
+    throw e;  // 网络错误等其他异常原样抛出
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// ===== 日K线图 =====
+async function loadDaily(retry) {
+  try {
+    const resp = await fetchWithTimeout('/api/monitor/index/daily?count=250', 10000);
     const data = await resp.json();
     if (!data.success) {
       document.getElementById('dailyChart').innerHTML = '<div class="error-msg">' + (data.error || '加载失败') + '</div>';
@@ -443,6 +503,12 @@ async function loadDaily() {
       document.getElementById('lastPct').className = 'pct ' + cls;
     }
   } catch (e) {
+    // 超时自动重试1次(等2秒), tqcenter 偶发卡死后重试往往能成功
+    if (!retry && e.message.includes('超时')) {
+      document.getElementById('dailyChart').innerHTML = '<div class="error-msg">数据源卡顿，重试中…</div>';
+      setTimeout(() => loadDaily(true), 2000);
+      return;
+    }
     document.getElementById('dailyChart').innerHTML = '<div class="error-msg">请求异常: ' + e.message + '</div>';
   }
 }
@@ -615,14 +681,14 @@ let _stockMinutePoints = null;  // 缓存选中个股当日分时
 let _stockLastClose = 0;        // 缓存选中个股昨收(后端分时接口返回, 不依赖 stockDailyBars 就绪)
 let _leadingInfo = null;        // 缓存领先指标 {leadingLine}
 
-async function loadMinute() {
+async function loadMinute(retry) {
   const tag = document.getElementById('minuteDateTag');
   const hint = document.getElementById('minuteHint');
   tag.textContent = '当日';
   hint.textContent = '加载中…';
   try {
     // 先拉分时数据并立即渲染(快)
-    const minResp = await fetch('/api/monitor/index/minute');
+    const minResp = await fetchWithTimeout('/api/monitor/index/minute', 8000);
     const data = await minResp.json();
     if (!data.success || !data.points || data.points.length < 2) {
       // 当日分时未就绪(盘前/数据点不足): 静默留空, 不渲染
@@ -642,6 +708,12 @@ async function loadMinute() {
       hint.textContent = `${_minutePoints.length} 个数据点 · 领先 ${lj.leading_pct}%`;
     }).catch(() => {});
   } catch (e) {
+    // 超时自动重试1次(等2秒)
+    if (!retry && e.message.includes('超时')) {
+      hint.textContent = '⚠ 数据源卡顿，重试中…';
+      setTimeout(() => loadMinute(true), 2000);
+      return;
+    }
     hint.textContent = '⚠ 请求异常: ' + e.message;
   }
 }
@@ -663,7 +735,7 @@ async function loadStockMinuteOverlay(code) {
   }
   // 2. 后台静默刷新
   try {
-    const resp = await fetch(`/api/monitor/stock/minute?code=${code}`);
+    const resp = await fetchWithTimeout(`/api/monitor/stock/minute?code=${code}`, 8000);
     const data = await resp.json();
     if (!data.success || !data.points || data.points.length < 2) {
       if (!cache || !cache.minute) {
@@ -698,7 +770,7 @@ async function loadHistMinute(date) {
   tag.textContent = `${date.slice(0,4)}-${date.slice(4,6)}-${date.slice(6,8)}`;
   hint.textContent = '加载中…';
   try {
-    const resp = await fetch(`/api/monitor/index/minutes?date=${date}`);
+    const resp = await fetchWithTimeout(`/api/monitor/index/minutes?date=${date}`, 8000);
     const data = await resp.json();
     if (!data.success) {
       hint.textContent = '⚠ ' + (data.error || '无数据');
@@ -991,20 +1063,28 @@ function renderMinute(chartVar, domId, points, dateLabel, leadingLine, stockPoin
 // 统一 resize 所有 echarts 实例(列宽变化/折叠/窗口缩放时调用)
 function resizeAllCharts() {
   [dailyChart, minuteChart, histMinuteChart,
-   stockDailyChart, stockMinute5Chart, stockHistChart].forEach(c => c && c.resize());
+   stockDailyChart, stockMinute5Chart, stockHistChart,
+   conceptZtChart, conceptDistChart].forEach(c => c && c.resize());
 }
-// 图表错误显示(不破坏 echarts 实例: 用临时 overlay, 3秒后清除)
-function showChartError(el, msg) {
+// 图表错误显示(不破坏 echarts 实例: 用临时 overlay)
+// persistent=true: 不自动消失(超时/卡死类严重错误), 点击可关闭
+function showChartError(el, msg, persistent) {
   // 若有 echarts 实例先清空
   const chart = echarts.getInstanceByDom(el);
   if (chart) chart.clear();
   const overlay = document.createElement('div');
   overlay.className = 'error-msg';
-  overlay.style.cssText = 'position:absolute;inset:0;display:flex;align-items:center;justify-content:center;pointer-events:none;z-index:5;';
+  overlay.style.cssText = 'position:absolute;inset:0;display:flex;align-items:center;justify-content:center;z-index:5;' +
+    (persistent ? 'cursor:pointer;' : 'pointer-events:none;');
   overlay.textContent = msg;
   el.style.position = 'relative';
   el.appendChild(overlay);
-  setTimeout(() => overlay.remove(), 4000);
+  if (persistent) {
+    overlay.title = '点击关闭';
+    overlay.addEventListener('click', () => overlay.remove());
+  } else {
+    setTimeout(() => overlay.remove(), 4000);
+  }
 }
 window.addEventListener('resize', resizeAllCharts);
 // 记录窗口大小(供布局参考, 浏览器自身会恢复窗口尺寸)
@@ -1154,7 +1234,7 @@ async function loadStockList(seg) {
   container.innerHTML = '<div class="loading" style="padding:20px">加载中…</div>';
   try {
     const sort = STOCK_SORTS[seg];
-    const resp = await fetch(`/api/monitor/stocks/list?segment=${seg}&sort=${sort}&limit=50`);
+    const resp = await fetchWithTimeout(`/api/monitor/stocks/list?segment=${seg}&sort=${sort}&limit=50`, 8000);
     const data = await resp.json();
     if (!data.success || !data.stocks.length) {
       container.innerHTML = '<div class="loading">无数据</div>';
@@ -1355,7 +1435,7 @@ async function loadStockDaily(code) {
   }
   // 2. 后台静默刷新
   try {
-    const resp = await fetch(`/api/monitor/stock/daily?code=${code}&count=250`);
+    const resp = await fetchWithTimeout(`/api/monitor/stock/daily?code=${code}&count=250`, 10000);
     const data = await resp.json();
     if (!data.success) {
       if (!cache || !cache.daily) showChartError(el, data.error||'无数据');
@@ -1366,7 +1446,7 @@ async function loadStockDaily(code) {
     // 只有当前还在看这只票时才重绘(避免切走后覆盖)
     if (curStockCode === code) renderStockDaily(data.bars);
   } catch(e) {
-    if (!cache || !cache.daily) showChartError(el, '请求异常: ' + e.message);
+    if (!cache || !cache.daily) showChartError(el, '请求异常: ' + e.message, e.message.includes('超时'));
   }
 }
 
@@ -1590,7 +1670,7 @@ async function loadStockMinute5(code) {
   }
   // 2. 后台静默刷新
   try {
-    const resp = await fetch(`/api/monitor/stock/minutes5?code=${code}`);
+    const resp = await fetchWithTimeout(`/api/monitor/stock/minutes5?code=${code}`, 12000);
     const data = await resp.json();
     if (!data.success) {
       if (!cache || !cache.minute5) { if (stockMinute5Chart) stockMinute5Chart.clear(); tag.textContent=''; }
@@ -1603,7 +1683,7 @@ async function loadStockMinute5(code) {
       tag.textContent = data.days.join(' / ');
     }
   } catch(e) {
-    if (!cache || !cache.minute5) { showChartError(el, '请求异常: ' + e.message); tag.textContent=''; }
+    if (!cache || !cache.minute5) { showChartError(el, '请求异常: ' + e.message, e.message.includes('超时')); tag.textContent=''; }
   }
 }
 
@@ -1725,7 +1805,7 @@ async function loadStockHistMinute(code, date) {
   hint.textContent = '加载中…';
   if (stockHistChart) stockHistChart.clear();
   try {
-    const resp = await fetch(`/api/monitor/stock/minutes?code=${code}&date=${date}`);
+    const resp = await fetchWithTimeout(`/api/monitor/stock/minutes?code=${code}&date=${date}`, 8000);
     const data = await resp.json();
     // 个股历史分时未就绪: 静默留空
     if (!data.success) {
@@ -1827,7 +1907,7 @@ async function ensureMinuteVolRatio(seg) {
   }
   minuteVolRatioLoading[seg] = true;
   try {
-    const resp = await fetch(`/api/monitor/stocks/minute-vol-ratio?segment=${seg}`);
+    const resp = await fetchWithTimeout(`/api/monitor/stocks/minute-vol-ratio?segment=${seg}`, 15000);
     const data = await resp.json();
     if (data.success) minuteVolRatioCache[seg] = data.ratios || {};
   } catch (e) { console.error('分时量比数据加载失败', e); }
@@ -1844,7 +1924,7 @@ async function ensureOpenGain(seg) {
   }
   openGainLoading[seg] = true;
   try {
-    const resp = await fetch(`/api/monitor/stocks/open-gain?segment=${seg}`);
+    const resp = await fetchWithTimeout(`/api/monitor/stocks/open-gain?segment=${seg}`, 15000);
     const data = await resp.json();
     if (data.success) openGainCache[seg] = data.gains || {};
   } catch (e) { console.error('开盘涨幅数据加载失败', e); }
@@ -1981,6 +2061,9 @@ _listP.then(() => {
     loadStockHistMinute(curStockCode, savedStockHistDate);
   }
   loadWatchlist();
+  // 加载概念涨停统计 + 启动5秒轮询
+  loadConceptZtStats();
+  startConceptRefresh();
 });
 // 全部加载完后 resize 一次(图表填满行高 + 恢复均线显隐)
 Promise.all([_dailyP, _listP]).then(() => {
@@ -1989,6 +2072,211 @@ Promise.all([_dailyP, _listP]).then(() => {
     restoreIndicatorState();
   }));
 });
+});
+
+// ===== 概念板块涨停统计 =====
+async function loadConceptZtStats() {
+  const hint = document.getElementById('conceptZtHint');
+  const hint2 = document.getElementById('conceptDistHint');
+  try {
+    const resp = await fetchWithTimeout('/api/monitor/concept/zt-stats', 12000);
+    const data = await resp.json();
+    if (!data.success || !data.concepts) {
+      hint.textContent = '⚠ ' + (data.error || '无数据');
+      hint2.textContent = '';
+      return;
+    }
+    _conceptZtData = data;
+    renderConceptZtChart(data);
+    renderConceptDistChart(data);
+    const top3 = data.concepts.slice(0, 3).map(c => `${c.concept}(${c.zt_count})`).join(' ');
+    hint.textContent = `${data.ts} · 涨停概念${data.concepts.length}个 · ${top3}`;
+    hint2.textContent = `${data.ts} · ${data.concepts.length}个概念 · 共${data.concepts.reduce((s,c)=>s+c.total_members,0)}只主板成分股`;
+  } catch(e) {
+    hint.textContent = '⚠ 请求异常: ' + e.message;
+    hint2.textContent = '';
+  }
+}
+
+function renderConceptZtChart(data) {
+  const el = document.getElementById('conceptZtChart');
+  if (!conceptZtChart || !el.querySelector('canvas')) {
+    conceptZtChart = echarts.init(el, 'dark');
+  }
+  if (_cztChartMode === 'bar') {
+    renderConceptZtBar(data);
+  } else {
+    renderConceptZtLine(data);
+  }
+  conceptZtChart.resize();
+}
+
+function renderConceptZtBar(data) {
+  const top = data.concepts.slice(0, 10);
+  const names = top.map(c => c.concept);
+  const counts = top.map(c => c.zt_count);
+  const stockLists = top.map(c => c.zt_stocks.map(s => s.code + '+' + s.pct + '%').join('\n'));
+  conceptZtChart.setOption({
+    backgroundColor: 'transparent',
+    animation: false,
+    tooltip: {
+      trigger: 'axis',
+      formatter: function(params) {
+        const idx = params[0].dataIndex;
+        const c = top[idx];
+        let html = `<b>${c.concept}</b> 涨停${c.zt_count}只 / 共${c.total_members}只<br>`;
+        if (c.zt_stocks.length > 0) {
+          html += c.zt_stocks.map(s => `${s.code} +${s.pct}%`).join('<br>');
+        }
+        return html;
+      },
+    },
+    grid: { left: 45, right: 15, top: 20, bottom: 60 },
+    xAxis: {
+      type: 'category',
+      data: names,
+      axisLabel: { color: '#9aa0a6', rotate: 35, fontSize: 10, interval: 0 },
+      axisLine: { lineStyle: { color: '#444' } },
+    },
+    yAxis: {
+      type: 'value',
+      name: '涨停数',
+      nameTextStyle: { color: '#9aa0a6' },
+      axisLabel: { color: '#9aa0a6' },
+      splitLine: { lineStyle: { color: '#333' } },
+    },
+    series: [{
+      type: 'bar',
+      data: counts.map((v, i) => ({
+        value: v,
+        itemStyle: { color: v >= 5 ? '#ef5350' : v >= 3 ? '#ff9800' : '#666' },
+      })),
+      label: { show: true, position: 'top', color: '#ccc', fontSize: 11 },
+      barWidth: '60%',
+    }],
+  }, true);
+}
+
+function renderConceptZtLine(data) {
+  const timeline = data.timeline || [];
+  // 检查是否有足够的不同时间点(若全部挤在同一trade_min则无法画折线)
+  const uniqueMins = new Set(timeline.map(t => t.trade_min));
+  if (timeline.length < 2 || uniqueMins.size < 2) {
+    conceptZtChart.setOption({
+      backgroundColor: 'transparent',
+      title: { text: '盘中9:25开始后折线实时延伸\n当前无足够时间点, 请切回柱状查看', left: 'center', top: 'center', textStyle: { color: '#666', fontSize: 13, lineHeight: 18 } },
+    }, true);
+    return;
+  }
+  const concepts = data.top10_ever || [];
+  const colors = ['#ef5350','#ff9800','#42a5f5','#ab47bc','#26a69a','#ffee58','#8d6e63','#ec407a','#5c6bc0','#9ccc65','#ff7043','#26c6da'];
+  // trade_min -> HH:MM 转换 (9:25=0, 11:30=125, 13:00=126, 15:00=246)
+  function tradeMinToTime(m) {
+    let h, mi;
+    if (m <= 125) { h = 9; mi = 25 + m; }
+    else { h = 13; mi = (m - 126); }
+    h += Math.floor(mi / 60); mi = mi % 60;
+    return h + ':' + String(mi).padStart(2, '0');
+  }
+  const series = concepts.map((con, i) => ({
+    name: con,
+    type: 'line',
+    data: timeline.map(t => [t.trade_min, t.counts[con] || 0]),
+    smooth: true,
+    symbol: 'none',
+    step: false,
+    lineStyle: { width: 1.5 },
+    itemStyle: { color: colors[i % colors.length] },
+    endLabel: { show: true, formatter: con, color: colors[i % colors.length], fontSize: 9 },
+  }));
+  conceptZtChart.setOption({
+    backgroundColor: 'transparent',
+    animation: false,
+    tooltip: {
+      trigger: 'axis',
+      formatter: function(params) {
+        const tm = params[0].axisValue;
+        let html = `<b>${tradeMinToTime(tm)}</b><br>`;
+        // 按涨停数降序排列
+        params.sort((a, b) => b.data[1] - a.data[1]);
+        for (const p of params) {
+          if (p.data[1] > 0) html += `${p.marker}${p.seriesName}: ${p.data[1]}<br>`;
+        }
+        return html;
+      },
+    },
+    legend: { type: 'scroll', bottom: 0, textStyle: { color: '#9aa0a6', fontSize: 9 }, itemWidth: 10, itemHeight: 8 },
+    grid: { left: 40, right: 80, top: 15, bottom: 50 },
+    xAxis: {
+      type: 'value',
+      min: 0,
+      max: 246,
+      axisLabel: {
+        color: '#9aa0a6', fontSize: 9,
+        formatter: function(v) { return tradeMinToTime(v); },
+        interval: function(index, value) {
+          // 每隔约30分钟显示一个标签
+          return [0, 30, 60, 90, 120, 126, 156, 186, 216, 246].includes(value);
+        },
+      },
+      axisLine: { lineStyle: { color: '#444' } },
+    },
+    yAxis: { type: 'value', name: '涨停数', nameTextStyle: { color: '#9aa0a6' }, axisLabel: { color: '#9aa0a6' }, splitLine: { lineStyle: { color: '#333' } } },
+    series: series,
+  }, true);
+}
+
+function toggleCztChart() {
+  _cztChartMode = _cztChartMode === 'bar' ? 'line' : 'bar';
+  document.getElementById('cztToggle').textContent = _cztChartMode === 'bar' ? '📈 折线' : '📊 柱状';
+  if (_conceptZtData) renderConceptZtChart(_conceptZtData);
+}
+
+function renderConceptDistChart(data) {
+  const el = document.getElementById('conceptDistChart');
+  if (!conceptDistChart || !el.querySelector('canvas')) {
+    conceptDistChart = echarts.init(el, 'dark');
+  }
+  const top = data.concepts.slice(0, 10);
+  const names = top.map(c => c.concept);
+  conceptDistChart.setOption({
+    backgroundColor: 'transparent',
+    animation: false,
+    tooltip: {
+      trigger: 'axis',
+      formatter: function(params) {
+        const c = top[params[0].dataIndex];
+        let html = `<b>${c.concept}</b> (${c.total_members}只)<br>`;
+        html += `|涨跌|&lt;3%: ${c.dist.lt3}只<br>`;
+        html += `|涨跌|3-5%: ${c.dist.g3_5}只<br>`;
+        html += `|涨跌|5-7%: ${c.dist.g5_7}只<br>`;
+        html += `涨停: ${c.zt_count}只`;
+        return html;
+      },
+    },
+    legend: { bottom: 0, textStyle: { color: '#9aa0a6', fontSize: 9 }, data: ['<3%', '3-5%', '5-7%'] },
+    grid: { left: 45, right: 15, top: 20, bottom: 50 },
+    xAxis: {
+      type: 'category', data: names,
+      axisLabel: { color: '#9aa0a6', rotate: 35, fontSize: 10, interval: 0 },
+      axisLine: { lineStyle: { color: '#444' } },
+    },
+    yAxis: { type: 'value', name: '个股数', nameTextStyle: { color: '#9aa0a6' }, axisLabel: { color: '#9aa0a6' }, splitLine: { lineStyle: { color: '#333' } } },
+    series: [
+      { name: '<3%', type: 'bar', stack: 'dist', data: top.map(c => c.dist.lt3), itemStyle: { color: '#555' } },
+      { name: '3-5%', type: 'bar', stack: 'dist', data: top.map(c => c.dist.g3_5), itemStyle: { color: '#ff9800' } },
+      { name: '5-7%', type: 'bar', stack: 'dist', data: top.map(c => c.dist.g5_7), itemStyle: { color: '#ef5350' } },
+    ],
+  }, true);
+  conceptDistChart.resize();
+}
+
+function startConceptRefresh() {
+  if (_conceptRefreshTimer) clearInterval(_conceptRefreshTimer);
+  _conceptRefreshTimer = setInterval(() => {
+    if (isTradeTime()) loadConceptZtStats();
+  }, 5000);
+}
 
 // ===== 自动刷新 =====
 // WebSocket推送: 后端1秒拉TDX → 主动推给前端(零请求, 零延迟, 跟通达信客户端一样)

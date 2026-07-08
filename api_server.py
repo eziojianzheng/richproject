@@ -38,7 +38,7 @@ ensure_dependencies({
     'psycopg2': 'psycopg2-binary>=2.9.0',
 })
 
-from flask import Flask, request, jsonify, render_template
+from flask import Flask, request, jsonify, render_template, make_response
 import requests
 from bs4 import BeautifulSoup
 import os
@@ -1671,40 +1671,50 @@ def _minute_time_axis(n):
 @app.route('/api/monitor/index/daily', methods=['GET'])
 def monitor_index_daily():
     """上证指数日K线
-    优先 tqcenter (走自己账号不封IP), 回退 mootdx index_bars。
+    优先 mootdx index_bars(实时性好, 稳定), 回退 tqcenter。
     参数: count=120 (取最近N根日K)
     """
     try:
         import hot_track as ht
         count = request.args.get('count', default=120, type=int)
         count = max(20, min(count, 800))
-        # 优先 tqcenter (需客户端下载盘后数据, 数据不足则回退 mootdx)
+        # 优先 mootdx (稳定, 不卡)
+        with ht._get_tdx_lock():
+            client = ht._get_tdx_client()
+            df = client.index_bars(symbol='000001', frequency=9, start=0, offset=count)
+        if df is not None and not df.empty:
+            bars = []
+            for _, row in df.iterrows():
+                bars.append({
+                    'date': str(row['datetime'])[:10],
+                    'open': round(float(row['open']), 2),
+                    'close': round(float(row['close']), 2),
+                    'high': round(float(row['high']), 2),
+                    'low': round(float(row['low']), 2),
+                    'vol': float(row['vol']),
+                    'amount': float(row['amount']),
+                })
+            return jsonify({'success': True, 'bars': bars})
+        # 回退 tqcenter (超时保护, 防止卡死整个页面)
         try:
             import tdx_source as ts
             if ts.is_available():
-                bars = ts.index_kline('000001.SH', count=count, period='1d')
+                import threading
+                _bars_result = [None]
+                def _fetch_tq_bars():
+                    try:
+                        _bars_result[0] = ts.index_kline('000001.SH', count=count, period='1d')
+                    except Exception:
+                        pass
+                _t = threading.Thread(target=_fetch_tq_bars, daemon=True)
+                _t.start()
+                _t.join(timeout=3.0)
+                bars = _bars_result[0]
                 if bars and len(bars) >= 5:
                     return jsonify({'success': True, 'bars': bars})
         except Exception as e:
             print(f'[TQ] 指数K线异常: {e}')
-        # 回退 mootdx
-        with ht._get_tdx_lock():
-            client = ht._get_tdx_client()
-            df = client.index_bars(symbol='000001', frequency=9, start=0, offset=count)
-        if df is None or df.empty:
-            return jsonify({'success': False, 'error': '无数据'}), 404
-        bars = []
-        for _, row in df.iterrows():
-            bars.append({
-                'date': str(row['datetime'])[:10],   # YYYY-MM-DD
-                'open': round(float(row['open']), 2),
-                'close': round(float(row['close']), 2),
-                'high': round(float(row['high']), 2),
-                'low': round(float(row['low']), 2),
-                'vol': float(row['vol']),
-                'amount': float(row['amount']),
-            })
-        return jsonify({'success': True, 'bars': bars})
+        return jsonify({'success': False, 'error': '无数据'}), 404
     except Exception as e:
         return jsonify({'success': False, 'error': f'{type(e).__name__}: {e}'}), 500
 
@@ -1737,11 +1747,21 @@ def monitor_index_minute():
                 'vol': float(row['vol']),
             })
         result = {'success': True, 'points': points, 'date': 'today'}
-        # tqcenter 补充: 涨跌幅/上涨下跌家数/均价(领先指标)
+        # tqcenter 补充: 涨跌幅/上涨下跌家数/均价(领先指标) - 超时1秒防止卡死
         try:
             import tdx_source as ts
             if ts.is_available():
-                idx = ts.index_snapshot()
+                import threading
+                _idx_result = [None]
+                def _fetch_idx():
+                    try:
+                        _idx_result[0] = ts.index_snapshot()
+                    except Exception:
+                        pass
+                _t = threading.Thread(target=_fetch_idx, daemon=True)
+                _t.start()
+                _t.join(timeout=1.0)
+                idx = _idx_result[0]
                 if idx:
                     result['index_price'] = idx['price']
                     result['index_pct'] = idx['pct']
@@ -2115,18 +2135,54 @@ def debug_quote_sources():
 @app.route('/api/monitor/stock/daily', methods=['GET'])
 def monitor_stock_daily():
     """个股日K线
-    优先 tqcenter (走自己账号不封IP), 回退 mootdx bars。
+    优先 mootdx bars (稳定, 不卡), 回退 tqcenter。
     参数: code=300001, count=120"""
     code = request.args.get('code', '')
     if not re.match(r'^\d{6}$', code):
         return jsonify({'success': False, 'error': 'code 需为6位数字'}), 400
     count = request.args.get('count', default=120, type=int)
     count = max(20, min(count, 800))
-    # 优先 tqcenter (需客户端下载盘后数据, 数据不足则回退 mootdx)
+    # 优先 mootdx (稳定, 不卡)
+    try:
+        import hot_track as ht
+        with ht._get_tdx_lock():
+            client = ht._get_tdx_client()
+            df = client.bars(symbol=code, frequency=9, offset=count)
+        if df is not None and len(df) > 0:
+            df = df.sort_index()
+            bars = []
+            prev_close = None
+            for idx, row in df.iterrows():
+                close = round(float(row['close']), 2)
+                bars.append({
+                    'date': str(idx)[:10],
+                    'open': round(float(row['open']), 2),
+                    'close': close,
+                    'high': round(float(row['high']), 2),
+                    'low': round(float(row['low']), 2),
+                    'vol': float(row['vol']),
+                    'amount': float(row.get('amount', 0)),
+                    'last_close': prev_close if prev_close is not None else round(float(row['open']), 2),
+                })
+                prev_close = close
+            return jsonify({'success': True, 'bars': bars})
+    except Exception as e:
+        print(f'[mootdx] 个股K线异常: {e}')
+    # 回退 tqcenter (超时保护, 防止卡死)
     try:
         import tdx_source as ts
         if ts.is_available():
-            bars = ts.kline(code, count=count, period='1d', dividend_type='none')
+            import threading
+            _bars_result = [None]
+            def _fetch_tq_kline():
+                try:
+                    _bars_result[0] = ts.kline(code, count=count, period='1d', dividend_type='none')
+                except Exception:
+                    pass
+            _t = threading.Thread(target=_fetch_tq_kline, daemon=True)
+            _t.start()
+            _t.join(timeout=3.0)
+            bars = _bars_result[0]
             if bars and len(bars) >= 5:
                 # 补 last_close (前一根收盘)
                 for i in range(len(bars)):
@@ -2134,33 +2190,7 @@ def monitor_stock_daily():
                 return jsonify({'success': True, 'bars': bars})
     except Exception as e:
         print(f'[TQ] 个股K线异常: {e}')
-    # 回退 mootdx
-    try:
-        import hot_track as ht
-        with ht._get_tdx_lock():
-            client = ht._get_tdx_client()
-            df = client.bars(symbol=code, frequency=9, offset=count)
-        if df is None or len(df) == 0:
-            return jsonify({'success': False, 'error': f'{code} 无数据'}), 404
-        df = df.sort_index()
-        bars = []
-        prev_close = None
-        for idx, row in df.iterrows():
-            close = round(float(row['close']), 2)
-            bars.append({
-                'date': str(idx)[:10],
-                'open': round(float(row['open']), 2),
-                'close': close,
-                'high': round(float(row['high']), 2),
-                'low': round(float(row['low']), 2),
-                'vol': float(row['vol']),
-                'amount': float(row.get('amount', 0)),
-                'last_close': prev_close if prev_close is not None else round(float(row['open']), 2),
-            })
-            prev_close = close
-        return jsonify({'success': True, 'bars': bars})
-    except Exception as e:
-        return jsonify({'success': False, 'error': f'{type(e).__name__}: {e}'}), 500
+    return jsonify({'success': False, 'error': f'{code} 无数据'}), 404
 
 
 _stock_minute_cache = {}  # {code: {'ts':.., 'data':..}} 个股分时3秒缓存
@@ -2383,37 +2413,8 @@ def monitor_stocks_volume_ratio():
         stocks.sort(key=lambda r: r.get('pct', 0), reverse=True)
         stocks = stocks[:50]  # Top50, 与列表一致
         ratios = {}
-        # 优先 tqcenter kline(本地DLL, 不封IP), 回退 mootdx bars
-        import tdx_source as ts
-        use_tq = ts.is_available()
-        if use_tq:
-            for s in stocks:
-                code = s['code']
-                try:
-                    bars = ts.kline(code, count=8, period='1d', dividend_type='none')
-                    if not bars or len(bars) < 2:
-                        ratios[code] = {'day_vol': 0, 'avg5_vol': 0, 'ratio': 0, 'pass': False}
-                        continue
-                    vols = [b['vol'] for b in bars]
-                    day_vol = float(vols[-1])
-                    # 盘前/未开盘: 当日量为0时, 回退到最近一个交易日的数据
-                    if day_vol == 0 and len(vols) >= 2:
-                        day_vol = float(vols[-2])
-                        prev_vols = vols[:-2] if len(vols) > 2 else []
-                        avg5_vol = float(sum(prev_vols[-5:]) / len(prev_vols[-5:])) if prev_vols else 0
-                    else:
-                        prev_vols = vols[:-1]
-                        avg5_vol = float(sum(prev_vols[-5:]) / len(prev_vols[-5:])) if prev_vols else 0
-                    ratio = (day_vol / avg5_vol) if avg5_vol > 0 else 0
-                    ratios[code] = {
-                        'day_vol': round(day_vol, 0),
-                        'avg5_vol': round(avg5_vol, 0),
-                        'ratio': round(ratio, 2),
-                        'pass': ratio >= 3.0,
-                    }
-                except Exception:
-                    ratios[code] = {'day_vol': 0, 'avg5_vol': 0, 'ratio': 0, 'pass': False}
-        else:
+        # 优先 mootdx bars (稳定, 不卡), 回退 tqcenter
+        try:
             with ht._get_tdx_lock():
                 client = ht._get_tdx_client()
                 for s in stocks:
@@ -2443,6 +2444,8 @@ def monitor_stocks_volume_ratio():
                         }
                     except Exception:
                         ratios[code] = {'day_vol': 0, 'avg5_vol': 0, 'ratio': 0, 'pass': False}
+        except Exception as e:
+            print(f'[mootdx] 量比异常: {e}')
         _volume_ratio_cache[segment] = {'data': ratios, 'ts': _time.time()}
         return jsonify({'success': True, 'ratios': ratios})
     except Exception as e:
@@ -2626,6 +2629,420 @@ def monitor_stocks_open_gain():
         return jsonify({'success': False, 'error': f'{type(e).__name__}: {e}'}), 500
 
 
+# ===== 概念板块涨停统计 =====
+_concept_members_cache = None    # {concept: [(code, name), ...]}, 1小时缓存
+_concept_members_ts = 0
+_concept_zt_cache = None         # {'data':..., 'ts':...}, 5秒缓存
+_concept_zt_timeline = []        # [{ts, '概念':count, ...}, ...], 最多200个点
+_concept_zt_top10_ever = set()   # 曾进过top10的概念名(折线图用)
+
+# 排除的宽泛概念(成分股过多, 无实际板块意义)
+_EXCLUDED_CONCEPTS = {'国企改革', '深股通', '沪股通', '融资融券', '市场连板股', 'ST板块'}
+
+def _load_concept_members():
+    """从 ths.concept_member 加载概念->成分股映射(主板60/00, 非ST, 排除宽泛概念)。1小时缓存。"""
+    global _concept_members_cache, _concept_members_ts
+    import time as _time
+    if _concept_members_cache and (_time.time() - _concept_members_ts < 3600):
+        return _concept_members_cache
+    try:
+        import db as _db
+        conn = _db.get_conn()
+        with conn.cursor() as cur:
+            # 只取主板(60/00开头), 排除ST(名称含ST)
+            cur.execute("""
+                SELECT concept, stock_code FROM ths.concept_member
+                WHERE stock_code ~ '^(60|00)'
+                ORDER BY concept, stock_code
+            """)
+            rows = cur.fetchall()
+        conn.close()
+        # 按概念分组(排除宽泛概念)
+        result = {}
+        for concept, code in rows:
+            if concept in _EXCLUDED_CONCEPTS:
+                continue
+            result.setdefault(concept, []).append(code)
+        _concept_members_cache = result
+        _concept_members_ts = _time.time()
+        _report_log = f'[概念] 加载 {len(result)} 个概念, {len(rows)} 条成分股'
+        print(_report_log)
+        return result
+    except Exception as e:
+        print(f'[概念] 加载成分股失败: {e}')
+        return _concept_members_cache or {}
+
+
+def _time_to_trade_min(time_str):
+    """HH:MM 或 HH:MM:SS -> trade_min (9:25=0, 11:30=125, 13:00=126, 15:00=246)"""
+    try:
+        parts = str(time_str).strip().split(':')
+        h, m = int(parts[0]), int(parts[1])
+    except Exception:
+        return 0
+    hm = h * 60 + m
+    if hm < 9 * 60 + 25:
+        return 0
+    elif hm <= 11 * 60 + 30:
+        return hm - (9 * 60 + 25)
+    elif hm < 13 * 60:
+        return 125
+    elif hm <= 15 * 60:
+        return hm - (13 * 60) + 126
+    else:
+        return 246
+
+
+_concept_hist_minute_cache = {}      # {date_int: {code: [price, ...]}} 多日期分时缓存, 每天只拉一次
+
+
+def _fetch_zt_minutes(zt_codes, date_int, cancel_check=None):
+    """批量拉涨停股的逐分钟分时数据, 按日期缓存(支持多日)。
+    返回 {code: [price_per_minute, ...]}, 240个点(9:30-15:00)。
+    涨停价 = 当日分时最高价; price == 最高价 即为封板状态。
+    cancel_check: 可选的无参回调, 返回True时中止。
+    """
+    global _concept_hist_minute_cache
+    day_cache = _concept_hist_minute_cache.get(date_int, {})
+    missing = [c for c in zt_codes if c not in day_cache]
+    if not missing:
+        return day_cache
+
+    import time as _time
+    fetched = 0
+    failed = 0
+    try:
+        import hot_track as ht
+        with ht._get_tdx_lock():
+            client = ht._get_tdx_client()
+            for code in missing:
+                if cancel_check and cancel_check():
+                    break
+                try:
+                    t0 = _time.time()
+                    df = client.minutes(symbol=code, date=date_int)
+                    dt = _time.time() - t0
+                    if dt > 2:
+                        print(f'[概念] 分时 {code} 耗时{dt:.1f}s (慢)')
+                    if df is not None and not df.empty and 'price' in df.columns:
+                        prices = df['price'].tolist()
+                        if prices:
+                            day_cache[code] = prices
+                            fetched += 1
+                    else:
+                        failed += 1
+                except Exception as e:
+                    failed += 1
+                    print(f'[概念] 分时 {code} 异常: {e}')
+        _concept_hist_minute_cache[date_int] = day_cache
+        print(f'[概念] 分时拉取完成 date={date_int}: 成功{fetched} 失败{failed}/{len(missing)}')
+    except Exception as e:
+        print(f'[概念] 拉分时失败: {e}')
+
+    return day_cache
+
+
+def _build_historical_timeline(realtime_zt_codes=None, date_str=None, zt_codes_override=None):
+    """用逐分钟分时数据还原某日概念涨停数变化(可上可下, 能反映炸板/回封)。
+    参数:
+    - realtime_zt_codes: 实时报价判定的涨停股(monitor场景, 用今天日期)
+    - date_str: 指定日期 YYYYMMDD(概念追踪场景)
+    - zt_codes_override: 直接传入涨停股集合
+    原理:
+    1. 涨停股集合 = zt_codes_override > realtime_zt_codes > zt_stocks
+    2. 对每只涨停股拉 mootdx minutes(code, date), 得到240个分钟价格
+    3. 涨停价 = 当日分时最高价; price == 涨停价 即为该分钟处于封板状态
+    4. 逐分钟统计每个概念有多少只成分股处于封板 -> 可上可下的曲线
+    返回 (timeline_list, top_concepts_set) 或 ([], set())"""
+    try:
+        import db as _db
+        from datetime import datetime as _dt
+
+        # 确定日期
+        if date_str:
+            date_int = int(date_str)
+            query_date = date_str
+        elif realtime_zt_codes:
+            date_int = int(_dt.now().strftime('%Y%m%d'))
+            query_date = _dt.now().strftime('%Y-%m-%d')
+        else:
+            conn = _db.get_conn()
+            with conn.cursor() as cur:
+                cur.execute("SELECT max(trade_date) FROM zt_stocks")
+                row = cur.fetchone()
+                if not row or not row[0]:
+                    return [], set()
+                query_date = row[0]
+            conn.close()
+            date_int = int(str(query_date).replace('-', ''))
+
+        # 涨停股集合: zt_codes_override > realtime_zt_codes > zt_stocks
+        if zt_codes_override:
+            zt_codes = set(str(c).zfill(6) for c in zt_codes_override)
+        elif realtime_zt_codes:
+            zt_codes = set(str(c).zfill(6) for c in realtime_zt_codes)
+        else:
+            conn = _db.get_conn()
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT code FROM zt_stocks
+                    WHERE trade_date = %s AND (code LIKE '60%%' OR code LIKE '00%%')
+                      AND name NOT LIKE '%%ST%%'
+                """, (query_date,))
+                zt_codes = set(r[0].zfill(6) for r in cur.fetchall())
+            conn.close()
+        if not zt_codes:
+            return [], set()
+
+        # 拉分时数据(按日期缓存)
+        minute_map = _fetch_zt_minutes(zt_codes, date_int)
+        if not minute_map:
+            return [], set()
+
+        # 概念体系
+        concept_map = _load_concept_members()
+        if not concept_map:
+            return [], set()
+
+        # code -> concepts 反向映射
+        code_to_concepts = {}
+        for concept, codes in concept_map.items():
+            for c in codes:
+                code_to_concepts.setdefault(c, set()).add(concept)
+
+        # 逐分钟(0-239)统计每个概念的封板数
+        from collections import defaultdict
+        minute_concept_counts = defaultdict(lambda: defaultdict(int))
+        final_counts = defaultdict(int)
+
+        for code, prices in minute_map.items():
+            if code not in zt_codes:
+                continue
+            concepts = code_to_concepts.get(code, set())
+            if not concepts:
+                continue
+            max_p = max(prices)
+            for i, p in enumerate(prices):
+                if abs(p - max_p) < 0.005:  # 该分钟处于涨停价
+                    for con in concepts:
+                        minute_concept_counts[i][con] += 1
+            # 收盘(最后一分钟)封板?
+            if abs(prices[-1] - max_p) < 0.005:
+                for con in concepts:
+                    final_counts[con] += 1
+
+        if not minute_concept_counts:
+            return [], set()
+
+        # 取最终封板数 top10 的概念
+        top_concepts = set(sorted(final_counts, key=final_counts.get, reverse=True)[:10])
+
+        # 生成 timeline: 只在有变化的时间点输出(减少数据量)
+        def min_idx_to_trade_min(idx):
+            if idx < 120:
+                return idx + 5  # 9:30 = trade_min 5
+            else:
+                return idx + 6  # 13:00 = idx 120 -> trade_min 126
+
+        all_mins = sorted(minute_concept_counts.keys())
+        timeline = []
+        prev_counts = {}
+        for m in all_mins:
+            counts = dict(minute_concept_counts[m])
+            if counts != prev_counts:
+                tm = min_idx_to_trade_min(m)
+                timeline.append({
+                    'ts': _time_to_label(tm),
+                    'trade_min': tm,
+                    'counts': counts,
+                })
+                prev_counts = counts
+
+        return timeline, top_concepts
+    except Exception as e:
+        print(f'[概念] 历史回放失败: {e}')
+        return [], set()
+
+
+def _time_to_label(trade_min):
+    """trade_min -> HH:MM 标签"""
+    if trade_min <= 125:
+        h = 9
+        m = 25 + trade_min
+    else:
+        h = 13
+        m = trade_min - 126
+    h += m // 60
+    m = m % 60
+    return f'{h}:{m:02d}'
+
+@app.route('/api/monitor/concept/zt-stats', methods=['GET'])
+def monitor_concept_zt_stats():
+    """概念板块涨停统计(仅主板非ST, 5秒缓存)。
+    返回: {success, ts, concepts: [...], timeline: [...], top10_ever: [...]}
+    concepts: [{concept, zt_count, zt_stocks:[{code,pct}], dist:{lt3,g3_5,g5_7}, total_members}]
+    timeline: [{ts, concepts:{概念:涨停数}}]  供折线图用
+    """
+    import time as _time
+    global _concept_zt_cache, _concept_zt_timeline, _concept_zt_top10_ever
+
+    # 5秒缓存
+    if _concept_zt_cache and (_time.time() - _concept_zt_cache['ts'] < 5):
+        return jsonify(_concept_zt_cache['data'])
+
+    try:
+        import hot_track as ht
+        import pandas as pd
+        concept_map = _load_concept_members()
+        if not concept_map:
+            return jsonify({'success': False, 'error': '无概念成分股数据'}), 404
+
+        # 收集所有需要拉报价的主板股票(去重)
+        all_codes = set()
+        for codes in concept_map.values():
+            all_codes.update(codes)
+        all_codes = sorted(all_codes)
+        if not all_codes:
+            return jsonify({'success': False, 'error': '无主板成分股'}), 404
+
+        # mootdx 批量拉报价(80只/批)
+        with ht._get_tdx_lock():
+            client = ht._get_tdx_client()
+            frames = []
+            for i in range(0, len(all_codes), 80):
+                batch = all_codes[i:i + 80]
+                df = client.quotes(symbol=batch)
+                if df is not None and not df.empty:
+                    frames.append(df)
+        if not frames:
+            return jsonify({'success': False, 'error': '无报价数据(可能非交易时段)'}), 404
+
+        all_q = pd.concat(frames, ignore_index=True)
+        for col in ('last_close', 'price', 'amount', 'vol'):
+            if col in all_q.columns:
+                all_q[col] = pd.to_numeric(all_q[col], errors='coerce')
+        # 排除ST(quotes返回的name列)
+        if 'name' in all_q.columns:
+            all_q = all_q[~all_q['name'].astype(str).str.contains('ST', case=False, na=False)]
+        valid = all_q[(all_q['last_close'] > 0) & (all_q['price'] > 0)].copy()
+        if valid.empty:
+            return jsonify({'success': False, 'error': '无有效报价'}), 404
+        valid['pct'] = (valid['price'] - valid['last_close']) / valid['last_close'] * 100
+        valid['code'] = valid['code'].astype(str).str.zfill(6)
+
+        # 构建 code -> {pct} 映射
+        quote_map = {r['code']: r for _, r in valid.iterrows()}
+
+        # 按概念分组统计
+        now_ts = _time.time()
+        now_str = _time.strftime('%H:%M:%S')
+        # 交易分钟序号: 9:25=0, 11:30=125, 跳过午休, 13:00=126, 15:00=246
+        from datetime import datetime as _dt
+        _now_hm = _dt.now().hour * 60 + _dt.now().minute
+        if _now_hm < 9 * 60 + 25:
+            _trade_min = 0
+        elif _now_hm <= 11 * 60 + 30:
+            _trade_min = _now_hm - (9 * 60 + 25)
+        elif _now_hm < 13 * 60:
+            _trade_min = 125  # 午休期间固定为午前最后一刻
+        elif _now_hm <= 15 * 60:
+            _trade_min = _now_hm - (13 * 60) + 126  # 126 = 上午125分钟 + 1
+        else:
+            _trade_min = 246
+        concepts_result = []
+        timeline_entry = {'ts': now_str, 'trade_min': _trade_min, 'concepts': {}}
+        realtime_zt_codes = set()  # 收集所有实时涨停股代码(传给历史回放, 保证数量一致)
+
+        for concept, codes in concept_map.items():
+            zt_stocks = []
+            dist = {'lt3': 0, 'g3_5': 0, 'g5_7': 0}
+            total = 0
+            for code in codes:
+                q = quote_map.get(code)
+                if q is None:
+                    continue
+                total += 1
+                pct = float(q['pct'])
+                apct = abs(pct)
+                # 涨跌幅分布
+                if apct < 3:
+                    dist['lt3'] += 1
+                elif apct < 5:
+                    dist['g3_5'] += 1
+                elif apct < 7:
+                    dist['g5_7'] += 1
+                # 涨停判定(主板10%, 留容差9.8%)
+                if pct >= 9.8:
+                    zt_stocks.append({'code': code, 'pct': round(pct, 2)})
+                    realtime_zt_codes.add(code)
+            if total == 0:
+                continue
+            concepts_result.append({
+                'concept': concept,
+                'zt_count': len(zt_stocks),
+                'zt_stocks': zt_stocks[:20],  # 最多返回20只
+                'dist': dist,
+                'total_members': total,
+            })
+            timeline_entry['concepts'][concept] = len(zt_stocks)
+
+        # 按涨停数降序
+        concepts_result.sort(key=lambda x: x['zt_count'], reverse=True)
+
+        # 取top10, 记录曾进top10的概念
+        top10_now = [c['concept'] for c in concepts_result[:10] if c['zt_count'] > 0]
+        _concept_zt_top10_ever.update(top10_now)
+
+        # 返回top15(前端取top10, 多给几条避免边界抖动)
+        top_concepts = [c for c in concepts_result if c['zt_count'] > 0][:15]
+
+        # 维护时间线(最多200个点)
+        _concept_zt_timeline.append(timeline_entry)
+        if len(_concept_zt_timeline) > 200:
+            _concept_zt_timeline = _concept_zt_timeline[-200:]
+
+        # 折线图数据: 只保留曾进top10的概念
+        timeline_out = []
+        ever_list = sorted(_concept_zt_top10_ever)
+        for entry in _concept_zt_timeline:
+            timeline_out.append({
+                'ts': entry['ts'],
+                'trade_min': entry.get('trade_min', 0),
+                'counts': {c: entry['concepts'].get(c, 0) for c in ever_list},
+            })
+
+        # 若实时timeline时间点不足(收盘后/刚启动), 用逐分钟分时数据还原当天涨停轨迹
+        # 传入实时涨停股集合, 使回放的最终数量与柱状图完全一致
+        unique_mins = set(e.get('trade_min', 0) for e in _concept_zt_timeline)
+        if len(unique_mins) < 3:
+            hist_timeline, hist_concepts = _build_historical_timeline(realtime_zt_codes)
+            if hist_timeline:
+                ever_list = sorted(set(hist_concepts) | _concept_zt_top10_ever)
+                # 只保留 ever_list 的概念, 去掉冗余(从~300KB降到~30KB)
+                timeline_out = []
+                for entry in hist_timeline:
+                    timeline_out.append({
+                        'ts': entry['ts'],
+                        'trade_min': entry.get('trade_min', 0),
+                        'counts': {c: entry['counts'].get(c, 0) for c in ever_list},
+                    })
+
+        result = {
+            'success': True,
+            'ts': now_str,
+            'concepts': top_concepts,
+            'top10_ever': ever_list,
+            'timeline': timeline_out,
+        }
+        _concept_zt_cache = {'data': result, 'ts': now_ts}
+        return jsonify(result)
+    except Exception as e:
+        # 缓存还有数据就返回旧的(降级)
+        if _concept_zt_cache:
+            return jsonify(_concept_zt_cache['data'])
+        return jsonify({'success': False, 'error': f'{type(e).__name__}: {e}'}), 500
+
+
 # ===== WebSocket 实时推送 =====
 # tqcenter batch_pricevol 批量报价(1秒取1400只) + mootdx 分时(分时数据 tqcenter 盘中拿不到)
 _ws_push_thread = None
@@ -2793,11 +3210,21 @@ def _ws_push_loop():
                 if points:
                     _minute_cache['data'] = {'success': True, 'points': points, 'date': 'today'}
                     _minute_cache['ts'] = time.time()
-                    # tqcenter 补充: 涨跌幅/上涨下跌家数/均价
+                    # tqcenter 补充: 涨跌幅/上涨下跌家数/均价 (超时1.5秒, 防止卡死推送循环)
                     if tq_mode:
                         try:
                             import tdx_source as ts
-                            idx = ts.index_snapshot()
+                            import threading as _th
+                            _idx_res = [None]
+                            def _fetch_idx():
+                                try:
+                                    _idx_res[0] = ts.index_snapshot()
+                                except Exception:
+                                    pass
+                            _t = _th.Thread(target=_fetch_idx, daemon=True)
+                            _t.start()
+                            _t.join(timeout=1.5)
+                            idx = _idx_res[0]
                             if idx:
                                 _minute_cache['data']['index_price'] = idx['price']
                                 _minute_cache['data']['index_pct'] = idx['pct']
@@ -2945,7 +3372,9 @@ def ths_stock_concepts():
 @app.route('/hot', methods=['GET'])
 def hot_track_page():
     """热门股追踪页面"""
-    return render_template('hot_track.html')
+    resp = make_response(render_template('hot_track.html'))
+    resp.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
+    return resp
 
 
 @app.route('/api/hot/track', methods=['GET'])
@@ -3031,13 +3460,355 @@ def api_hot_track():
 
 @app.route('/api/hot/dates', methods=['GET'])
 def api_hot_dates():
-    """返回数据库中已入库的所有日期(热门股追踪的可选范围)"""
+    """返回数据库中已入库的所有日期(热门股追踪的可选范围)。
+    自动追加今天(如果是工作日且未入库), 使同花顺概念追踪能选到今天。"""
     import db as _db
+    from datetime import datetime as _dt
     try:
         dates = sorted(_db.get_submitted_dates())
     except _db.DBError as e:
         return jsonify({'success': True, 'dates': [], 'db_connected': False, 'db_message': str(e)})
+    # 追加今天(工作日且不在列表中)
+    today_str = _dt.now().strftime('%Y%m%d')
+    if _dt.now().weekday() < 5 and today_str not in dates:
+        dates.append(today_str)
+        dates.sort()
     return jsonify({'success': True, 'dates': dates, 'db_connected': True})
+
+
+_concept_daily_zt_cache = {}  # {date_int: {code: name}} 每日涨停股缓存
+
+
+def _fetch_daily_zt_codes(date_int, concept_map, cancel_check=None):
+    """用 mootdx 判定某日涨停股(不依赖 zt_stocks)。
+    - 今天: 用 quotes() 批量报价(80只/批), pct>=9.8% 判定, 快速(~3秒)
+    - 历史: 用 bars(frequency=9) 逐只拉日K, 慢(~60秒/3000只), 但按日缓存
+    cancel_check: 可选的无参回调, 返回True时中止
+    返回 {code: name} 涨停股字典。
+    """
+    if date_int in _concept_daily_zt_cache:
+        return _concept_daily_zt_cache[date_int]
+
+    # 收集所有主板成分股代码
+    all_codes = set()
+    for codes in concept_map.values():
+        all_codes.update(codes)
+    all_codes = sorted(all_codes)
+
+    result = {}
+    from datetime import datetime as _dt
+    is_today = (date_int == int(_dt.now().strftime('%Y%m%d')))
+
+    try:
+        import hot_track as ht
+        import pandas as pd
+        with ht._get_tdx_lock():
+            client = ht._get_tdx_client()
+
+            if is_today:
+                # 快速路径: 批量 quotes (80只/批)
+                frames = []
+                for i in range(0, len(all_codes), 80):
+                    if cancel_check and cancel_check():
+                        return result
+                    batch = all_codes[i:i + 80]
+                    df = client.quotes(symbol=batch)
+                    if df is not None and not df.empty:
+                        frames.append(df)
+                if frames:
+                    all_q = pd.concat(frames, ignore_index=True)
+                    for col in ('last_close', 'price'):
+                        if col in all_q.columns:
+                            all_q[col] = pd.to_numeric(all_q[col], errors='coerce')
+                    valid = all_q[(all_q['last_close'] > 0) & (all_q['price'] > 0)].copy()
+                    valid['pct'] = (valid['price'] - valid['last_close']) / valid['last_close'] * 100
+                    valid['code'] = valid['code'].astype(str).str.zfill(6)
+                    for _, r in valid.iterrows():
+                        if float(r['pct']) >= 9.8:
+                            name = r.get('name', '') if 'name' in valid.columns else ''
+                            result[str(r['code'])] = str(name)
+            else:
+                # 历史路径: 逐只拉日K
+                target = str(date_int)
+                for code in all_codes:
+                    if cancel_check and cancel_check():
+                        return result
+                    try:
+                        df = client.bars(symbol=code, frequency=9, offset=10)
+                        if df is None or df.empty:
+                            continue
+                        for idx in range(len(df)):
+                            row = df.iloc[idx]
+                            dt = str(row.get('datetime', ''))
+                            if dt[:10].replace('-', '') == target:
+                                close = float(row['close'])
+                                if idx > 0:
+                                    prev_close = float(df.iloc[idx - 1]['close'])
+                                else:
+                                    prev_close = float(row['open'])
+                                if prev_close > 0:
+                                    pct = (close - prev_close) / prev_close * 100
+                                    if pct >= 9.8:
+                                        result[code] = code
+                                break
+                    except Exception:
+                        pass
+    except Exception as e:
+        print(f'[概念] 拉日K判定涨停失败: {e}')
+
+    _concept_daily_zt_cache[date_int] = result
+    print(f'[概念] 涨停判定 date={date_int} {"(今天,quotes)" if is_today else "(历史,bars)"}: {len(result)}只')
+    return result
+
+    _concept_daily_zt_cache[date_int] = result
+    print(f'[概念] 日K涨停判定 date={date_int}: {len(result)}只 / {len(all_codes)}只成分股')
+    return result
+
+
+# ===== 同花顺概念追踪: 异步任务 (带进度+取消) =====
+_concept_tasks = {}  # {task_id: {status, progress, cur_date, total_dates, logs, result, error, _cancel, days_partial}}
+
+@app.route('/api/hot/concept-track', methods=['GET'])
+def api_hot_concept_track():
+    """同花顺概念涨停追踪: 启动异步任务, 返回 task_id。
+    后续用 /api/hot/concept-track/status/<task_id> 轮询进度。
+    """
+    start = request.args.get('start', '')
+    end = request.args.get('end', '')
+    if not start or not end:
+        return jsonify({'success': False, 'error': '需要 start 和 end 参数'}), 400
+
+    import uuid
+    task_id = str(uuid.uuid4())[:8]
+    _concept_tasks[task_id] = {
+        'status': 'pending', 'progress': 0,
+        'cur_date': '', 'total_dates': 0, 'cur_idx': 0,
+        'start': start, 'end': end,
+        'logs': [], 'result': None, 'error': None,
+        '_cancel': False,
+    }
+    threading.Thread(target=_concept_track_task,
+                     args=(task_id, start, end), daemon=True).start()
+    return jsonify({'success': True, 'task_id': task_id,
+                    'status_url': f'/api/hot/concept-track/status/{task_id}'})
+
+
+@app.route('/api/hot/concept-track/status/<task_id>', methods=['GET'])
+def api_hot_concept_track_status(task_id):
+    """查询概念追踪任务进度; ?since=N 增量拉日志; 完成时返回 result"""
+    if task_id not in _concept_tasks:
+        return jsonify({'success': False, 'error': '任务不存在'}), 404
+    t = _concept_tasks[task_id]
+    since = request.args.get('since', default=0, type=int)
+    resp = {
+        'success': True, 'status': t['status'],
+        'progress': t['progress'],
+        'cur_date': t['cur_date'],
+        'total_dates': t['total_dates'],
+        'cur_idx': t['cur_idx'],
+        'logs': t['logs'][since:], 'log_count': len(t['logs']),
+    }
+    if t['status'] == 'completed':
+        resp['result'] = t['result']
+        # 完成后清理任务(保留30秒让前端取结果)
+    elif t['status'] == 'failed':
+        resp['error'] = t['error']
+    elif t['status'] == 'cancelled':
+        resp['error'] = t.get('error', '已取消')
+    return jsonify(resp)
+
+
+@app.route('/api/hot/concept-track/cancel/<task_id>', methods=['POST'])
+def api_hot_concept_track_cancel(task_id):
+    """取消概念追踪任务"""
+    if task_id not in _concept_tasks:
+        return jsonify({'success': False, 'error': '任务不存在'}), 404
+    t = _concept_tasks[task_id]
+    if t['status'] in ('completed', 'failed', 'cancelled'):
+        return jsonify({'success': True, 'status': t['status'], 'msg': '任务已结束'})
+    t['_cancel'] = True
+    return jsonify({'success': True, 'msg': '已发送取消信号'})
+
+
+def _concept_track_task(task_id, start, end):
+    """概念追踪后台任务: 逐日拉取涨停分时, 重建概念涨停轨迹。"""
+    global _concept_tasks
+    t = _concept_tasks[task_id]
+    t['status'] = 'running'
+
+    def log(msg):
+        t['logs'].append(msg)
+
+    try:
+        import db as _db
+        # 用 zt_daily 的日期作为交易日参考
+        conn = _db.get_conn()
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT DISTINCT to_char(trade_date, 'YYYYMMDD') AS d
+                FROM zt_daily
+                WHERE trade_date BETWEEN %s AND %s
+                ORDER BY d
+            """, (f'{start[:4]}-{start[4:6]}-{start[6:8]}', f'{end[:4]}-{end[4:6]}-{end[6:8]}'))
+            trade_dates = [r[0] for r in cur.fetchall()]
+        conn.close()
+
+        # 也加入今天(如果今天在范围内且是交易日)
+        from datetime import datetime as _dt
+        today_str = _dt.now().strftime('%Y%m%d')
+        if start <= today_str <= end and today_str not in trade_dates:
+            if _dt.now().weekday() < 5:
+                trade_dates.append(today_str)
+                trade_dates.sort()
+
+        if not trade_dates:
+            t['status'] = 'failed'
+            t['error'] = '该日期范围无交易日'
+            return
+
+        t['total_dates'] = len(trade_dates)
+        log(f'共 {len(trade_dates)} 个交易日: {", ".join(trade_dates)}')
+
+        # 概念体系 + code->concepts 反向映射
+        concept_map = _load_concept_members()
+        if not concept_map:
+            t['status'] = 'failed'
+            t['error'] = '无概念成分股数据'
+            return
+        code_to_concepts = {}
+        for concept, codes in concept_map.items():
+            for c in codes:
+                code_to_concepts.setdefault(c, set()).add(concept)
+
+        days_result = []
+        for di, date_str in enumerate(trade_dates):
+            # 检查取消
+            if t['_cancel']:
+                t['status'] = 'cancelled'
+                t['error'] = f'用户取消 (已完成 {di}/{len(trade_dates)} 天)'
+                log(f'⚠️ 用户取消, 已完成 {di}/{len(trade_dates)} 天')
+                return
+
+            t['cur_idx'] = di + 1
+            t['cur_date'] = date_str
+            t['progress'] = int(di / max(len(trade_dates), 1) * 100)
+            date_int = int(date_str)
+            d_display = f'{date_str[:4]}-{date_str[4:6]}-{date_str[6:8]}'
+            log(f'📍 [{di+1}/{len(trade_dates)}] 处理 {d_display} ...')
+
+            # 用日K线判定涨停股(不依赖zt_stocks)
+            log(f'   {d_display}: 判定涨停股(拉日K)...')
+            zt_codes_map = _fetch_daily_zt_codes(date_int, concept_map,
+                                                  cancel_check=lambda: t['_cancel'])
+            if t['_cancel']:
+                t['status'] = 'cancelled'
+                t['error'] = f'用户取消 (已完成 {di}/{len(trade_dates)} 天)'
+                log(f'⚠️ 用户取消, 已完成 {di}/{len(trade_dates)} 天')
+                return
+            zt_codes = set(zt_codes_map.keys())
+            if not zt_codes:
+                log(f'   {d_display}: 无涨停股, 跳过')
+                continue
+            log(f'   {d_display}: 涨停{len(zt_codes)}只, 拉分时数据...')
+
+            # 拉分时(按日期缓存)
+            minute_map = _fetch_zt_minutes(zt_codes, date_int,
+                                            cancel_check=lambda: t['_cancel'])
+            if t['_cancel']:
+                t['status'] = 'cancelled'
+                t['error'] = f'用户取消 (已完成 {di}/{len(trade_dates)} 天)'
+                log(f'⚠️ 用户取消, 已完成 {di}/{len(trade_dates)} 天')
+                return
+            if not minute_map:
+                log(f'   {d_display}: 无分时数据, 跳过')
+                continue
+            log(f'   {d_display}: 分时数据就绪 {len(minute_map)}/{len(zt_codes)}只')
+
+            # 逐分钟统计封板
+            from collections import defaultdict
+            minute_concept_counts = defaultdict(lambda: defaultdict(int))
+            final_counts = defaultdict(int)
+            concept_zt_stocks = defaultdict(list)
+
+            for code, prices in minute_map.items():
+                if code not in zt_codes:
+                    continue
+                concepts = code_to_concepts.get(code, set())
+                if not concepts:
+                    continue
+                max_p = max(prices)
+                for i, p in enumerate(prices):
+                    if abs(p - max_p) < 0.005:
+                        for con in concepts:
+                            minute_concept_counts[i][con] += 1
+                # 收盘封板
+                if abs(prices[-1] - max_p) < 0.005:
+                    for con in concepts:
+                        final_counts[con] += 1
+                        concept_zt_stocks[con].append({
+                            'code': code, 'name': zt_codes_map.get(code, '')
+                        })
+
+            if not minute_concept_counts:
+                log(f'   {d_display}: 无封板数据, 跳过')
+                continue
+
+            # Top10 概念(按最终封板数)
+            top10_sorted = sorted(final_counts.items(), key=lambda x: x[1], reverse=True)[:10]
+            top10_concepts = set(c for c, _ in top10_sorted)
+
+            # 柱状图数据
+            top10 = []
+            for con, cnt in top10_sorted:
+                if cnt == 0:
+                    continue
+                top10.append({
+                    'concept': con,
+                    'zt_count': cnt,
+                    'zt_stocks': concept_zt_stocks[con][:20],
+                })
+
+            # 折线图 timeline (只保留 top10 概念, 只输出变化点)
+            def min_idx_to_trade_min(idx):
+                return idx + 5 if idx < 120 else idx + 6
+
+            all_mins = sorted(minute_concept_counts.keys())
+            timeline = []
+            prev_counts = {}
+            for m in all_mins:
+                counts = {c: minute_concept_counts[m].get(c, 0) for c in top10_concepts if minute_concept_counts[m].get(c, 0) > 0}
+                if counts != prev_counts:
+                    tm = min_idx_to_trade_min(m)
+                    timeline.append({
+                        'ts': _time_to_label(tm),
+                        'trade_min': tm,
+                        'counts': counts,
+                    })
+                    prev_counts = counts
+
+            days_result.append({
+                'date': date_str,
+                'top10': top10,
+                'timeline': timeline,
+                'top10_ever': sorted(top10_concepts),
+            })
+            log(f'   ✅ {d_display}: 涨停{len(zt_codes)}只, Top概念 {top10[0]["concept"] if top10 else "无"}({top10[0]["zt_count"] if top10 else 0}只)')
+
+        t['progress'] = 100
+        t['result'] = {
+            'success': True,
+            'start': start,
+            'end': end,
+            'days': days_result,
+        }
+        t['status'] = 'completed'
+        log(f'🎉 全部完成: {len(days_result)}/{len(trade_dates)} 天有数据')
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        t['status'] = 'failed'
+        t['error'] = f'{type(e).__name__}: {e}'
 
 
 def _build_missing_report(result):
