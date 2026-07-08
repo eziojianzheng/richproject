@@ -2292,28 +2292,66 @@ def monitor_stocks_volume_ratio():
         stocks.sort(key=lambda r: r.get('pct', 0), reverse=True)
         stocks = stocks[:50]  # Top50, 与列表一致
         ratios = {}
-        with ht._get_tdx_lock():
-            client = ht._get_tdx_client()
+        # 优先 tqcenter kline(本地DLL, 不封IP), 回退 mootdx bars
+        import tdx_source as ts
+        use_tq = ts.is_available()
+        if use_tq:
             for s in stocks:
                 code = s['code']
                 try:
-                    # 一次 bars 调用同时取当日量和5日均量(日K vol=全天总成交量, 单位:手)
-                    df_k = client.bars(symbol=code, frequency=9, offset=6)
-                    if df_k is None or len(df_k) == 0:
+                    bars = ts.kline(code, count=8, period='1d', dividend_type='none')
+                    if not bars or len(bars) < 2:
                         ratios[code] = {'day_vol': 0, 'avg5_vol': 0, 'ratio': 0, 'pass': False}
                         continue
-                    df_k = df_k.sort_index()
-                    day_vol = float(df_k['vol'].iloc[-1])           # 最后一根 = 当日总量
-                    avg5_vol = float(df_k['vol'].iloc[:-1].mean()) if len(df_k) > 1 else 0  # 前几根均值
+                    vols = [b['vol'] for b in bars]
+                    day_vol = float(vols[-1])
+                    # 盘前/未开盘: 当日量为0时, 回退到最近一个交易日的数据
+                    if day_vol == 0 and len(vols) >= 2:
+                        day_vol = float(vols[-2])
+                        prev_vols = vols[:-2] if len(vols) > 2 else []
+                        avg5_vol = float(sum(prev_vols[-5:]) / len(prev_vols[-5:])) if prev_vols else 0
+                    else:
+                        prev_vols = vols[:-1]
+                        avg5_vol = float(sum(prev_vols[-5:]) / len(prev_vols[-5:])) if prev_vols else 0
                     ratio = (day_vol / avg5_vol) if avg5_vol > 0 else 0
                     ratios[code] = {
                         'day_vol': round(day_vol, 0),
                         'avg5_vol': round(avg5_vol, 0),
                         'ratio': round(ratio, 2),
-                        'pass': ratio >= 3.0,  # 当日量 >= 5日均量 × 3
+                        'pass': ratio >= 3.0,
                     }
                 except Exception:
                     ratios[code] = {'day_vol': 0, 'avg5_vol': 0, 'ratio': 0, 'pass': False}
+        else:
+            with ht._get_tdx_lock():
+                client = ht._get_tdx_client()
+                for s in stocks:
+                    code = s['code']
+                    try:
+                        # 一次 bars 调用同时取当日量和5日均量(日K vol=全天总成交量, 单位:手)
+                        df_k = client.bars(symbol=code, frequency=9, offset=6)
+                        if df_k is None or len(df_k) == 0:
+                            ratios[code] = {'day_vol': 0, 'avg5_vol': 0, 'ratio': 0, 'pass': False}
+                            continue
+                        df_k = df_k.sort_index()
+                        day_vol = float(df_k['vol'].iloc[-1])           # 最后一根 = 当日总量
+                        # 盘前/未开盘: 当日量为0时, 回退到最近一个交易日的数据
+                        if day_vol == 0 and len(df_k) >= 2:
+                            day_vol = float(df_k['vol'].iloc[-2])       # 昨日总量
+                            prev_vols = df_k['vol'].iloc[:-2] if len(df_k) > 2 else []
+                            avg5_vol = float(prev_vols.iloc[-5:].mean()) if len(prev_vols) > 0 else 0
+                        else:
+                            prev_vols = df_k['vol'].iloc[:-1]
+                            avg5_vol = float(prev_vols.iloc[-5:].mean()) if len(prev_vols) > 0 else 0
+                        ratio = (day_vol / avg5_vol) if avg5_vol > 0 else 0
+                        ratios[code] = {
+                            'day_vol': round(day_vol, 0),
+                            'avg5_vol': round(avg5_vol, 0),
+                            'ratio': round(ratio, 2),
+                            'pass': ratio >= 3.0,
+                        }
+                    except Exception:
+                        ratios[code] = {'day_vol': 0, 'avg5_vol': 0, 'ratio': 0, 'pass': False}
         _volume_ratio_cache[segment] = {'data': ratios, 'ts': _time.time()}
         return jsonify({'success': True, 'ratios': ratios})
     except Exception as e:
@@ -2344,6 +2382,25 @@ def monitor_stocks_open_gain():
             return jsonify({'success': False, 'error': '无报价数据'}), 404
         codes = [r['code'] for r in records[:50]]
         gains = {}
+
+        # 辅助: 当 open=0(盘前/未开盘)时, 用日K取最近交易日数据
+        # 返回 (open, last_close) 或 None
+        def _fallback_prev_day(code):
+            try:
+                with ht._get_tdx_lock():
+                    client = ht._get_tdx_client()
+                    df_k = client.bars(symbol=code, frequency=9, offset=3)
+                if df_k is None or len(df_k) < 3:
+                    return None
+                df_k = df_k.sort_index()
+                prev_open = float(df_k['open'].iloc[-2])      # 昨日开盘价
+                prev_prev_close = float(df_k['close'].iloc[-3])  # 前日收盘
+                if prev_open <= 0 or prev_prev_close <= 0:
+                    return None
+                return (prev_open, prev_prev_close)
+            except Exception:
+                return None
+
         # 优先 tqcenter batch_snapshots(含 Open + LastClose)
         try:
             import tdx_source as ts
@@ -2355,6 +2412,11 @@ def monitor_stocks_open_gain():
                         if s:
                             open_p = s.get('open', 0) or 0
                             last_close = s.get('last_close', 0) or 0
+                            # 盘前/未开盘: open=0 时回退到昨日数据
+                            if open_p <= 0:
+                                fb = _fallback_prev_day(c)
+                                if fb:
+                                    open_p, last_close = fb
                             og = ((open_p - last_close) / last_close * 100) if last_close > 0 and open_p > 0 else 0
                             gains[c] = {
                                 'open': round(open_p, 3),
@@ -2385,6 +2447,11 @@ def monitor_stocks_open_gain():
                     last_close = float(row.get('last_close', 0) or 0)
                     if last_close <= 0:
                         continue
+                    # 盘前/未开盘: open=0 时回退到昨日数据
+                    if open_p <= 0:
+                        fb = _fallback_prev_day(c)
+                        if fb:
+                            open_p, last_close = fb
                     og = ((open_p - last_close) / last_close * 100) if open_p > 0 else 0
                     gains[c] = {
                         'open': round(open_p, 3),
