@@ -121,7 +121,7 @@
   .filter-chip:hover { background: rgba(255,255,255,0.08); }
   .filter-chip input { margin: 0; cursor: pointer; accent-color: var(--accent); }
   .filter-chip:has(input:checked) { background: rgba(37,99,235,0.25); color: #93c5fd; border-color: rgba(37,99,235,0.5); }
-  /* 多选下拉筛选(与门/或门) */
+  /* 多选下拉筛选(与门) */
   .filter-select {
     background: var(--bg-input); border: 1px solid var(--border-color); color: var(--text-primary);
     padding: 2px 4px; border-radius: 6px; font-size: 11px; vertical-align: middle;
@@ -305,15 +305,10 @@
           </div>
           <div class="filter-bar" data-seg="cyb">
             <span class="filter-label">筛选</span>
-            <label class="filter-chip"><input type="checkbox" data-filter="vol_ratio_3x"><span>当日量&gt;5日均量×3</span></label>
             <span class="filter-select-label">与门</span>
-            <select class="filter-select" data-mode="and" multiple size="2">
+            <select class="filter-select" data-mode="and" multiple size="3">
               <option value="pct_5_12">涨幅5-12%</option>
-              <option value="open_gt_3">9:25开盘&gt;3%</option>
-            </select>
-            <span class="filter-select-label">或门</span>
-            <select class="filter-select" data-mode="or" multiple size="2">
-              <option value="pct_5_12">涨幅5-12%</option>
+              <option value="vol_ratio_2x_min">最大分时量&gt;5日均×2</option>
               <option value="open_gt_3">9:25开盘&gt;3%</option>
             </select>
           </div>
@@ -336,15 +331,10 @@
           </div>
           <div class="filter-bar" data-seg="kcb">
             <span class="filter-label">筛选</span>
-            <label class="filter-chip"><input type="checkbox" data-filter="vol_ratio_3x"><span>当日量&gt;5日均量×3</span></label>
             <span class="filter-select-label">与门</span>
-            <select class="filter-select" data-mode="and" multiple size="2">
+            <select class="filter-select" data-mode="and" multiple size="3">
               <option value="pct_5_12">涨幅5-12%</option>
-              <option value="open_gt_3">9:25开盘&gt;3%</option>
-            </select>
-            <span class="filter-select-label">或门</span>
-            <select class="filter-select" data-mode="or" multiple size="2">
-              <option value="pct_5_12">涨幅5-12%</option>
+              <option value="vol_ratio_2x_min">最大分时量&gt;5日均×2</option>
               <option value="open_gt_3">9:25开盘&gt;3%</option>
             </select>
           </div>
@@ -1127,14 +1117,13 @@ async function loadStockList(seg) {
     // 渲染后订阅报价推送(WS每秒推送这些股票的最新价)
     subscribeQuotes(seg);
     // 列表渲染后重新应用筛选(若条件已勾选但数据未就绪, 异步补上)
-    const active = getActiveFilters(seg);
-    const { and: andConds, or: orConds } = getSelectFilters(seg);
-    if (active.size > 0 || andConds.size > 0 || orConds.size > 0) {
+    const andConds = getSelectFilters(seg);
+    if (andConds.size > 0) {
       applyFilters(seg);
-      if (active.has('vol_ratio_3x') && !volRatioCache[seg]) {
-        ensureVolRatio(seg).then(() => applyFilters(seg));
+      if (andConds.has('vol_ratio_2x_min') && !minuteVolRatioCache[seg]) {
+        ensureMinuteVolRatio(seg).then(() => applyFilters(seg));
       }
-      if ((andConds.has('open_gt_3') || orConds.has('open_gt_3')) && !openGainCache[seg]) {
+      if (andConds.has('open_gt_3') && !openGainCache[seg]) {
         ensureOpenGain(seg).then(() => applyFilters(seg));
       }
     }
@@ -1728,27 +1717,26 @@ document.querySelectorAll('.sort-tabs span').forEach(el => {
 });
 
 // ===== 条件筛选栏 =====
-const volRatioCache = { cyb: null, kcb: null };  // {code: {ratio, pass, ...}}
-const volRatioLoading = { cyb: false, kcb: false };
+const minuteVolRatioCache = { cyb: null, kcb: null };  // {code: {ratio, pass, ...}}
+const minuteVolRatioLoading = { cyb: false, kcb: false };
 const openGainCache = { cyb: null, kcb: null };  // {code: {open_gain, pass, ...}}
 const openGainLoading = { cyb: false, kcb: false };
 
-// 拉取量比数据(带缓存, 避免重复请求)
-async function ensureVolRatio(seg) {
-  if (volRatioCache[seg]) return volRatioCache[seg];
-  if (volRatioLoading[seg]) {
-    // 等待正在进行的请求
-    while (volRatioLoading[seg]) { await new Promise(r => setTimeout(r, 100)); }
-    return volRatioCache[seg];
+// 拉取分时量比数据(当日最大分时量/前5天平均最大分时量, 带缓存)
+async function ensureMinuteVolRatio(seg) {
+  if (minuteVolRatioCache[seg]) return minuteVolRatioCache[seg];
+  if (minuteVolRatioLoading[seg]) {
+    while (minuteVolRatioLoading[seg]) { await new Promise(r => setTimeout(r, 100)); }
+    return minuteVolRatioCache[seg];
   }
-  volRatioLoading[seg] = true;
+  minuteVolRatioLoading[seg] = true;
   try {
-    const resp = await fetch(`/api/monitor/stocks/volume-ratio?segment=${seg}`);
+    const resp = await fetch(`/api/monitor/stocks/minute-vol-ratio?segment=${seg}`);
     const data = await resp.json();
-    if (data.success) volRatioCache[seg] = data.ratios || {};
-  } catch (e) { console.error('量比数据加载失败', e); }
-  volRatioLoading[seg] = false;
-  return volRatioCache[seg];
+    if (data.success) minuteVolRatioCache[seg] = data.ratios || {};
+  } catch (e) { console.error('分时量比数据加载失败', e); }
+  minuteVolRatioLoading[seg] = false;
+  return minuteVolRatioCache[seg];
 }
 
 // 拉取开盘涨幅数据(带缓存, 用于"9:25开盘>3%"条件)
@@ -1768,52 +1756,38 @@ async function ensureOpenGain(seg) {
   return openGainCache[seg];
 }
 
-// 当前激活的 checkbox 筛选条件集合(每个板块独立)
-function getActiveFilters(seg) {
-  const bar = document.querySelector(`.filter-bar[data-seg="${seg}"]`);
-  if (!bar) return new Set();
-  const active = new Set();
-  bar.querySelectorAll('input[type="checkbox"]:checked').forEach(cb => active.add(cb.dataset.filter));
-  return active;
-}
-
-// 当前 select 选中的条件: 返回 {and: Set, or: Set}
+// 当前 select(与门) 选中的条件集合
 function getSelectFilters(seg) {
   const bar = document.querySelector(`.filter-bar[data-seg="${seg}"]`);
-  if (!bar) return { and: new Set(), or: new Set() };
-  const and = new Set(), or = new Set();
+  if (!bar) return new Set();
+  const conds = new Set();
   bar.querySelectorAll('select.filter-select').forEach(sel => {
-    const mode = sel.dataset.mode;  // 'and' | 'or'
-    Array.from(sel.selectedOptions).forEach(opt => {
-      (mode === 'and' ? and : or).add(opt.value);
-    });
+    Array.from(sel.selectedOptions).forEach(opt => conds.add(opt.value));
   });
-  return { and, or };
+  return conds;
 }
 
 // 判断单只股票是否满足某条件
-function meetsCond(cond, code, pct, ratios, gains) {
-  if (cond === 'vol_ratio_3x') return !!(ratios[code] && ratios[code].pass);
+function meetsCond(cond, code, pct, minuteRatios, gains) {
+  if (cond === 'vol_ratio_2x_min') return !!(minuteRatios[code] && minuteRatios[code].pass);
   if (cond === 'pct_5_12') return typeof pct === 'number' && pct >= 5 && pct <= 12;
   if (cond === 'open_gt_3') return !!(gains[code] && typeof gains[code].open_gain === 'number' && gains[code].open_gain > 3);
   return true;
 }
 
 // 应用筛选: 隐藏不满足条件的行
-// 逻辑: checkbox条件之间是AND; select与门条件也是AND; select或门条件是OR。
-// 三组之间: (checkbox全满足) AND (与门全满足) AND (或门任一满足)
+// 逻辑: 与门 select 选中的条件全部满足(AND)
 function applyFilters(seg) {
   const container = document.getElementById(seg === 'cyb' ? 'cybList' : 'kcbList');
   if (!container) return;
-  const active = getActiveFilters(seg);       // checkbox 条件 (AND)
-  const { and: andConds, or: orConds } = getSelectFilters(seg);  // select 条件
+  const andConds = getSelectFilters(seg);
   const items = container.querySelectorAll('.stock-item');
-  if (active.size === 0 && andConds.size === 0 && orConds.size === 0) {
+  if (andConds.size === 0) {
     // 无筛选: 全部显示
     items.forEach(el => el.style.display = '');
     return;
   }
-  const ratios = volRatioCache[seg] || {};
+  const minuteRatios = minuteVolRatioCache[seg] || {};
   const gains = openGainCache[seg] || {};
   items.forEach(el => {
     const code = el.dataset.code;
@@ -1824,50 +1798,15 @@ function applyFilters(seg) {
       pct = parseFloat(pctEl.textContent.replace('%', '').replace('+', ''));
     }
     let show = true;
-    // 1. checkbox 条件 (全部满足)
-    if (show && active.size > 0) {
-      for (const c of active) {
-        if (!meetsCond(c, code, pct, ratios, gains)) { show = false; break; }
-      }
-    }
-    // 2. 与门 select 条件 (全部满足)
-    if (show && andConds.size > 0) {
-      for (const c of andConds) {
-        if (!meetsCond(c, code, pct, ratios, gains)) { show = false; break; }
-      }
-    }
-    // 3. 或门 select 条件 (任一满足)
-    if (show && orConds.size > 0) {
-      let anyPass = false;
-      for (const c of orConds) {
-        if (meetsCond(c, code, pct, ratios, gains)) { anyPass = true; break; }
-      }
-      if (!anyPass) show = false;
+    // 与门 select 条件 (全部满足)
+    for (const c of andConds) {
+      if (!meetsCond(c, code, pct, minuteRatios, gains)) { show = false; break; }
     }
     el.style.display = show ? '' : 'none';
   });
 }
 
-// 筛选 checkbox 变化
-document.querySelectorAll('.filter-bar input[type="checkbox"]').forEach(cb => {
-  cb.addEventListener('change', async function() {
-    const seg = this.closest('.filter-bar').dataset.seg;
-    // 持久化筛选状态
-    try {
-      const key = 'monitor_filter_' + seg;
-      const saved = JSON.parse(localStorage.getItem(key) || '{}');
-      saved[this.dataset.filter] = this.checked;
-      localStorage.setItem(key, JSON.stringify(saved));
-    } catch(e) {}
-    // 若勾选了量比条件但数据未加载, 先拉取
-    if (this.checked && this.dataset.filter === 'vol_ratio_3x' && !volRatioCache[seg]) {
-      await ensureVolRatio(seg);
-    }
-    applyFilters(seg);
-  });
-});
-
-// select 变化: 持久化 + 按需拉取开盘涨幅数据
+// select(与门) 变化: 持久化 + 按需拉取数据
 document.querySelectorAll('.filter-select').forEach(sel => {
   sel.addEventListener('change', async function() {
     const seg = this.closest('.filter-bar').dataset.seg;
@@ -1878,8 +1817,11 @@ document.querySelectorAll('.filter-select').forEach(sel => {
       saved[this.dataset.mode] = Array.from(this.selectedOptions).map(o => o.value);
       localStorage.setItem(key, JSON.stringify(saved));
     } catch(e) {}
-    // 若选中了 open_gt_3 但数据未加载, 先拉取
+    // 按需拉取数据
     const selected = Array.from(this.selectedOptions).map(o => o.value);
+    if (selected.includes('vol_ratio_2x_min') && !minuteVolRatioCache[seg]) {
+      await ensureMinuteVolRatio(seg);
+    }
     if (selected.includes('open_gt_3') && !openGainCache[seg]) {
       await ensureOpenGain(seg);
     }
@@ -1889,13 +1831,6 @@ document.querySelectorAll('.filter-select').forEach(sel => {
 
 // 恢复筛选状态
 function restoreFilterState() {
-  document.querySelectorAll('.filter-bar input[type="checkbox"]').forEach(cb => {
-    const seg = cb.closest('.filter-bar').dataset.seg;
-    try {
-      const saved = JSON.parse(localStorage.getItem('monitor_filter_' + seg) || '{}');
-      if (cb.dataset.filter in saved) cb.checked = saved[cb.dataset.filter];
-    } catch(e) {}
-  });
   // 恢复 select 选中项
   document.querySelectorAll('.filter-select').forEach(sel => {
     const seg = sel.closest('.filter-bar').dataset.seg;
@@ -2196,14 +2131,13 @@ function startListRefresh() {
           // 排序变了, 整体重建(但保持选中状态)
           renderStockList(seg, data.stocks);
           // 恢复筛选
-          const active = getActiveFilters(seg);
-          const { and: andConds, or: orConds } = getSelectFilters(seg);
-          if (active.size > 0 || andConds.size > 0 || orConds.size > 0) {
+          const andConds = getSelectFilters(seg);
+          if (andConds.size > 0) {
             applyFilters(seg);
-            if (active.has('vol_ratio_3x') && !volRatioCache[seg]) {
-              ensureVolRatio(seg).then(() => applyFilters(seg));
+            if (andConds.has('vol_ratio_2x_min') && !minuteVolRatioCache[seg]) {
+              ensureMinuteVolRatio(seg).then(() => applyFilters(seg));
             }
-            if ((andConds.has('open_gt_3') || orConds.has('open_gt_3')) && !openGainCache[seg]) {
+            if (andConds.has('open_gt_3') && !openGainCache[seg]) {
               ensureOpenGain(seg).then(() => applyFilters(seg));
             }
           }

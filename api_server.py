@@ -2409,6 +2409,76 @@ def monitor_stocks_volume_ratio():
         return jsonify({'success': False, 'error': f'{type(e).__name__}: {e}'}), 500
 
 
+_minute_vol_ratio_cache = {}  # {segment: {data, ts}}
+
+
+@app.route('/api/monitor/stocks/minute-vol-ratio', methods=['GET'])
+def monitor_stocks_minute_vol_ratio():
+    """计算板块内个股 当日最大分时量 / 前5天平均最大分时量。
+    用于"当日最大分时量>前5天平均分时量×2"条件筛选。
+    参数: segment=cyb|kcb。60秒缓存。
+    返回 {success, ratios: {code: {max_minute_vol, avg5_max_minute_vol, ratio, pass}}}"""
+    import time as _time
+    import hot_track as ht
+    segment = request.args.get('segment', 'cyb')
+    if segment not in ('cyb', 'kcb'):
+        return jsonify({'success': False, 'error': 'segment 需为 cyb 或 kcb'}), 400
+    cached = _minute_vol_ratio_cache.get(segment)
+    if cached and (_time.time() - cached['ts'] < 60):
+        return jsonify({'success': True, 'ratios': cached['data']})
+    # 取板块 Top 50 (复用已排序的报价缓存)
+    all_records = _fetch_segment_quotes(segment)
+    if not all_records:
+        return jsonify({'success': False, 'error': '无报价数据'}), 404
+    stocks = sorted(all_records, key=lambda r: r.get('pct', 0), reverse=True)[:50]
+    ratios = {}
+    try:
+        with ht._get_tdx_lock():
+            client = ht._get_tdx_client()
+            for s in stocks:
+                code = s['code']
+                try:
+                    # 当日分时最大量
+                    df_today = client.minute(symbol=code)
+                    if df_today is not None and not df_today.empty:
+                        max_minute_vol = float(df_today['vol'].max())
+                    else:
+                        max_minute_vol = 0
+                    # 前5天: 先取6根日K(最后一根=今日), 对前5天逐日拉分时取max
+                    df_k = client.bars(symbol=code, frequency=9, offset=6)
+                    if df_k is None or len(df_k) < 2:
+                        ratios[code] = {'max_minute_vol': max_minute_vol, 'avg5_max_minute_vol': 0, 'ratio': 0, 'pass': False}
+                        continue
+                    df_k = df_k.sort_index()
+                    # 取前5天日期(排除最后一根=今日)
+                    prev_dates = [str(idx)[:10].replace('-', '') for idx in df_k.index[:-1]]
+                    prev_max_vols = []
+                    for d in prev_dates[-5:]:  # 最近5天
+                        try:
+                            df_m = client.minutes(symbol=code, date=int(d))
+                            if df_m is not None and not df_m.empty:
+                                prev_max_vols.append(float(df_m['vol'].max()))
+                        except Exception:
+                            continue
+                    avg5_max = float(sum(prev_max_vols) / len(prev_max_vols)) if prev_max_vols else 0
+                    # 盘前 fallback: 当日无分时数据时, 用昨日最大分时量代替
+                    if max_minute_vol == 0 and prev_max_vols:
+                        max_minute_vol = prev_max_vols[-1]
+                    ratio = (max_minute_vol / avg5_max) if avg5_max > 0 else 0
+                    ratios[code] = {
+                        'max_minute_vol': round(max_minute_vol, 0),
+                        'avg5_max_minute_vol': round(avg5_max, 0),
+                        'ratio': round(ratio, 2),
+                        'pass': ratio >= 2.0,
+                    }
+                except Exception:
+                    ratios[code] = {'max_minute_vol': 0, 'avg5_max_minute_vol': 0, 'ratio': 0, 'pass': False}
+        _minute_vol_ratio_cache[segment] = {'data': ratios, 'ts': _time.time()}
+        return jsonify({'success': True, 'ratios': ratios})
+    except Exception as e:
+        return jsonify({'success': False, 'error': f'{type(e).__name__}: {e}'}), 500
+
+
 _open_gain_cache = {}  # {segment: {data, ts}}
 
 
