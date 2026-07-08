@@ -28,6 +28,7 @@ def _dlog(msg, level='DEBUG'):
 from bootstrap import ensure_dependencies
 ensure_dependencies({
     'flask': 'flask>=3.0.0',
+    'flask_socketio': 'flask-socketio>=5.3.0',
     'requests': 'requests>=2.31.0',
     'bs4': 'beautifulsoup4>=4.12.0',
     'yaml': 'PyYAML>=6.0',
@@ -2100,6 +2101,25 @@ def monitor_stock_minute():
                 'vol': float(row['vol']),
             })
         result = {'success': True, 'points': points, 'date': 'today'}
+        # 补充昨收(供前端算涨幅/涨跌停尺度)
+        # mootdx bars 无 last_close 列, 取倒数第二根 close 当昨收(最后一根=当日)
+        # 优先 tqcenter 快照(含真实 LastClose), 回退 mootdx bars
+        try:
+            import tdx_source as ts
+            if ts.is_available():
+                snap = ts.snapshot(code)
+                if snap and snap.get('last_close', 0) > 0:
+                    result['last_close'] = snap['last_close']
+        except Exception:
+            pass
+        if 'last_close' not in result:
+            try:
+                with ht._get_tdx_lock():
+                    df_k = client.bars(symbol=code, frequency=9, offset=2)
+                if df_k is not None and len(df_k) >= 2:
+                    result['last_close'] = round(float(df_k.sort_index().iloc[-2]['close']), 3)
+            except Exception:
+                pass
         _stock_minute_cache[code] = {'ts': _time.time(), 'data': result}
         return jsonify(result)
     except Exception as e:
@@ -2109,7 +2129,6 @@ def monitor_stock_minute():
                 ht._reconnect_tdx()
         except Exception:
             pass
-        return jsonify({'success': False, 'error': f'{type(e).__name__}: {e}'}), 500
         return jsonify({'success': False, 'error': f'{type(e).__name__}: {e}'}), 500
 
 
@@ -2250,9 +2269,10 @@ _volume_ratio_cache = {}  # {segment: {data, ts}}
 
 @app.route('/api/monitor/stocks/volume-ratio', methods=['GET'])
 def monitor_stocks_volume_ratio():
-    """计算板块内个股 当日分时最高量 / 5日均量 比值, 用于条件筛选。
+    """计算板块内个股 当日成交量 / 5日均量 比值(量比), 用于条件筛选。
     参数: segment=cyb|kcb。60秒缓存。
-    返回 {success, ratios: {code: {day_max_vol, avg5_vol, ratio, pass}}}"""
+    返回 {success, ratios: {code: {day_vol, avg5_vol, ratio, pass}}}
+    注: 量比 = 当日总成交量 / 过去5日平均总成交量。两者都用日K的vol(全天总量), 口径一致。"""
     import time as _time
     segment = request.args.get('segment', 'cyb')
     if segment not in ('cyb', 'kcb'):
@@ -2277,26 +2297,103 @@ def monitor_stocks_volume_ratio():
             for s in stocks:
                 code = s['code']
                 try:
-                    # 当日分时最高量
-                    df_m = client.minute(symbol=code)
-                    day_max_vol = float(df_m['vol'].max()) if df_m is not None and not df_m.empty else 0
-                    # 5日K线均量
-                    df_k = client.bars(symbol=code, frequency=9, offset=5)
-                    if df_k is not None and len(df_k) > 0:
-                        avg5_vol = float(df_k['vol'].mean())
-                    else:
-                        avg5_vol = 0
-                    ratio = (day_max_vol / avg5_vol) if avg5_vol > 0 else 0
+                    # 一次 bars 调用同时取当日量和5日均量(日K vol=全天总成交量, 单位:手)
+                    df_k = client.bars(symbol=code, frequency=9, offset=6)
+                    if df_k is None or len(df_k) == 0:
+                        ratios[code] = {'day_vol': 0, 'avg5_vol': 0, 'ratio': 0, 'pass': False}
+                        continue
+                    df_k = df_k.sort_index()
+                    day_vol = float(df_k['vol'].iloc[-1])           # 最后一根 = 当日总量
+                    avg5_vol = float(df_k['vol'].iloc[:-1].mean()) if len(df_k) > 1 else 0  # 前几根均值
+                    ratio = (day_vol / avg5_vol) if avg5_vol > 0 else 0
                     ratios[code] = {
-                        'day_max_vol': round(day_max_vol, 0),
+                        'day_vol': round(day_vol, 0),
                         'avg5_vol': round(avg5_vol, 0),
                         'ratio': round(ratio, 2),
-                        'pass': ratio >= 3.0,  # 当日分时最高量 >= 5日均量 * 3
+                        'pass': ratio >= 3.0,  # 当日量 >= 5日均量 × 3
                     }
                 except Exception:
-                    ratios[code] = {'day_max_vol': 0, 'avg5_vol': 0, 'ratio': 0, 'pass': False}
+                    ratios[code] = {'day_vol': 0, 'avg5_vol': 0, 'ratio': 0, 'pass': False}
         _volume_ratio_cache[segment] = {'data': ratios, 'ts': _time.time()}
         return jsonify({'success': True, 'ratios': ratios})
+    except Exception as e:
+        return jsonify({'success': False, 'error': f'{type(e).__name__}: {e}'}), 500
+
+
+_open_gain_cache = {}  # {segment: {data, ts}}
+
+
+@app.route('/api/monitor/stocks/open-gain', methods=['GET'])
+def monitor_stocks_open_gain():
+    """计算板块内个股 开盘涨幅 = (当日开盘价 - 昨收) / 昨收 * 100, 用于"9:25开盘>3%"等条件筛选。
+    参数: segment=cyb|kcb。60秒缓存。
+    返回 {success, gains: {code: {open, last_close, open_gain, pass}}}
+    数据源: 优先 tqcenter batch_snapshots(含Open/LastClose, 走本地DLL不封IP), 回退 mootdx quotes(含open列)。"""
+    import time as _time
+    segment = request.args.get('segment', 'cyb')
+    if segment not in ('cyb', 'kcb'):
+        return jsonify({'success': False, 'error': 'segment 需为 cyb 或 kcb'}), 400
+    cached = _open_gain_cache.get(segment)
+    if cached and (_time.time() - cached['ts'] < 60):
+        return jsonify({'success': True, 'gains': cached['data']})
+    try:
+        import hot_track as ht
+        # 取板块 Top50 股票列表(与列表接口一致)
+        records = _fetch_segment_quotes(segment)
+        if not records:
+            return jsonify({'success': False, 'error': '无报价数据'}), 404
+        codes = [r['code'] for r in records[:50]]
+        gains = {}
+        # 优先 tqcenter batch_snapshots(含 Open + LastClose)
+        try:
+            import tdx_source as ts
+            if ts.is_available():
+                snaps = ts.batch_snapshots(codes)
+                if snaps:
+                    for c in codes:
+                        s = snaps.get(c)
+                        if s:
+                            open_p = s.get('open', 0) or 0
+                            last_close = s.get('last_close', 0) or 0
+                            og = ((open_p - last_close) / last_close * 100) if last_close > 0 and open_p > 0 else 0
+                            gains[c] = {
+                                'open': round(open_p, 3),
+                                'last_close': round(last_close, 3),
+                                'open_gain': round(og, 2),
+                                'pass': og > 3.0,
+                            }
+                    if gains:
+                        _open_gain_cache[segment] = {'data': gains, 'ts': _time.time()}
+                        return jsonify({'success': True, 'gains': gains})
+        except Exception as e:
+            print(f'[TQ] 开盘涨幅 {segment} 异常: {e}')
+        # 回退 mootdx quotes(含 open / last_close 列)
+        import pandas as pd
+        with ht._get_tdx_lock():
+            client = ht._get_tdx_client()
+            for i in range(0, len(codes), 80):
+                batch = codes[i:i + 80]
+                df = client.quotes(symbol=batch)
+                if df is None or df.empty:
+                    continue
+                for col in ('open', 'last_close', 'price'):
+                    if col in df.columns:
+                        df[col] = pd.to_numeric(df[col], errors='coerce')
+                for _, row in df.iterrows():
+                    c = str(row.get('code', ''))
+                    open_p = float(row.get('open', 0) or 0)
+                    last_close = float(row.get('last_close', 0) or 0)
+                    if last_close <= 0:
+                        continue
+                    og = ((open_p - last_close) / last_close * 100) if open_p > 0 else 0
+                    gains[c] = {
+                        'open': round(open_p, 3),
+                        'last_close': round(last_close, 3),
+                        'open_gain': round(og, 2),
+                        'pass': og > 3.0,
+                    }
+        _open_gain_cache[segment] = {'data': gains, 'ts': _time.time()}
+        return jsonify({'success': True, 'gains': gains})
     except Exception as e:
         return jsonify({'success': False, 'error': f'{type(e).__name__}: {e}'}), 500
 
@@ -2537,6 +2634,9 @@ def api_hot_track():
     end = request.args.get('end', '')
     sort = request.args.get('sort', 'stock_count')
     with_price = request.args.get('price', '1') not in ('0', 'false', 'no')
+    # 筛选条件: filter_and(与门, 全部满足) / filter_or(或门, 任一满足), 逗号分隔的条件ID
+    filter_and = [x for x in request.args.get('filter_and', '').split(',') if x] or None
+    filter_or = [x for x in request.args.get('filter_or', '').split(',') if x] or None
     
     # 验证日期格式
     if not (start and re.match(r'^\d{8}$', start)) or not (end and re.match(r'^\d{8}$', end)):
@@ -2553,7 +2653,8 @@ def api_hot_track():
     actual_sort = sort_map.get(sort, sort)
     
     try:
-        data = ht.track_hot_stocks(start, end, sort=actual_sort, with_price=with_price)
+        data = ht.track_hot_stocks(start, end, sort=actual_sort, with_price=with_price,
+                                   filter_and=filter_and, filter_or=filter_or)
     except Exception as e:
         return jsonify({'success': False, 'error': f'统计失败: {e}'}), 500
     

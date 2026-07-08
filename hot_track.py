@@ -427,9 +427,10 @@ def _mootdx_offset(start):
     return min(max(approx, 90), 800)
 
 
-def _compute_and_cache_metrics(code, closes, dates):
+def _compute_and_cache_metrics(code, closes, dates, opens=None):
     """根据收盘价序列和日期序列, 计算涨跌幅/20日/60日/MA10 并写入缓存。
-    closes/dates 已按日期升序排列。供 tqcenter 和 mootdx 路径共用。"""
+    closes/dates 已按日期升序排列。供 tqcenter 和 mootdx 路径共用。
+    opens: 可选的开盘价序列(与 closes 等长), 用于计算开盘涨幅(开盘价 vs 前日收盘)。"""
     cache = _load_price_cache()
     with _cache_lock:
         cache[f'{code}_tdays'] = dates
@@ -439,6 +440,9 @@ def _compute_and_cache_metrics(code, closes, dates):
             # 当日涨跌幅
             if i > 0 and closes[i - 1] > 0:
                 cache[f'{code}_{dstr}'] = round((closes[i] - closes[i - 1]) / closes[i - 1] * 100, 2)
+            # 开盘涨幅(开盘价 vs 前日收盘): 用于"9:25开盘>3%"等筛选条件
+            if opens and i > 0 and i < len(opens) and closes[i - 1] > 0:
+                cache[f'{code}_{dstr}_opengain'] = round((opens[i] - closes[i - 1]) / closes[i - 1] * 100, 2)
             # 20 日 / 60 日涨幅
             if i > 0:
                 j20 = max(0, i - 19)
@@ -478,8 +482,9 @@ def fetch_range_tqcenter(code, start, end):
         if not bars or len(bars) < 5:
             return False
         closes = [b['close'] for b in bars]
+        opens = [b['open'] for b in bars]
         dates = [b['date'].replace('-', '') for b in bars]
-        _compute_and_cache_metrics(code, closes, dates)
+        _compute_and_cache_metrics(code, closes, dates, opens)
         return True
     except Exception as e:
         _ht_logger.debug(f'tqcenter获取{code}失败: {e}')
@@ -506,8 +511,9 @@ def fetch_range_mootdx(code, start, end):
 
         df = df.sort_index()
         closes = [float(x) for x in df['close'].tolist()]
+        opens = [float(x) for x in df['open'].tolist()]
         dates = [str(idx)[:10].replace('-', '') for idx in df.index]
-        _compute_and_cache_metrics(code, closes, dates)
+        _compute_and_cache_metrics(code, closes, dates, opens)
         return True
     except Exception as e:
         print(f"mootdx获取{code}失败: {e}")
@@ -531,8 +537,9 @@ def fetch_range_local_tdx(code, start, end):
 
         df = df.sort_index()
         closes = [float(x) for x in df['close'].tolist()]
+        opens = [float(x) for x in df['open'].tolist()]
         dates = [str(idx)[:10].replace('-', '') for idx in df.index]
-        _compute_and_cache_metrics(code, closes, dates)
+        _compute_and_cache_metrics(code, closes, dates, opens)
         return True
     except Exception as e:
         print(f"本地通达信获取{code}失败: {e}")
@@ -574,6 +581,13 @@ def get_pct_change(code, date):
     """从缓存读取某日涨跌幅, 未命中返回 None"""
     cache = _load_price_cache()
     return cache.get(f'{code}_{date}')
+
+
+def get_open_gain(code, date):
+    """从缓存读取某日开盘涨幅(开盘价 vs 前日收盘), 未命中返回 None。
+    用于"9:25开盘>3%"等筛选条件。"""
+    cache = _load_price_cache()
+    return cache.get(f'{code}_{date}_opengain')
 
 
 def get_pct_20d(code, date):
@@ -792,7 +806,12 @@ def apply_removal_rules(data, progress=None, manual_remove_codes=None):
                 is_kcb_cyb = st.get('is_kcb_cyb', False)
                 is_limit_up = False
                 if pct is not None:
-                    is_limit_up = pct >= 19.4 if is_kcb_cyb else pct >= 9.8
+                    # 涨停区间: 主板 9.8%~10.6%, 创业板/科创板 19.4%~20.6%
+                    # (上下界与前端 stockPctClass 一致, 避免超界涨幅被误判涨停)
+                    if is_kcb_cyb:
+                        is_limit_up = 19.4 <= pct <= 20.6
+                    else:
+                        is_limit_up = 9.8 <= pct <= 10.6
                 if '一字板' in (track.get('desc', '') or ''):
                     is_limit_up = True
                 below = (track.get('below_ma10') == True) and not is_limit_up
@@ -831,9 +850,36 @@ def apply_removal_rules(data, progress=None, manual_remove_codes=None):
     return data
 
 
+def _meets_condition(cond_id, track_day):
+    """判断某股票某日的 track 数据是否满足某筛选条件。
+    track_day = track[d] 字典, 含 pct/opengain 等指标。
+    返回 True/False; 数据缺失( None )视为不满足。"""
+    pct = track_day.get('pct')
+    og = track_day.get('opengain')
+    if cond_id == 'pct_5_12':
+        return isinstance(pct, (int, float)) and 5 <= pct <= 12
+    if cond_id == 'open_gt_3':
+        return isinstance(og, (int, float)) and og > 3
+    return True  # 未知条件默认通过(不影响筛选)
+
+
+def _passes_filter(track_day, filter_and, filter_or):
+    """对单日 track 应用与门/或门筛选。
+    filter_and: 条件ID列表, 全部满足才通过(AND)
+    filter_or:  条件ID列表, 任一满足即通过(OR)
+    两组都为空时, 默认通过(不筛选)。"""
+    if filter_and:
+        if not all(_meets_condition(c, track_day) for c in filter_and):
+            return False
+    if filter_or:
+        if not any(_meets_condition(c, track_day) for c in filter_or):
+            return False
+    return True
+
+
 def track_hot_stocks(start, end, sort='stock_count', with_price=True,
                      excel_dir=EXCEL_DIR, progress=None, source='db',
-                     apply_removal=True):
+                     apply_removal=True, filter_and=None, filter_or=None):
     """
     热门股追踪主函数
 
@@ -841,6 +887,9 @@ def track_hot_stocks(start, end, sort='stock_count', with_price=True,
         start, end: 8位日期字符串 YYYYMMDD
         sort: 'stock_count'(按板块内入选票数) | 'days'(按板块出现天数)
         with_price: 是否获取涨幅(mootdx)
+        filter_and: 与门条件ID列表(如 ['pct_5_12', 'open_gt_3']), 入榜当天须全部满足
+        filter_or:  或门条件ID列表, 入榜当天须满足其一
+        (两组都为空则不筛选; 过滤只作用于"入榜当天", 不影响已入榜股票的后续跟踪)
 
     返回: dict
         {
@@ -940,6 +989,7 @@ def track_hot_stocks(start, end, sort='stock_count', with_price=True,
             below_ma10 = is_below_ma10(code, d) if with_price else None
             ma10 = get_ma10(code, d) if with_price else None
             suspended = is_suspended(code, d) if with_price else None
+            opengain = get_open_gain(code, d) if with_price else None
             if rec:
                 track[d] = {
                     'desc': make_desc(rec['连扳数'], rec['末次时间']),
@@ -949,6 +999,7 @@ def track_hot_stocks(start, end, sort='stock_count', with_price=True,
                     'pct': pct,
                     'pct_20d': pct_20d,
                     'pct_60d': pct_60d,
+                    'opengain': opengain,
                     'ma10': ma10,
                     'below_ma10': below_ma10,
                     'suspended': suspended,
@@ -960,6 +1011,7 @@ def track_hot_stocks(start, end, sort='stock_count', with_price=True,
                     'pct': pct,
                     'pct_20d': pct_20d,
                     'pct_60d': pct_60d,
+                    'opengain': opengain,
                     'ma10': ma10,
                     'below_ma10': below_ma10,
                     'suspended': suspended,
@@ -1008,13 +1060,21 @@ def track_hot_stocks(start, end, sort='stock_count', with_price=True,
                     for s in candidates:
                         if stock_qualifies(s):
                             code = s['代码']
+                            # 筛选条件检查: 入榜当天须通过与门/或门(只作用于入榜, 不影响后续跟踪)
+                            if filter_and or filter_or:
+                                trk = build_track(blk, code)
+                                fd_track = trk.get(d, {})
+                                if not _passes_filter(fd_track, filter_and, filter_or):
+                                    continue
+                            else:
+                                trk = build_track(blk, code)
                             block_seen_codes[blk].add(code)
                             block_cum_stocks[blk].append({
                                 'code': code,
                                 'name': s['名称'],
                                 'is_kcb_cyb': is_kcb_cyb(code),
                                 'first_date': d,
-                                'track': build_track(blk, code),
+                                'track': trk,
                             })
             else:
                 # 活跃板块: 按 stock_qualifies 正常加入新票
@@ -1023,13 +1083,19 @@ def track_hot_stocks(start, end, sort='stock_count', with_price=True,
                     if code in block_seen_codes[blk]:
                         continue
                     if stock_qualifies(s):
+                        # 筛选条件检查: 入榜当天须通过与门/或门
+                        trk = build_track(blk, code)
+                        if filter_and or filter_or:
+                            fd_track = trk.get(d, {})
+                            if not _passes_filter(fd_track, filter_and, filter_or):
+                                continue
                         block_seen_codes[blk].add(code)
                         block_cum_stocks[blk].append({
                             'code': code,
                             'name': s['名称'],
                             'is_kcb_cyb': is_kcb_cyb(code),
                             'first_date': d,
-                            'track': build_track(blk, code),
+                            'track': trk,
                         })
             
             cum = block_cum_stocks[blk]
@@ -1046,7 +1112,12 @@ def track_hot_stocks(start, end, sort='stock_count', with_price=True,
                 pct = track.get('pct')
                 is_limit_up = False
                 if pct is not None:
-                    is_limit_up = pct >= 19.4 if st['is_kcb_cyb'] else pct >= 9.8
+                    # 涨停区间: 主板 9.8%~10.6%, 创业板/科创板 19.4%~20.6%
+                    # (上下界与前端 stockPctClass 一致, 避免超界涨幅被误判涨停)
+                    if st['is_kcb_cyb']:
+                        is_limit_up = 19.4 <= pct <= 20.6
+                    else:
+                        is_limit_up = 9.8 <= pct <= 10.6
                 if '一字板' in (track.get('desc', '') or ''):
                     is_limit_up = True
 

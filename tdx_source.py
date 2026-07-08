@@ -36,14 +36,61 @@ if not _logger.handlers:
 
 # ============== tqcenter 路径配置 ==============
 # 通达信量化版安装目录
-TDX_INSTALL_DIR = os.environ.get('TDX_INSTALL_DIR', r'C:\new_tdx_mock')
+#   优先级: 环境变量 TDX_INSTALL_DIR > 自动探测(注册表/常见路径) > 默认值
+#   自动探测命中后会缓存, 避免重复扫描
+def _detect_tdx_install_dir():
+    """自动探测通达信量化版安装目录。返回路径字符串或 None。"""
+    # 1. 环境变量
+    env = os.environ.get('TDX_INSTALL_DIR', '').strip()
+    if env and os.path.isdir(env):
+        return env
+    # 2. 常见安装路径(按命中概率排序)
+    candidates = [
+        r'D:\game\tdx',          # 本机实际安装位置
+        r'C:\new_tdx',
+        r'D:\new_tdx',
+        r'C:\通达信',
+        r'D:\通达信',
+        r'E:\new_tdx',
+    ]
+    for p in candidates:
+        if os.path.isdir(os.path.join(p, 'PYPlugins')):
+            return p
+    # 3. 注册表探测(通达信量化版写入的卸载项)
+    try:
+        import winreg
+        for hive in (winreg.HKEY_CURRENT_USER, winreg.HKEY_LOCAL_MACHINE):
+            try:
+                with winreg.OpenKey(hive, r'SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall') as base:
+                    i = 0
+                    while True:
+                        try:
+                            sub = winreg.EnumKey(base, i)
+                            i += 1
+                            with winreg.OpenKey(base, sub) as k:
+                                name, _ = winreg.QueryValueEx(k, 'DisplayName')
+                                if name and ('通达信' in name or 'TDX' in name.upper()):
+                                    loc, _ = winreg.QueryValueEx(k, 'InstallLocation')
+                                    if loc and os.path.isdir(os.path.join(loc, 'PYPlugins')):
+                                        return loc
+                        except OSError:
+                            break
+            except OSError:
+                continue
+    except Exception:
+        pass
+    return None
+
+
+TDX_INSTALL_DIR = _detect_tdx_install_dir() or r'C:\new_tdx_mock'
 PYPLUGINS_DIR = os.path.join(TDX_INSTALL_DIR, 'PYPlugins')
 SYS_DIR = os.path.join(PYPLUGINS_DIR, 'sys')
 
 _tq = None           # tqcenter.tq 模块引用
 _tq_available = None  # None=未检测, True=可用, False=不可用
 _tq_lock = threading.Lock()
-_tq_init_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '_tqcenter_init.py')
+# initialize 需要一个文件路径作为连接标识(run_id), 用本模块自身路径即可, 不依赖外部文件
+_tq_init_path = os.path.abspath(__file__)
 
 # 订阅状态
 _subscribed_codes = set()       # 已订阅的代码集合 (XXXXXX.XX 格式)

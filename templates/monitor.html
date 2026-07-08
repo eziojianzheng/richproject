@@ -121,6 +121,15 @@
   .filter-chip:hover { background: rgba(255,255,255,0.08); }
   .filter-chip input { margin: 0; cursor: pointer; accent-color: var(--accent); }
   .filter-chip:has(input:checked) { background: rgba(37,99,235,0.25); color: #93c5fd; border-color: rgba(37,99,235,0.5); }
+  /* 多选下拉筛选(与门/或门) */
+  .filter-select {
+    background: var(--bg-input); border: 1px solid var(--border-color); color: var(--text-primary);
+    padding: 2px 4px; border-radius: 6px; font-size: 11px; vertical-align: middle;
+    max-width: 120px;
+  }
+  .filter-select option { padding: 2px 6px; }
+  .filter-select:focus { outline: none; border-color: var(--accent); }
+  .filter-select-label { color: var(--text-muted); font-size: 10px; font-weight: 600; flex-shrink: 0; }
   .stock-list {
     flex: 1; min-height: 0; overflow-y: auto; padding: 4px 0;
   }
@@ -296,7 +305,17 @@
           </div>
           <div class="filter-bar" data-seg="cyb">
             <span class="filter-label">筛选</span>
-            <label class="filter-chip"><input type="checkbox" data-filter="vol_ratio_3x"><span>当日最高量&gt;5日均量×3</span></label>
+            <label class="filter-chip"><input type="checkbox" data-filter="vol_ratio_3x"><span>当日量&gt;5日均量×3</span></label>
+            <span class="filter-select-label">与门</span>
+            <select class="filter-select" data-mode="and" multiple size="2">
+              <option value="pct_5_12">涨幅5-12%</option>
+              <option value="open_gt_3">9:25开盘&gt;3%</option>
+            </select>
+            <span class="filter-select-label">或门</span>
+            <select class="filter-select" data-mode="or" multiple size="2">
+              <option value="pct_5_12">涨幅5-12%</option>
+              <option value="open_gt_3">9:25开盘&gt;3%</option>
+            </select>
           </div>
           <div id="cybList" class="stock-list"></div>
         </div>
@@ -317,7 +336,17 @@
           </div>
           <div class="filter-bar" data-seg="kcb">
             <span class="filter-label">筛选</span>
-            <label class="filter-chip"><input type="checkbox" data-filter="vol_ratio_3x"><span>当日最高量&gt;5日均量×3</span></label>
+            <label class="filter-chip"><input type="checkbox" data-filter="vol_ratio_3x"><span>当日量&gt;5日均量×3</span></label>
+            <span class="filter-select-label">与门</span>
+            <select class="filter-select" data-mode="and" multiple size="2">
+              <option value="pct_5_12">涨幅5-12%</option>
+              <option value="open_gt_3">9:25开盘&gt;3%</option>
+            </select>
+            <span class="filter-select-label">或门</span>
+            <select class="filter-select" data-mode="or" multiple size="2">
+              <option value="pct_5_12">涨幅5-12%</option>
+              <option value="open_gt_3">9:25开盘&gt;3%</option>
+            </select>
           </div>
           <div id="kcbList" class="stock-list"></div>
         </div>
@@ -594,6 +623,7 @@ function renderDaily(bars) {
 // ===== 当日分时图(大盘白线 + 个股红线叠加) =====
 let _minutePoints = null;       // 缓存当日大盘分时, 供补黄线/叠加个股时重渲染
 let _stockMinutePoints = null;  // 缓存选中个股当日分时
+let _stockLastClose = 0;        // 缓存选中个股昨收(后端分时接口返回, 不依赖 stockDailyBars 就绪)
 let _leadingInfo = null;        // 缓存领先指标 {leadingLine}
 
 async function loadMinute() {
@@ -612,14 +642,14 @@ async function loadMinute() {
       return;
     }
     _minutePoints = data.points;
-    renderMinute(minuteChart, 'minuteChart', data.points, data.date, null, _stockMinutePoints);
+    renderMinute(minuteChart, 'minuteChart', data.points, data.date, null, _stockMinutePoints, _stockLastClose);
     hint.textContent = `${data.points.length} 个数据点`;
     // 异步拉领先指标(不阻塞分时渲染), 到了重新渲染整图补上黄线
     fetch('/api/monitor/index/leading').then(r => r.ok ? r.json() : null).then(lj => {
       if (!lj || !lj.success || lj.index_last_close <= 0 || !_minutePoints) return;
       const leadingLine = +(lj.index_last_close * (1 + lj.leading_pct / 100)).toFixed(2);
       _leadingInfo = { leadingLine };
-      renderMinute(minuteChart, 'minuteChart', _minutePoints, data.date, leadingLine, _stockMinutePoints);
+      renderMinute(minuteChart, 'minuteChart', _minutePoints, data.date, leadingLine, _stockMinutePoints, _stockLastClose);
       hint.textContent = `${_minutePoints.length} 个数据点 · 领先 ${lj.leading_pct}%`;
     }).catch(() => {});
   } catch (e) {
@@ -636,12 +666,14 @@ async function loadStockMinuteOverlay(code) {
     if (!data.success || !data.points || data.points.length < 2) {
       // 个股当日分时未就绪: 静默, 不覆盖已有的大盘分时
       _stockMinutePoints = null;
+      _stockLastClose = 0;
       return;
     }
     _stockMinutePoints = data.points;
+    _stockLastClose = data.last_close || 0;  // 后端返回的昨收, 不依赖 stockDailyBars 就绪
     if (_minutePoints) {
       renderMinute(minuteChart, 'minuteChart', _minutePoints, 'today',
-        _leadingInfo ? _leadingInfo.leadingLine : null, _stockMinutePoints);
+        _leadingInfo ? _leadingInfo.leadingLine : null, _stockMinutePoints, _stockLastClose);
       const name = document.getElementById('stockDailyTitle').textContent;
       hint.textContent = `${_minutePoints.length} 点 · 叠加 ${name}`;
     }
@@ -676,13 +708,21 @@ async function loadHistMinute(date) {
 // 通用分时图渲染(复用于当日分时和历史分时)
 // leadingLine: 领先指标换算的指数点位(黄线横线), 仅当日分时有; 历史分时传 null
 // stockPoints: 选中个股的当日分时(可选), 有则在同图叠加红色线
-function renderMinute(chartVar, domId, points, dateLabel, leadingLine, stockPoints) {
+// stockLastClose: 个股昨收价(可选), 优先于全局 stockDailyBars 用于涨幅基准
+function renderMinute(chartVar, domId, points, dateLabel, leadingLine, stockPoints, stockLastClose) {
   const times = points.map(p => p.time);
   const prices = points.map(p => p.price);
   const vols = points.map(p => p.vol);
 
-  // 昨收(用第一个点近似)
-  const basePrice = prices.length > 0 ? prices[0] : 0;
+  // 昨收基准: 优先用前一日K线收盘(最准确), 退而用第一个点近似
+  // dailyData 倒数第二根 close = 昨收(最后一根是当日, 可能尚未收盘)
+  let basePrice = 0;
+  if (domId === 'minuteChart' && typeof dailyData !== 'undefined' && dailyData.length >= 2) {
+    basePrice = dailyData[dailyData.length - 2].close;
+  }
+  if (!basePrice || basePrice <= 0) {
+    basePrice = prices.length > 0 ? prices[0] : 0;
+  }
   const maxDev = Math.max(...prices.map(p => Math.abs(p - basePrice))) || 1;
 
   const chart = echarts.init(document.getElementById(domId), 'dark');
@@ -721,9 +761,18 @@ function renderMinute(chartVar, domId, points, dateLabel, leadingLine, stockPoin
   if (stockPoints && stockPoints.length > 0) {
     const stockPrices = stockPoints.map(p => p.price);
     const stockVols = stockPoints.map(p => p.vol);
-    stockBasePrice = stockPrices[0];
-    // 涨停幅度: 科创板688/创业板300 = 20%, 主板 = 10%
-    const isKcb = curStockCode && (curStockCode.startsWith('688') || curStockCode.startsWith('300'));
+    // 昨收基准: 优先用后端分时接口返回的 last_close(每次切换都带, 不依赖全局 stockDailyBars 就绪状态)
+    // 其次用个股日K倒数第二根close; 最后退回第一个点
+    if (stockLastClose && stockLastClose > 0) {
+      stockBasePrice = stockLastClose;
+    } else if (typeof stockDailyBars !== 'undefined' && stockDailyBars.length >= 2) {
+      stockBasePrice = stockDailyBars[stockDailyBars.length - 2].close;
+    }
+    if (!stockBasePrice || stockBasePrice <= 0) {
+      stockBasePrice = stockPrices[0];
+    }
+    // 涨停幅度: 科创板688/创业板300/301 = 20%, 主板 = 10%
+    const isKcb = curStockCode && (curStockCode.startsWith('688') || curStockCode.startsWith('300') || curStockCode.startsWith('301'));
     const limitRate = isKcb ? 0.2 : 0.1;
     stockLimitDev = stockBasePrice * limitRate;  // 涨停价-昨收 = 跌停价到昨收的距离
     // 个股量红绿柱: 同样按本分钟 vs 上一分钟
@@ -743,8 +792,8 @@ function renderMinute(chartVar, domId, points, dateLabel, leadingLine, stockPoin
     stockSeries = [{
       name: '个股', type: 'line', data: stockPrices, symbol: 'none',
       lineStyle: { color: '#e63946', width: 1.5 },
-      // 个股用右 y 轴(独立刻度), 避免与大盘指数量级差异导致线压平
-      yAxisIndex: 2,
+      // 个股用左 y 轴(个股独占分时图时)
+      yAxisIndex: 0,
       // 涨停/跌停标线
       markLine: {
         symbol: 'none', silent: true,
@@ -767,7 +816,7 @@ function renderMinute(chartVar, domId, points, dateLabel, leadingLine, stockPoin
     // 个股黄色均价线(VWAP: 累计成交额/累计成交量)
     {
       name: '个股均价', type: 'line', symbol: 'none',
-      yAxisIndex: 2,
+      yAxisIndex: 0,
       lineStyle: { color: '#facc15', width: 1 },
       data: (function() {
         let cumAmt = 0, cumVol = 0;
@@ -779,14 +828,24 @@ function renderMinute(chartVar, domId, points, dateLabel, leadingLine, stockPoin
       })(),
     }];
     stockVolSeries = [{
-      name: '个股量', type: 'bar', yAxisIndex: 3, data: svols,
+      name: '个股量', type: 'bar', yAxisIndex: 1, data: svols,
       barGap: '10%', barCategoryGap: '20%',
     }];
   }
 
   // y 轴范围: 大盘按波动, 个股按涨停/跌停尺度(见下方 yAxis 配置)
 
-  const seriesList = [
+  // 有个股叠加时: 个股独占左侧Y轴(显示涨幅), 上证白线叠加(隐藏右轴, 不显示点数/量)
+  // 无个股时: 纯上证分时, 上证占左侧
+  const hasStock = !!(stockPoints && stockPoints.length > 0);
+  const seriesList = hasStock ? [
+    // 上证白线(右隐藏轴, 仅作参考叠加, 不显示标签)
+    { name: '指数', type: 'line', data: prices, smooth: true, symbol: 'none',
+      yAxisIndex: 2,  // 隐藏的右轴
+      lineStyle: { color: 'rgba(255,255,255,0.35)', width: 1, type: 'dashed' },
+    },
+    // 个股(左轴) + 个股均价(左轴) + 个股量(隐藏轴)
+  ].concat(stockSeries).concat(stockVolSeries) : [
     { name: '指数', type: 'line', data: prices, smooth: true, symbol: 'none',
       lineStyle: { color: '#ffffff', width: 1.5 },
       areaStyle: { color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
@@ -799,31 +858,37 @@ function renderMinute(chartVar, domId, points, dateLabel, leadingLine, stockPoin
       }
     },
     { name: '成交量', type: 'bar', yAxisIndex: 1, data: indexVols },
-  ].concat(stockSeries).concat(stockVolSeries);
+  ];
 
-  // y 轴配置: 0=大盘价(左), 1=大盘量(左隐藏), 2=个股价(右), 3=个股量(右隐藏)
-  const yAxis = [
+  // y 轴配置:
+  //   有个股: 0=个股价(左, 显示点位+涨幅%, 涨跌停尺度), 1=个股量(左隐藏), 2=上证价(右隐藏, 仅画线不显标签)
+  //   无个股: 0=上证点位(左), 1=上证量(左隐藏)
+  const yAxis = hasStock ? [
+    { scale: true,
+      min: stockBasePrice - stockLimitDev,   // 跌停价
+      max: stockBasePrice + stockLimitDev,   // 涨停价
+      splitLine: { lineStyle: { color: '#252a33' } },
+      axisLabel: { fontSize: 10,
+        formatter: function(v) {
+          const pct = ((v - stockBasePrice) / stockBasePrice * 100);
+          const sign = pct >= 0 ? '+' : '';
+          return `{p|${v.toFixed(2)}} {${pct >= 0 ? 'up' : 'down'}|${sign}${pct.toFixed(1)}%}`;
+        },
+        rich: {
+          p: { color: '#9aa0a6', fontSize: 10 },
+          up: { color: '#ef5350', fontSize: 10 },
+          down: { color: '#26a69a', fontSize: 10 },
+        }
+      } },
+    { gridIndex: 0, splitLine: { show: false }, axisLabel: { show: false } },
+    // 上证白线专用轴(右隐藏): scale自适应, 不显示任何标签/分割线
+    { scale: true, position: 'right', splitLine: { show: false }, axisLabel: { show: false } },
+  ] : [
     { scale: true, min: basePrice - maxDev * 1.1, max: basePrice + maxDev * 1.1,
       splitLine: { lineStyle: { color: '#252a33' } },
-      axisLabel: { color: '#9aa0a6' } },
+      axisLabel: { color: '#9aa0a6', fontSize: 10 } },
     { gridIndex: 0, splitLine: { show: false }, axisLabel: { show: false } },
   ];
-  if (stockPoints && stockPoints.length > 0) {
-    // Y轴按涨停/跌停尺度: 从跌停价到涨停价
-    const ztPrice = stockBasePrice + stockLimitDev;   // 涨停价
-    const dtPrice = stockBasePrice - stockLimitDev;   // 跌停价
-    yAxis.push(
-      { scale: true, position: 'right',
-        min: dtPrice, max: ztPrice,
-        splitLine: { show: false }, axisLabel: { color: '#e63946', fontSize: 10,
-          formatter: function(v) {
-            const pct = ((v - stockBasePrice) / stockBasePrice * 100);
-            return v.toFixed(2) + ' ' + (pct >= 0 ? '+' : '') + pct.toFixed(1) + '%';
-          }
-        } },
-      { gridIndex: 0, splitLine: { show: false }, axisLabel: { show: false } }
-    );
-  }
 
   chart.setOption({
     backgroundColor: 'transparent',
@@ -854,7 +919,7 @@ function renderMinute(chartVar, domId, points, dateLabel, leadingLine, stockPoin
       }
     },
     legend: { show: false, data: ['指数', '成交量', '个股', '个股量', '个股均价'] },
-    grid: { left: '6%', right: stockPoints && stockPoints.length > 0 ? '8%' : '4%', top: '12%', bottom: '20%' },
+    grid: { left: 72, right: '4%', top: '12%', bottom: '20%' },
     xAxis: {
       type: 'category', data: times, boundaryGap: false,
       axisLine: { lineStyle: { color: '#2c313a' } },
@@ -1010,6 +1075,18 @@ function restoreIndicatorState() {
     } catch(e) {}
   });
 }
+// 仅应用个股日K的均线显隐状态(切换个股后 setOption 重置了 legend, 需重新应用)
+function applyStockIndicatorState() {
+  document.querySelectorAll('.indicator-toggle input[data-target="stock"]').forEach(function(cb) {
+    const name = cb.getAttribute('data-series');
+    try {
+      const saved = JSON.parse(localStorage.getItem('monitor_stock_ma') || '{}');
+      if (name in saved && stockDailyChart) {
+        stockDailyChart.dispatchAction({ type: saved[name] ? 'legendSelect' : 'legendUnSelect', name });
+      }
+    } catch(e) {}
+  });
+}
 
 // ===== 第二列: 创业板/科创板个股 =====
 const STOCK_SORTS = { cyb: 'pct', kcb: 'pct' };  // 各板块当前排序
@@ -1029,12 +1106,16 @@ async function loadStockList(seg) {
     renderStockList(seg, data.stocks);
     // 渲染后订阅报价推送(WS每秒推送这些股票的最新价)
     subscribeQuotes(seg);
-    // 列表渲染后重新应用筛选(若量比条件已勾选但数据未就绪, 异步补上)
+    // 列表渲染后重新应用筛选(若条件已勾选但数据未就绪, 异步补上)
     const active = getActiveFilters(seg);
-    if (active.size > 0) {
+    const { and: andConds, or: orConds } = getSelectFilters(seg);
+    if (active.size > 0 || andConds.size > 0 || orConds.size > 0) {
       applyFilters(seg);
       if (active.has('vol_ratio_3x') && !volRatioCache[seg]) {
         ensureVolRatio(seg).then(() => applyFilters(seg));
+      }
+      if ((andConds.has('open_gt_3') || orConds.has('open_gt_3')) && !openGainCache[seg]) {
+        ensureOpenGain(seg).then(() => applyFilters(seg));
       }
     }
   } catch (e) {
@@ -1052,7 +1133,7 @@ function renderStockList(seg, stocks) {
     const addLabel = watchlistCodes.has(s.code) ? '★' : '+';
     // name 转义防 XSS/引号破坏
     const safeName = s.name.replace(/"/g, '&quot;').replace(/'/g, '&#39;');
-    return `<div class="stock-item${clsStr}" data-code="${s.code}" data-name="${safeName}">
+    return `<div class="stock-item${clsStr}" data-code="${s.code}" data-name="${safeName}" data-pct="${s.pct}">
       <span class="wl-add" title="${watchlistCodes.has(s.code) ? '已在自选' : '加入自选'}">${addLabel}</span>
       <span class="s-code">${s.code}</span>
       <span class="s-name">${s.name}</span>
@@ -1089,6 +1170,9 @@ function selectStock(code, name) {
     _socket.emit('subscribe_stock', code);
   }
   curStockCode = code;
+  // 清旧个股分时缓存(避免切换瞬间用上一只票的基准/分时)
+  _stockMinutePoints = null;
+  _stockLastClose = 0;
   // 高亮选中行(两列 + 自选股面板都清除再激活)
   document.querySelectorAll('.stock-item.active, .wl-item.active').forEach(el => el.classList.remove('active'));
   document.querySelectorAll(`.stock-item[data-code="${code}"], .wl-item[data-code="${code}"]`).forEach(el => el.classList.add('active'));
@@ -1216,8 +1300,10 @@ async function loadStockDaily(code) {
   } catch(e) { showChartError(el, '请求异常: ' + e.message); }
 }
 
-// 假定涨停: 当天(最后一根)画虚线K线框, 开盘=当天open, 收盘=涨停价
-// 涨停价 = 昨收 × 1.1(主板10%) 或 × 1.2(科创板688/创业板300 20%)
+// 假定涨停: 当天(最后一根)画灰色虚线K线框, 开盘=当天open, 收盘=涨停价
+// 涨停价 = 昨收 × 1.1(主板10%) 或 × 1.2(科创板688/创业板300/301 20%)
+// 跌停价 = 昨收 × 0.9(主板) 或 × 0.8(创业板/科创板)  —— 不能用 ÷1.1, 与 ×0.9 不等
+// 若开盘价 >= 涨停价(涨停开盘) → 画一字板形态(涨停价处一根横线)
 // 随实体K线变化, 实体会逐步吞噬虚线框
 function buildAssumeZtSeries(bars) {
   const toggle = document.getElementById('assumeZtToggle');
@@ -1234,46 +1320,64 @@ function buildAssumeZtSeries(bars) {
     lastClose = bars.length >= 2 ? bars[lastIdx - 1].close : last.open;
   }
   if (!lastClose || lastClose <= 0) lastClose = last.open;
-  // 涨停幅度: 科创板688/创业板300 = 20%, 主板 = 10%
-  const isKcb = curStockCode && (curStockCode.startsWith('688') || curStockCode.startsWith('300'));
+  // 涨停幅度: 科创板688/创业板300/301 = 20%, 主板 = 10%
+  const isKcb = curStockCode && (curStockCode.startsWith('688') || curStockCode.startsWith('300') || curStockCode.startsWith('301'));
   const limitRate = isKcb ? 1.2 : 1.1;
-  // 涨停价 = 昨收 × 涨幅, 四舍五入到分
+  const downRate  = isKcb ? 0.8 : 0.9;   // 跌停系数(不能用 1/limitRate, 与 ×0.9 不等)
+  // 涨停价/跌停价 = 昨收 × 系数, 四舍五入到分
   const ztPrice = +(lastClose * limitRate).toFixed(2);
-  const dtPrice = +(lastClose / limitRate).toFixed(2);  // 跌停价
+  const dtPrice = +(lastClose * downRate).toFixed(2);
+  // 灰色虚线统一样式
+  const dashColor = '#9aa0a6';
+  const dashStyle = { stroke: dashColor, lineWidth: 1.2, lineDash: [4, 3] };
+  const lineDashStyle = { stroke: dashColor, lineWidth: 1, lineDash: [3, 2] };
+
+  // 一字板判定: 开盘价 >= 涨停价 (涨停开盘, 全天封板)
+  const isOneWord = last.open >= ztPrice;
   // 虚线K线: [open, close=涨停价, low, high]
-  const ztOpen = last.open;
+  const ztOpen = isOneWord ? ztPrice : last.open;   // 一字板: 开=收=涨停价
   const ztClose = ztPrice;
-  const ztLow = Math.min(last.low, lastClose, ztPrice);
-  const ztHigh = Math.max(last.high, ztPrice);
-  // custom renderItem: 画虚线矩形(蜡烛体) + 上下影线
+  const ztLow = isOneWord ? ztPrice : Math.min(last.low, lastClose, ztPrice);
+  const ztHigh = isOneWord ? ztPrice : Math.max(last.high, ztPrice);
+  // custom renderItem: 画虚线矩形(蜡烛体) + 上下影线; 一字板只画一根横线
   return {
     name: '假定涨停', type: 'custom',
-    data: [[lastIdx, ztOpen, ztClose, ztLow, ztHigh]],
+    data: [[lastIdx, ztOpen, ztClose, ztLow, ztHigh, isOneWord ? 1 : 0]],
     renderItem: function(params, api) {
       const idx = api.value(0);
       const open = api.value(1), close = api.value(2), low = api.value(3), high = api.value(4);
+      const oneWord = api.value(5);
       const openY = api.coord([idx, open]);
       const closeY = api.coord([idx, close]);
       const lowY = api.coord([idx, low]);
       const highY = api.coord([idx, high]);
       const x = openY[0];
       const halfW = api.size([1, 0])[0] * 0.3;  // 蜡烛宽度
+      // 一字板: 涨停价处一根横线(无影线, 无实体框)
+      if (oneWord) {
+        return {
+          type: 'group',
+          children: [
+            { type: 'line', shape: { x1: x - halfW, y1: closeY[1], x2: x + halfW, y2: closeY[1] },
+              style: { stroke: dashColor, lineWidth: 1.5, lineDash: [4, 3] } },
+          ]
+        };
+      }
+      // 普通假定涨停: 虚线矩形框 + 上下影线, 全灰
       const top = Math.min(openY[1], closeY[1]);
       const bot = Math.max(openY[1], closeY[1]);
-      const isUp = close >= open;
-      const color = isUp ? '#ef5350' : '#26a69a';  // 实体颜色不变(涨红跌绿)
       return {
         type: 'group',
         children: [
           // 上影线
           { type: 'line', shape: { x1: x, y1: highY[1], x2: x, y2: top },
-            style: { stroke: color, lineWidth: 1, lineDash: [3, 2] } },
+            style: lineDashStyle },
           // 下影线
           { type: 'line', shape: { x1: x, y1: bot, x2: x, y2: lowY[1] },
-            style: { stroke: color, lineWidth: 1, lineDash: [3, 2] } },
+            style: lineDashStyle },
           // 蜡烛体(虚线矩形框)
           { type: 'rect', shape: { x: x - halfW, y: top, width: halfW * 2, height: Math.max(bot - top, 1) },
-            style: { fill: 'transparent', stroke: color, lineWidth: 1.2, lineDash: [4, 3] } },
+            style: { fill: 'transparent', stroke: dashColor, lineWidth: 1.2, lineDash: [4, 3] } },
         ]
       };
     }
@@ -1350,6 +1454,10 @@ function renderStockDaily(bars) {
     ],
   }, true);
   stockDailyChart.resize();
+
+  // 重新应用持久化的均线显隐状态(setOption notMerge=true 会重置 legend, 需重新应用)
+  // 这样切换个股后, 之前隐藏的 MA5/MA10/MA20 仍保持隐藏
+  applyStockIndicatorState();
 
   // 双击个股日K线 → 加载该日个股历史分时
   let _stockHoveredIdx = -1;
@@ -1500,10 +1608,13 @@ async function loadStockHistMinute(code, date) {
 function renderStockHistMinute(points, dateLabel) {
   const times = points.map(p => p.time);
   const prices = points.map(p => p.price);
+  const vols = points.map(p => p.vol);
+  // 昨收基准: 历史分时无对应日K昨收, 用第一个点近似(开盘第一分钟价)
+  // 注: 若需精确昨收, 后端 /api/monitor/stock/minutes 需返回该日 last_close
   const basePrice = prices.length > 0 ? prices[0] : 0;
   const maxDev = Math.max(...prices.map(p => Math.abs(p - basePrice))) || 1;
   // 量能红绿柱: 本分钟收盘价 vs 上一分钟
-  const vols = points.map((p, i) => {
+  const volsColored = points.map((p, i) => {
     let color;
     if (i === 0) {
       color = 'rgba(158,158,158,0.5)';
@@ -1516,6 +1627,14 @@ function renderStockHistMinute(points, dateLabel) {
     }
     return { value: p.vol, itemStyle: { color } };
   });
+  // 黄色均价线 (VWAP: 累计成交额 / 累计成交量)
+  const avgPrices = [];
+  let cumAmt = 0, cumVol = 0;
+  points.forEach(function(p) {
+    cumAmt += p.price * p.vol;
+    cumVol += p.vol;
+    avgPrices.push(cumVol > 0 ? +(cumAmt / cumVol).toFixed(2) : p.price);
+  });
   const dom = document.getElementById('stockHistChart');
   if (!stockHistChart || !dom.querySelector('canvas')) {
     stockHistChart = echarts.init(dom, 'dark');
@@ -1524,19 +1643,22 @@ function renderStockHistMinute(points, dateLabel) {
     backgroundColor: 'transparent', animation: false,
     title: { text: dateLabel, left: 10, textStyle: { color: '#9aa0a6', fontSize: 12 } },
     tooltip: { trigger: 'axis', backgroundColor: 'rgba(20,23,29,0.95)', borderColor: '#2c313a', textStyle: { color: '#e6e6e6' } },
-    grid: { left: '6%', right: '4%', top: '12%', bottom: '20%' },
+    grid: { left: 48, right: '4%', top: '12%', bottom: '20%' },
     xAxis: { type: 'category', data: times, boundaryGap: false,
       axisLine: { lineStyle: { color: '#2c313a' } }, axisLabel: { color: '#9aa0a6', interval: 29 } },
     yAxis: [
       { scale: true, min: basePrice - maxDev*1.1, max: basePrice + maxDev*1.1,
-        splitLine: { lineStyle: { color: '#252a33' } }, axisLabel: { color: '#9aa0a6' } },
+        splitLine: { lineStyle: { color: '#252a33' } }, axisLabel: { color: '#9aa0a6', fontSize: 10 } },
       { splitLine: { show: false }, axisLabel: { show: false } },
     ],
     series: [
       { name: '价格', type: 'line', data: prices, symbol: 'none', lineStyle: { color: '#e63946', width: 1.5 },
         areaStyle: { color: new echarts.graphic.LinearGradient(0,0,0,1,[{offset:0,color:'rgba(230,57,70,0.15)'},{offset:1,color:'rgba(230,57,70,0.01)'}]) },
         markLine: { symbol: 'none', silent: true, data: [{ yAxis: basePrice, lineStyle: { color: '#9aa0a6', type: 'dashed' } }] } },
-      { name: '成交量', type: 'bar', yAxisIndex: 1, data: vols },
+      // 黄色均价线 (VWAP)
+      { name: '均价', type: 'line', data: avgPrices, symbol: 'none',
+        lineStyle: { color: '#facc15', width: 1 } },
+      { name: '成交量', type: 'bar', yAxisIndex: 1, data: volsColored },
     ],
   }, true);
   stockHistChart.resize();
@@ -1558,6 +1680,8 @@ document.querySelectorAll('.sort-tabs span').forEach(el => {
 // ===== 条件筛选栏 =====
 const volRatioCache = { cyb: null, kcb: null };  // {code: {ratio, pass, ...}}
 const volRatioLoading = { cyb: false, kcb: false };
+const openGainCache = { cyb: null, kcb: null };  // {code: {open_gain, pass, ...}}
+const openGainLoading = { cyb: false, kcb: false };
 
 // 拉取量比数据(带缓存, 避免重复请求)
 async function ensureVolRatio(seg) {
@@ -1577,7 +1701,24 @@ async function ensureVolRatio(seg) {
   return volRatioCache[seg];
 }
 
-// 当前激活的筛选条件集合(每个板块独立)
+// 拉取开盘涨幅数据(带缓存, 用于"9:25开盘>3%"条件)
+async function ensureOpenGain(seg) {
+  if (openGainCache[seg]) return openGainCache[seg];
+  if (openGainLoading[seg]) {
+    while (openGainLoading[seg]) { await new Promise(r => setTimeout(r, 100)); }
+    return openGainCache[seg];
+  }
+  openGainLoading[seg] = true;
+  try {
+    const resp = await fetch(`/api/monitor/stocks/open-gain?segment=${seg}`);
+    const data = await resp.json();
+    if (data.success) openGainCache[seg] = data.gains || {};
+  } catch (e) { console.error('开盘涨幅数据加载失败', e); }
+  openGainLoading[seg] = false;
+  return openGainCache[seg];
+}
+
+// 当前激活的 checkbox 筛选条件集合(每个板块独立)
 function getActiveFilters(seg) {
   const bar = document.querySelector(`.filter-bar[data-seg="${seg}"]`);
   if (!bar) return new Set();
@@ -1586,23 +1727,73 @@ function getActiveFilters(seg) {
   return active;
 }
 
+// 当前 select 选中的条件: 返回 {and: Set, or: Set}
+function getSelectFilters(seg) {
+  const bar = document.querySelector(`.filter-bar[data-seg="${seg}"]`);
+  if (!bar) return { and: new Set(), or: new Set() };
+  const and = new Set(), or = new Set();
+  bar.querySelectorAll('select.filter-select').forEach(sel => {
+    const mode = sel.dataset.mode;  // 'and' | 'or'
+    Array.from(sel.selectedOptions).forEach(opt => {
+      (mode === 'and' ? and : or).add(opt.value);
+    });
+  });
+  return { and, or };
+}
+
+// 判断单只股票是否满足某条件
+function meetsCond(cond, code, pct, ratios, gains) {
+  if (cond === 'vol_ratio_3x') return !!(ratios[code] && ratios[code].pass);
+  if (cond === 'pct_5_12') return typeof pct === 'number' && pct >= 5 && pct <= 12;
+  if (cond === 'open_gt_3') return !!(gains[code] && typeof gains[code].open_gain === 'number' && gains[code].open_gain > 3);
+  return true;
+}
+
 // 应用筛选: 隐藏不满足条件的行
+// 逻辑: checkbox条件之间是AND; select与门条件也是AND; select或门条件是OR。
+// 三组之间: (checkbox全满足) AND (与门全满足) AND (或门任一满足)
 function applyFilters(seg) {
   const container = document.getElementById(seg === 'cyb' ? 'cybList' : 'kcbList');
   if (!container) return;
-  const active = getActiveFilters(seg);
+  const active = getActiveFilters(seg);       // checkbox 条件 (AND)
+  const { and: andConds, or: orConds } = getSelectFilters(seg);  // select 条件
   const items = container.querySelectorAll('.stock-item');
-  if (active.size === 0) {
+  if (active.size === 0 && andConds.size === 0 && orConds.size === 0) {
     // 无筛选: 全部显示
     items.forEach(el => el.style.display = '');
     return;
   }
   const ratios = volRatioCache[seg] || {};
+  const gains = openGainCache[seg] || {};
   items.forEach(el => {
     const code = el.dataset.code;
+    const pctEl = el.querySelector('.s-pct');
+    // 从 data 属性或 DOM 文本解析涨幅
+    let pct = parseFloat(el.dataset.pct);
+    if (isNaN(pct) && pctEl) {
+      pct = parseFloat(pctEl.textContent.replace('%', '').replace('+', ''));
+    }
     let show = true;
-    // vol_ratio_3x: 当日分时最高量 > 5日均量 × 3
-    if (active.has('vol_ratio_3x') && !(ratios[code] && ratios[code].pass)) show = false;
+    // 1. checkbox 条件 (全部满足)
+    if (show && active.size > 0) {
+      for (const c of active) {
+        if (!meetsCond(c, code, pct, ratios, gains)) { show = false; break; }
+      }
+    }
+    // 2. 与门 select 条件 (全部满足)
+    if (show && andConds.size > 0) {
+      for (const c of andConds) {
+        if (!meetsCond(c, code, pct, ratios, gains)) { show = false; break; }
+      }
+    }
+    // 3. 或门 select 条件 (任一满足)
+    if (show && orConds.size > 0) {
+      let anyPass = false;
+      for (const c of orConds) {
+        if (meetsCond(c, code, pct, ratios, gains)) { anyPass = true; break; }
+      }
+      if (!anyPass) show = false;
+    }
     el.style.display = show ? '' : 'none';
   });
 }
@@ -1626,6 +1817,26 @@ document.querySelectorAll('.filter-bar input[type="checkbox"]').forEach(cb => {
   });
 });
 
+// select 变化: 持久化 + 按需拉取开盘涨幅数据
+document.querySelectorAll('.filter-select').forEach(sel => {
+  sel.addEventListener('change', async function() {
+    const seg = this.closest('.filter-bar').dataset.seg;
+    // 持久化 select 选中项
+    try {
+      const key = 'monitor_filter_select_' + seg;
+      const saved = JSON.parse(localStorage.getItem(key) || '{}');
+      saved[this.dataset.mode] = Array.from(this.selectedOptions).map(o => o.value);
+      localStorage.setItem(key, JSON.stringify(saved));
+    } catch(e) {}
+    // 若选中了 open_gt_3 但数据未加载, 先拉取
+    const selected = Array.from(this.selectedOptions).map(o => o.value);
+    if (selected.includes('open_gt_3') && !openGainCache[seg]) {
+      await ensureOpenGain(seg);
+    }
+    applyFilters(seg);
+  });
+});
+
 // 恢复筛选状态
 function restoreFilterState() {
   document.querySelectorAll('.filter-bar input[type="checkbox"]').forEach(cb => {
@@ -1633,6 +1844,17 @@ function restoreFilterState() {
     try {
       const saved = JSON.parse(localStorage.getItem('monitor_filter_' + seg) || '{}');
       if (cb.dataset.filter in saved) cb.checked = saved[cb.dataset.filter];
+    } catch(e) {}
+  });
+  // 恢复 select 选中项
+  document.querySelectorAll('.filter-select').forEach(sel => {
+    const seg = sel.closest('.filter-bar').dataset.seg;
+    try {
+      const saved = JSON.parse(localStorage.getItem('monitor_filter_select_' + seg) || '{}');
+      const vals = saved[sel.dataset.mode] || [];
+      Array.from(sel.options).forEach(opt => {
+        opt.selected = vals.includes(opt.value);
+      });
     } catch(e) {}
   });
 }
@@ -1740,7 +1962,7 @@ function initSocket() {
     const last = data.points[data.points.length - 1];
     // 全量重渲染分时图(220点 + animation:false, 性能足够)
     renderMinute(minuteChart, 'minuteChart', data.points, data.date,
-      _leadingInfo ? _leadingInfo.leadingLine : null, _stockMinutePoints);
+      _leadingInfo ? _leadingInfo.leadingLine : null, _stockMinutePoints, _stockLastClose);
     document.getElementById('minuteHint').textContent = `实时 ${data.points.length} 点`;
     // 同步更新顶部大盘价格/涨幅(每秒跳动)
     if (last && dailyData.length >= 2) {
@@ -1778,9 +2000,44 @@ function initSocket() {
     if (!data || !data.points || data.points.length < 2) return;
     if (data.code !== curStockCode) return;
     _stockMinutePoints = data.points;
+    if (data.last_close) _stockLastClose = data.last_close;  // 后端推送也可能带昨收
     if (_minutePoints) {
       renderMinute(minuteChart, 'minuteChart', _minutePoints, 'today',
-        _leadingInfo ? _leadingInfo.leadingLine : null, _stockMinutePoints);
+        _leadingInfo ? _leadingInfo.leadingLine : null, _stockMinutePoints, _stockLastClose);
+    }
+    // 同步更新个股日K线最后一根K线收盘价(实时跳动), 对称上证日K增量更新逻辑
+    // 最新价取分时点最后一个, 若创新高/低则同步更新 high/low
+    const lastPrice = data.points[data.points.length - 1].price;
+    if (lastPrice && stockDailyBars && stockDailyBars.length >= 1 && stockDailyChart) {
+      const lastBar = stockDailyBars[stockDailyBars.length - 1];
+      if (lastBar && lastBar.close !== lastPrice) {
+        lastBar.close = lastPrice;
+        if (lastBar.high == null || lastPrice > lastBar.high) lastBar.high = lastPrice;
+        if (lastBar.low == null || lastPrice < lastBar.low) lastBar.low = lastPrice;
+        // 增量更新: 只替换受影响的 series data (echarts 默认 merge, 保留 dataZoom/legend 等状态)
+        // 日K: 全量 ohlc 重算(最后一根变了)
+        const ohlc = stockDailyBars.map(b => [b.open, b.close, b.low, b.high]);
+        // MA5/10/20: 只需重算最后一根(用更新后的 close)
+        function calcLastMA(n) {
+          if (stockDailyBars.length < n) return '-';
+          let s = 0;
+          for (let j = stockDailyBars.length - n; j < stockDailyBars.length; j++) s += stockDailyBars[j].close;
+          return +(s / n).toFixed(2);
+        }
+        // setOption 按 series name 精准更新对应 series 的 data
+        // 注意: assumeZtSeries 不更新(它基于昨收算涨停价, 与实时价无关)
+        stockDailyChart.setOption({
+          series: [
+            { name: '日K', data: ohlc },
+            { name: 'MA5', data: stockDailyChart.getOption().series[1].data.map((v, i) =>
+                i === stockDailyBars.length - 1 ? calcLastMA(5) : v) },
+            { name: 'MA10', data: stockDailyChart.getOption().series[2].data.map((v, i) =>
+                i === stockDailyBars.length - 1 ? calcLastMA(10) : v) },
+            { name: 'MA20', data: stockDailyChart.getOption().series[3].data.map((v, i) =>
+                i === stockDailyBars.length - 1 ? calcLastMA(20) : v) },
+          ]
+        });
+      }
     }
   });
 
@@ -1832,7 +2089,7 @@ function startMinutePolling() {
       if (data.points && data.points.length >= 2) {
         _minutePoints = data.points;
         renderMinute(minuteChart, 'minuteChart', data.points, data.date,
-          _leadingInfo ? _leadingInfo.leadingLine : null, _stockMinutePoints);
+          _leadingInfo ? _leadingInfo.leadingLine : null, _stockMinutePoints, _stockLastClose);
         document.getElementById('minuteHint').textContent = `${data.points.length} 个数据点`;
       }
       if (curStockCode) {
@@ -1840,9 +2097,10 @@ function startMinutePolling() {
         const sd = await sr.json();
         if (sd.success && sd.points && sd.points.length >= 2) {
           _stockMinutePoints = sd.points;
+          if (sd.last_close) _stockLastClose = sd.last_close;
           if (_minutePoints) {
             renderMinute(minuteChart, 'minuteChart', _minutePoints, 'today',
-              _leadingInfo ? _leadingInfo.leadingLine : null, _stockMinutePoints);
+              _leadingInfo ? _leadingInfo.leadingLine : null, _stockMinutePoints, _stockLastClose);
           }
         }
       }
@@ -1880,10 +2138,14 @@ function startListRefresh() {
           renderStockList(seg, data.stocks);
           // 恢复筛选
           const active = getActiveFilters(seg);
-          if (active.size > 0) {
+          const { and: andConds, or: orConds } = getSelectFilters(seg);
+          if (active.size > 0 || andConds.size > 0 || orConds.size > 0) {
             applyFilters(seg);
             if (active.has('vol_ratio_3x') && !volRatioCache[seg]) {
               ensureVolRatio(seg).then(() => applyFilters(seg));
+            }
+            if ((andConds.has('open_gt_3') || orConds.has('open_gt_3')) && !openGainCache[seg]) {
+              ensureOpenGain(seg).then(() => applyFilters(seg));
             }
           }
           // 排序变化后重新订阅报价

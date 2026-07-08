@@ -310,6 +310,10 @@
     font-size: 7px; background: #2563eb; color: #fff; padding: 1px 2px;
     border-radius: 2px; margin-left: 2px;
   }
+  /* 涨幅获取状态标记 */
+  .stock-thumb .pct-ok { color: #4ade80; font-size: 8px; margin-left: 1px; font-weight: 700; }
+  .stock-thumb .pct-miss { color: #ff4d4d; font-size: 8px; margin-left: 1px; font-weight: 700; }
+  .stock-thumb.no-pct { opacity: 0.6; border: 1px dashed #ff4d4d !important; }
   /* 颜色类 */
   .thumb-lr { background: rgba(255,154,154,0.25); color: #ff9a9a; }
   .thumb-mr { background: rgba(255,107,53,0.25); color: #ff6b35; }
@@ -750,6 +754,16 @@ async function syncMissingData() {
   });
   
   if (result.success) {
+    const fetched = result.fetched || 0;
+    const total = result.total || 0;
+    const failed = result.failed_codes || [];
+    if (total > 0 && failed.length > 0) {
+      logToConsole(`同步完成: 成功 ${fetched}/${total}, 失败 ${failed.length} 只: ${failed.join(', ')}`, 'error');
+    } else if (total > 0) {
+      logToConsole(`同步完成: 成功 ${fetched}/${total}`, 'success');
+    } else {
+      logToConsole('所有股票数据已存在缓存中', 'info');
+    }
     setTimeout(() => load(), 1000);
   }
 }
@@ -960,7 +974,8 @@ function trackCell(d, cell, isKcbCyb){
   let limit = false;
   let limitDown = false;
   if(typeof pct === 'number'){
-    if(isKcbCyb){ limit = pct >= 19.4; limitDown = pct <= -19.4; }
+    // 涨停区间: 主板 9.8%~10.6%, 创业板/科创板 19.4%~20.6% (与后端 apply_removal_rules 一致)
+    if(isKcbCyb){ limit = pct >= 19.4 && pct <= 20.6; limitDown = pct <= -19.4 && pct >= -20.6; }
     else { limit = pct >= 9.8 && pct <= 10.6; limitDown = pct <= -9.8 && pct >= -10.6; }
   }
   const desc = (cell && cell.present) ? (cell.desc||'') : '';
@@ -985,9 +1000,9 @@ function globalBlockOrder(){
 
 function getThumbClass(pct, isKcbCyb){
   if(pct === null || pct === undefined) return 'thumb-absent';
-  if(isKcbCyb && pct >= 19.4) return 'thumb-limit';
+  if(isKcbCyb && pct >= 19.4 && pct <= 20.6) return 'thumb-limit';
   if(!isKcbCyb && pct >= 9.8 && pct <= 10.6) return 'thumb-limit';
-  if(isKcbCyb && pct <= -19.4) return 'thumb-limit-down';
+  if(isKcbCyb && pct <= -19.4 && pct >= -20.6) return 'thumb-limit-down';
   if(!isKcbCyb && pct <= -9.8 && pct >= -10.6) return 'thumb-limit-down';
   const a = Math.abs(pct);
   if(pct > 0){
@@ -1049,6 +1064,7 @@ function renderRow(day, order){
       const lastDate = day.date;
       const track = s.track[lastDate];
       const pct = track ? track.pct : null;
+      const hasPct = pct !== null && pct !== undefined;
       const belowMa10 = track ? track.below_ma10 : false;
       const isRemoved = s.remove_date === lastDate;
       
@@ -1059,13 +1075,17 @@ function renderRow(day, order){
       } else if (belowMa10) {
         thumbClass = thumbClass + ' warn-ma10';
       }
+      if (!hasPct && !isRemoved) thumbClass += ' no-pct';
       
       const isNew = s.first_date === day.date;
       const kcbTag = s.is_kcb_cyb ? '<span class="tag">创</span>' : '';
+      const pctMark = isRemoved ? '' : (hasPct
+        ? '<span class="pct-ok" title="涨幅已获取">✓</span>'
+        : '<span class="pct-miss" title="无涨幅数据">✗</span>');
       return `<div class="stock-thumb ${thumbClass}${isNew ? ' new-tag' : ''}" 
                    data-code="${s.code}" data-block="${b.block}" data-date="${day.date}"
                    onclick="toggleExpand(this, event)">
-        ${s.code}${kcbTag}
+        ${s.code}${kcbTag}${pctMark}
       </div>`;
     }).join('');
     
@@ -1478,9 +1498,21 @@ async function syncBlockStocks(btn, date, codes) {
     });
     
     if (result.success) {
-      btn.textContent = '完成';
+      const fetched = result.fetched || 0;
+      const total = result.total || 0;
+      const failed = result.failed_codes || [];
       btn.classList.remove('loading');
-      setTimeout(() => load(), 500);
+      if (total > 0 && failed.length > 0) {
+        btn.textContent = `${fetched}/${total} 失败${failed.length}`;
+        logToConsole(`同步完成: 成功 ${fetched}/${total}, 失败 ${failed.length} 只: ${failed.join(', ')}`, 'error');
+      } else if (total > 0) {
+        btn.textContent = `成功 ${fetched}`;
+        logToConsole(`同步完成: 成功 ${fetched}/${total}`, 'success');
+      } else {
+        btn.textContent = '已缓存';
+        logToConsole('所有股票数据已存在缓存中', 'info');
+      }
+      setTimeout(() => load(), 800);
     } else {
       btn.textContent = '失败';
       btn.classList.remove('loading');

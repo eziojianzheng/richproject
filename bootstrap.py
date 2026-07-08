@@ -14,6 +14,7 @@ import os
 # (有些包导入名和安装名不一致)
 REQUIRED_PACKAGES = {
     'flask': 'flask>=3.0.0',
+    'flask_socketio': 'flask-socketio>=5.3.0',
     'requests': 'requests>=2.31.0',
     'bs4': 'beautifulsoup4>=4.12.0',
     'yaml': 'PyYAML>=6.0',

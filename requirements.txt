@@ -1,5 +1,7 @@
 # Web 服务
 flask>=3.0.0
+# WebSocket 实时推送 (盯盘行情推送)
+flask-socketio>=5.3.0
 
 # 网络请求与解析
 requests>=2.31.0
