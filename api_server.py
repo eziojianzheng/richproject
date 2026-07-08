@@ -1918,8 +1918,7 @@ def _fetch_all_a_quotes():
 
 def _fetch_segment_quotes(segment):
     """拉单个板块(创业板/科创板)的实时报价, 10秒缓存。
-    用 tqcenter batch_pricevol 一次批量取全部(1400只1秒), 极快。
-    回退 mootdx 批量 quotes(80只一批)。"""
+    优先 mootdx 批量 quotes(实时性好, 80只一批), 回退 tqcenter batch_pricevol。"""
     import time as _time
     import hot_track as ht
     cached = _segment_quotes_cache.get(segment)
@@ -1928,7 +1927,46 @@ def _fetch_segment_quotes(segment):
     codes, names = _get_segment_codes(segment)
     if not codes:
         return None
-    # 优先 tqcenter batch_pricevol (一次取全部, 走自己账号不封IP)
+    # 优先 mootdx 批量 quotes (实时性最好, 80只一批)
+    try:
+        import pandas as pd
+        with ht._get_tdx_lock():
+            client = ht._get_tdx_client()
+            frames = []
+            for i in range(0, len(codes), 80):
+                batch = codes[i:i + 80]
+                df = client.quotes(symbol=batch)
+                if df is not None and not df.empty:
+                    frames.append(df)
+        if frames:
+            all_q = pd.concat(frames, ignore_index=True)
+            for col in ('last_close', 'price', 'amount', 'vol'):
+                if col in all_q.columns:
+                    all_q[col] = pd.to_numeric(all_q[col], errors='coerce')
+            valid = all_q.dropna(subset=['last_close'])
+            valid = valid[valid['last_close'] > 0].copy()
+            valid['price'] = valid.apply(
+                lambda r: r['price'] if pd.notna(r['price']) and r['price'] > 0 else r['last_close'], axis=1)
+            valid['pct'] = valid.apply(
+                lambda r: ((r['price'] - r['last_close']) / r['last_close'] * 100)
+                          if r['last_close'] > 0 and r['price'] != r['last_close'] else 0.0, axis=1)
+            records = []
+            for _, row in valid.iterrows():
+                code = str(row.get('code', ''))
+                records.append({
+                    'code': code,
+                    'name': names.get(code, ''),
+                    'price': round(float(row['price']), 2),
+                    'pct': round(float(row['pct']), 2),
+                    'amount': round(float(row.get('amount', 0)) / 1e8, 2),
+                    'vol': float(row.get('vol', 0)),
+                })
+            if records:
+                _segment_quotes_cache[segment] = {'data': records, 'ts': _time.time()}
+                return records
+    except Exception as e:
+        print(f'[mootdx] 板块报价 {segment} 异常: {e}')
+    # 回退 tqcenter batch_pricevol
     try:
         import tdx_source as ts
         if ts.is_available():
@@ -1943,7 +1981,7 @@ def _fetch_segment_quotes(segment):
                             'name': names.get(c, ''),
                             'price': info['price'],
                             'pct': info['pct'],
-                            'amount': 0.0,  # batch_pricevol 无 amount 字段
+                            'amount': 0.0,
                             'vol': info['vol'],
                         })
                 if records:
@@ -1951,42 +1989,7 @@ def _fetch_segment_quotes(segment):
                     return records
     except Exception as e:
         print(f'[TQ] 板块报价 {segment} 异常: {e}')
-    # 回退 mootdx 批量 quotes
-    import pandas as pd
-    with ht._get_tdx_lock():
-        client = ht._get_tdx_client()
-        frames = []
-        for i in range(0, len(codes), 80):
-            batch = codes[i:i + 80]
-            df = client.quotes(symbol=batch)
-            if df is not None and not df.empty:
-                frames.append(df)
-    if not frames:
-        return None
-    all_q = pd.concat(frames, ignore_index=True)
-    for col in ('last_close', 'price', 'amount', 'vol'):
-        if col in all_q.columns:
-            all_q[col] = pd.to_numeric(all_q[col], errors='coerce')
-    valid = all_q.dropna(subset=['last_close'])
-    valid = valid[valid['last_close'] > 0].copy()
-    valid['price'] = valid.apply(
-        lambda r: r['price'] if pd.notna(r['price']) and r['price'] > 0 else r['last_close'], axis=1)
-    valid['pct'] = valid.apply(
-        lambda r: ((r['price'] - r['last_close']) / r['last_close'] * 100)
-                  if r['last_close'] > 0 and r['price'] != r['last_close'] else 0.0, axis=1)
-    records = []
-    for _, row in valid.iterrows():
-        code = str(row.get('code', ''))
-        records.append({
-            'code': code,
-            'name': names.get(code, ''),
-            'price': round(float(row['price']), 2),
-            'pct': round(float(row['pct']), 2),
-            'amount': round(float(row.get('amount', 0)) / 1e8, 2),
-            'vol': float(row.get('vol', 0)),
-        })
-    _segment_quotes_cache[segment] = {'data': records, 'ts': _time.time()}
-    return records
+    return None
 
 
 @app.route('/api/monitor/stocks/list', methods=['GET'])
@@ -2019,6 +2022,54 @@ def monitor_stocks_list():
         return jsonify({'success': True, 'stocks': stocks[:limit]})
     except Exception as e:
         return jsonify({'success': False, 'error': f'{type(e).__name__}: {e}'}), 500
+
+
+@app.route('/api/debug/quote_sources', methods=['GET'])
+def debug_quote_sources():
+    """诊断: 对比 tqcenter batch_pricevol / tqcenter snapshot / mootdx quotes 三种数据源。"""
+    code = request.args.get('code', '300017')
+    import time as _time
+    result = {'code': code, 'ts': _time.time()}
+    # 1. tqcenter batch_pricevol
+    try:
+        import tdx_source as ts
+        if ts.is_available():
+            pv = ts.batch_pricevol([code])
+            if pv and code in pv:
+                result['tq_pricevol'] = pv[code]
+            else:
+                result['tq_pricevol'] = None
+            # 2. tqcenter snapshot (get_market_snapshot)
+            snap = ts.snapshot(code)
+            if snap:
+                result['tq_snapshot'] = {k: snap[k] for k in ('price', 'vol', 'pct', 'amount', 'last_close') if k in snap}
+            else:
+                result['tq_snapshot'] = None
+        else:
+            result['tq_pricevol'] = 'tqcenter unavailable'
+            result['tq_snapshot'] = 'tqcenter unavailable'
+    except Exception as e:
+        result['tq_error'] = f'{type(e).__name__}: {e}'
+    # 3. mootdx quotes
+    try:
+        import hot_track as ht
+        with ht._get_tdx_lock():
+            client = ht._get_tdx_client()
+            df = client.quotes(symbol=[code])
+        if df is not None and not df.empty:
+            import pandas as pd
+            row = df.iloc[0].to_dict()
+            result['mootdx_quotes'] = {
+                'price': float(row.get('price', 0) or 0),
+                'last_close': float(row.get('last_close', 0) or 0),
+                'vol': float(row.get('vol', 0) or 0),
+                'amount': float(row.get('amount', 0) or 0),
+            }
+        else:
+            result['mootdx_quotes'] = None
+    except Exception as e:
+        result['mootdx_error'] = f'{type(e).__name__}: {e}'
+    return jsonify(result)
 
 
 @app.route('/api/monitor/stock/daily', methods=['GET'])
@@ -2515,8 +2566,47 @@ def _is_trade_time():
 
 
 def _fetch_quotes_batch(codes):
-    """批量拉报价。优先 tqcenter batch_pricevol(1秒取1400只), 回退 mootdx quotes。"""
-    # 优先 tqcenter
+    """批量拉报价(WS推送用)。优先 mootdx quotes(实时性最好), 回退 tqcenter batch_pricevol。
+    mootdx quotes 80只一批, 创业板+科创板共约1400只, 分18批约2-3秒。"""
+    # 优先 mootdx 批量 quotes (实时数据, 和上证分时同源)
+    try:
+        import pandas as pd
+        import hot_track as ht
+        with ht._get_tdx_lock():
+            client = ht._get_tdx_client()
+            frames = []
+            for i in range(0, len(codes), 80):
+                batch = codes[i:i + 80]
+                df = client.quotes(symbol=batch)
+                if df is not None and not df.empty:
+                    frames.append(df)
+        if frames:
+            all_q = pd.concat(frames, ignore_index=True)
+            for col in ('last_close', 'price', 'amount', 'vol'):
+                if col in all_q.columns:
+                    all_q[col] = pd.to_numeric(all_q[col], errors='coerce')
+            stocks = []
+            for _, row in all_q.iterrows():
+                code = str(row.get('code', ''))
+                last_close = float(row.get('last_close', 0) or 0)
+                price = float(row.get('price', 0) or 0)
+                if last_close <= 0:
+                    continue
+                if price <= 0:
+                    price = last_close
+                pct = ((price - last_close) / last_close * 100) if last_close > 0 else 0
+                stocks.append({
+                    'code': code,
+                    'price': round(price, 2),
+                    'pct': round(pct, 2),
+                    'vol': float(row.get('vol', 0) or 0),
+                    'amount': round(float(row.get('amount', 0) or 0) / 10000, 2),
+                })
+            if stocks:
+                return stocks
+    except Exception as e:
+        print(f'[mootdx] 批量报价异常: {e}')
+    # 回退 tqcenter batch_pricevol (非交易时段或mootdx不可用时)
     try:
         import tdx_source as ts
         if ts.is_available():
@@ -2537,44 +2627,7 @@ def _fetch_quotes_batch(codes):
                     return stocks
     except Exception as e:
         print(f'[TQ] 批量报价异常: {e}')
-    # 回退 mootdx
-    try:
-        import pandas as pd
-        with ht._get_tdx_lock():
-            client = ht._get_tdx_client()
-            frames = []
-            for i in range(0, len(codes), 80):
-                batch = codes[i:i + 80]
-                df = client.quotes(symbol=batch)
-                if df is not None and not df.empty:
-                    frames.append(df)
-        if not frames:
-            return []
-        all_q = pd.concat(frames, ignore_index=True)
-        for col in ('last_close', 'price', 'amount', 'vol'):
-            if col in all_q.columns:
-                all_q[col] = pd.to_numeric(all_q[col], errors='coerce')
-        stocks = []
-        for _, row in all_q.iterrows():
-            code = str(row.get('code', ''))
-            last_close = float(row.get('last_close', 0) or 0)
-            price = float(row.get('price', 0) or 0)
-            if last_close <= 0:
-                continue
-            if price <= 0:
-                price = last_close
-            pct = ((price - last_close) / last_close * 100) if last_close > 0 else 0
-            stocks.append({
-                'code': code,
-                'price': round(price, 2),
-                'pct': round(pct, 2),
-                'vol': float(row.get('vol', 0) or 0),
-                'amount': round(float(row.get('amount', 0) or 0) / 10000, 2),
-            })
-        return stocks
-    except Exception as e:
-        print(f'[WS] mootdx报价异常: {e}')
-        return []
+    return []
 
 
 def _fetch_minute_mootdx(symbol):
