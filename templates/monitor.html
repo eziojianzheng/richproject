@@ -1945,6 +1945,9 @@ function initSocket() {
     if (curStockCode) {
       _socket.emit('subscribe_stock', curStockCode);
     }
+    // 重新订阅板块报价(列表可能在socket连上前已渲染, 导致首次subscribeQuotes被跳过)
+    subscribeQuotes('cyb');
+    subscribeQuotes('kcb');
   });
 
   _socket.on('disconnect', () => {
@@ -2059,6 +2062,7 @@ function initSocket() {
         const sign = s.pct > 0 ? '+' : '';
         pctEl.textContent = `${sign}${s.pct}%`;
         pctEl.className = `s-pct ${cls}`;
+        el.dataset.pct = s.pct;  // 同步更新 data-pct, 供筛选条件实时使用
       }
     });
   });
