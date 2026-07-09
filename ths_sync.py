@@ -19,6 +19,10 @@ import os
 import time
 from datetime import datetime
 
+# 启动时自动检测依赖(adata 非内置, 需 pip 安装)
+from bootstrap import ensure_dependencies
+ensure_dependencies({'adata': 'adata>=2.9.0'})
+
 import pandas as pd
 
 # CSV 文件路径 (与原 Desktop 项目保持一致, 便于复用已有数据)
