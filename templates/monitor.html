@@ -1943,53 +1943,51 @@ function restoreFilterState() {
   });
 }
 
-// 页面加载: 先加载日K, 恢复上次选中的历史分时日期(如有), 再加载当日分时
-loadDaily().then(() => {
-  // 恢复上次双击选中的历史分时
+// 页面加载: 个股列表优先并行加载(用户最关心), 日K/分时同时并行不阻塞列表
+// 恢复排序/筛选状态(在列表加载前, 这样 loadStockList 能感知已勾选条件)
+try {
+  STOCK_SORTS.cyb = localStorage.getItem('monitor_sort_cyb') || 'pct';
+  STOCK_SORTS.kcb = localStorage.getItem('monitor_sort_kcb') || 'pct';
+} catch(e) {}
+document.querySelectorAll('.sort-tabs').forEach(tabs => {
+  const seg = tabs.dataset.seg;
+  const sort = STOCK_SORTS[seg];
+  tabs.querySelectorAll('span').forEach(s => s.classList.toggle('active', s.dataset.sort === sort));
+});
+restoreFilterState();
+
+// 并行: 日K + 分时 + 个股列表(列表不依赖日K/分时, 独立加载最快)
+const _dailyP = loadDaily().then(() => {
   const savedDate = localStorage.getItem('monitor_hist_date');
   if (savedDate && /^\d{8}$/.test(savedDate)) {
     loadHistMinute(savedDate);
   }
   return loadMinute();
-}).then(() => {
-  // 加载创业板/科创板列表
-  try {
-    STOCK_SORTS.cyb = localStorage.getItem('monitor_sort_cyb') || 'pct';
-    STOCK_SORTS.kcb = localStorage.getItem('monitor_sort_kcb') || 'pct';
-  } catch(e) {}
-  // 恢复排序按钮状态
-  document.querySelectorAll('.sort-tabs').forEach(tabs => {
-    const seg = tabs.dataset.seg;
-    const sort = STOCK_SORTS[seg];
-    tabs.querySelectorAll('span').forEach(s => s.classList.toggle('active', s.dataset.sort === sort));
-  });
-  // 恢复筛选状态(在列表加载前, 这样 loadStockList 能感知已勾选条件并预取量比数据)
-  restoreFilterState();
-  // 并行拉两个列表
-  Promise.all([loadStockList('cyb'), loadStockList('kcb')]).then(() => {
-    // 恢复上次选中的个股
-    const savedCode = localStorage.getItem('monitor_stock_code');
-    const savedName = localStorage.getItem('monitor_stock_name');
-    if (savedCode) {
-      selectStock(savedCode, savedName || '');
-    } else {
-      // 默认选创业板第1只可见行(筛选可能隐藏了部分)
-      const first = document.querySelector('#cybList .stock-item:not([style*="display: none"])');
-      if (first) selectStock(first.dataset.code, first.dataset.name);
-    }
-    // 恢复上次双击选中的个股历史分时
-    const savedStockHistDate = localStorage.getItem('monitor_stock_hist_date');
-    if (savedStockHistDate && /^\d{8}$/.test(savedStockHistDate) && curStockCode) {
-      loadStockHistMinute(curStockCode, savedStockHistDate);
-    }
-    // 加载自选股列表
-    loadWatchlist();
-    // 布局稳定后统一 resize 一次, 确保图表填满行高 + 恢复均线显隐
-    requestAnimationFrame(() => requestAnimationFrame(function() {
-      resizeAllCharts();
-      restoreIndicatorState();
-    }));
-  });
+});
+const _listP = Promise.all([loadStockList('cyb'), loadStockList('kcb')]);
+
+// 列表加载完即可选股(不必等日K/分时), 提升切页面回来的响应速度
+_listP.then(() => {
+  const savedCode = localStorage.getItem('monitor_stock_code');
+  const savedName = localStorage.getItem('monitor_stock_name');
+  if (savedCode) {
+    selectStock(savedCode, savedName || '');
+  } else {
+    const first = document.querySelector('#cybList .stock-item:not([style*="display: none"])');
+    if (first) selectStock(first.dataset.code, first.dataset.name);
+  }
+  const savedStockHistDate = localStorage.getItem('monitor_stock_hist_date');
+  if (savedStockHistDate && /^\d{8}$/.test(savedStockHistDate) && curStockCode) {
+    loadStockHistMinute(curStockCode, savedStockHistDate);
+  }
+  loadWatchlist();
+});
+// 全部加载完后 resize 一次(图表填满行高 + 恢复均线显隐)
+Promise.all([_dailyP, _listP]).then(() => {
+  requestAnimationFrame(() => requestAnimationFrame(function() {
+    resizeAllCharts();
+    restoreIndicatorState();
+  }));
 });
 
 // ===== 自动刷新 =====
@@ -2287,6 +2285,30 @@ function startDailyRefresh() {
 initSocket();
 startListRefresh();
 startDailyRefresh();
+
+// 切换标签页回来时: 后台标签浏览器会暂停定时器/断开WS,
+// 回来后立即刷新个股列表(缓存可能已过期), 并重连WS重新订阅
+let _visReloading = false;
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState !== 'visible') return;
+  if (_visReloading) return;  // 防抖
+  _visReloading = true;
+  // 立即刷新两个板块列表(不等30秒定时器)
+  if (isTradeTime()) {
+    for (const seg of ['cyb', 'kcb']) {
+      loadStockList(seg);
+    }
+  }
+  // WS可能已断开, 触发重连 + 重新订阅
+  if (_socket && !_wsConnected) {
+    _socket.connect();
+  } else if (_socket && _wsConnected) {
+    subscribeQuotes('cyb');
+    subscribeQuotes('kcb');
+    if (curStockCode) _socket.emit('subscribe_stock', curStockCode);
+  }
+  setTimeout(() => { _visReloading = false; }, 2000);
+});
 </script>
 </body>
 </html>
