@@ -77,22 +77,37 @@ def build_wide():
 # ============== 拉取概念成分股 ==============
 
 def fetch_members(index_code, concept_code, name, retries=3):
-    """抓一个概念的全部成分股代码(纯6位)。"""
+    """抓一个概念的全部成分股代码(纯6位)。
+
+    重要: 必须优先用 index_code 路径(d.10jqka.com.cn, 返回全量成分股),
+    concept_code 路径(q.10jqka.com.cn 分页) 最多只返回50只(5页×10只),
+    大概念会被严重截断。仅当 index_code 缺失时才回退 concept_code/name。
+    """
     def _pick(df):
         if df is not None and not df.empty:
             codes = df["stock_code"].astype(str).str.zfill(6)
             return sorted(codes[codes.str.fullmatch(r"\d{6}")].unique())
         return []
 
-    attempts = []
+    import adata
+
+    # 1. 优先 index_code(全量), 重试3次
     if isinstance(index_code, str) and index_code and index_code.lower() != "nan":
-        attempts.append({"index_code": index_code})
+        for _ in range(retries):
+            try:
+                res = _pick(adata.stock.info.concept_constituent_ths(index_code=index_code))
+                if res:
+                    return res
+            except Exception:
+                pass
+            time.sleep(1.0)
+
+    # 2. index_code 缺失或全失败时, 回退 concept_code/name(有50只上限, 仅小概念可靠)
+    attempts = []
     if isinstance(concept_code, str) and concept_code and concept_code.lower() != "nan":
         attempts.append({"concept_code": concept_code})
     if isinstance(name, str) and name:
         attempts.append({"name": name})
-
-    import adata
     for _ in range(retries):
         for kw in attempts:
             try:
@@ -105,7 +120,7 @@ def fetch_members(index_code, concept_code, name, retries=3):
     return []
 
 
-def fetch_all_concepts(refresh=False, limit=0, sleep=0.3, on_progress=None):
+def fetch_all_concepts(refresh=False, limit=0, sleep=1.0, on_progress=None):
     """全量拉取同花顺概念成分股, 写 CSV。
 
     Args:
