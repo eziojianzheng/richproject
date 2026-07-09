@@ -194,6 +194,8 @@ def extract_zhangdie(layout_details):
     """
     从03图提取涨跌数据
     返回: {'上涨家数', '下跌家数', '总成交额'}
+    总成交额: 匹配"总成交额 X"后的数字(单位可能是亿/万, OCR偶发误识,
+    因数值量级一致(均为万亿级), 直接取数值不换算)
     """
     result = {'上涨家数': None, '下跌家数': None, '总成交额': None}
     text = layout_to_text(layout_details)
@@ -204,7 +206,8 @@ def extract_zhangdie(layout_details):
     m = re.search(r'下跌家数\s*(\d+)', text)
     if m:
         result['下跌家数'] = int(m.group(1))
-    m = re.search(r'总成交额\s*([\d.]+)\s*亿', text)
+    # 总成交额: 取"总成交额"后的数值(兼容 亿/万/(亿)/(万) 等单位, 不做换算)
+    m = re.search(r'总成交额\s*([\d.]+)', text)
     if m:
         result['总成交额'] = m.group(1)
 
@@ -471,9 +474,23 @@ def extract_sectors_by_red(image_path, layout_details, use_cache=True):
                 '原因': s['原因'],
             })
 
-    # 剩余未分配股票（截止线之前但未被任何板块吸收）
-    leftover = sum(1 for s in stocks[idx:] if s['_y'] < (titles[cutoff_idx][0]
-                   if cutoff_idx < len(titles) else float('inf')))
+    # 剩余未分配股票校验: 只统计落在"有效板块(非排除)区域"内但未被吸收的股票。
+    # 排除板块(其他热点/其他个股/涨停炸板等)区域的股票本就该丢弃, 不算未分配。
+    # 有效区域 = 第一个非排除板块标题 y ~ 最后一个非排除板块的下一个标题 y
+    non_excluded = [t for t in valid_titles
+                    if t[1] and t[1] not in EXCLUDED_SECTORS and t[1] not in PAGE_TITLES]
+    leftover = 0
+    if non_excluded:
+        region_start_y = non_excluded[0][0]
+        # 有效区域结束 = 最后一个非排除板块之后的下一个标题 y(排除板块或涨停炸板)
+        region_end_y = float('inf')
+        last_ne_y = non_excluded[-1][0]
+        for t in titles:
+            if t[0] > last_ne_y:
+                region_end_y = t[0]
+                break
+        leftover = sum(1 for s in stocks[idx:]
+                       if region_start_y <= s['_y'] < region_end_y)
     if leftover > 3:
         meta['issues'].append(
             f"有 {leftover} 只股票未分配到板块（数量切分与实际不符）")
