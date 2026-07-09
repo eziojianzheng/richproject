@@ -2637,13 +2637,13 @@ def _is_trade_time():
 
 def _fetch_quotes_batch(codes):
     """批量拉报价(WS推送用)。优先 mootdx quotes(实时性最好), 回退 tqcenter batch_pricevol。
-    mootdx quotes 80只一批, 创业板+科创板共约1400只, 分18批约2-3秒。"""
+    用 WS 专用客户端(独立连接不抢主锁), 避免阻塞 HTTP 请求。"""
     # 优先 mootdx 批量 quotes (实时数据, 和上证分时同源)
     try:
         import pandas as pd
         import hot_track as ht
-        with ht._get_tdx_lock():
-            client = ht._get_tdx_client()
+        with ht._get_ws_tdx_lock():
+            client = ht._get_ws_tdx_client()
             frames = []
             for i in range(0, len(codes), 80):
                 batch = codes[i:i + 80]
@@ -2701,10 +2701,11 @@ def _fetch_quotes_batch(codes):
 
 
 def _fetch_minute_mootdx(symbol):
-    """用 mootdx 拉分时数据。返回 points 列表或 None。"""
+    """用 mootdx 拉分时数据(WS推送用)。用 WS 专用客户端, 不抢主锁。"""
     try:
-        with ht._get_tdx_lock():
-            client = ht._get_tdx_client()
+        import hot_track as ht
+        with ht._get_ws_tdx_lock():
+            client = ht._get_ws_tdx_client()
             df = client.minute(symbol=symbol)
         if df is None or df.empty or len(df) < 2:
             return None

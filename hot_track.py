@@ -415,6 +415,45 @@ def _get_tdx_lock():
     return _tdx_lock
 
 
+# WS 推送专用客户端(独立连接, 不抢主锁, 避免阻塞 HTTP 请求)
+_ws_tdx_client = None
+_ws_tdx_lock = None
+
+def _get_ws_tdx_client():
+    """获取 WS 推送专用的 mootdx 客户端(独立连接, 不持主锁)。
+    与 _get_tdx_client 分离, 避免推送线程长时间持锁阻塞 HTTP 请求。"""
+    global _ws_tdx_client, _ws_tdx_lock
+    if _ws_tdx_lock is None:
+        import threading
+        _ws_tdx_lock = threading.Lock()
+    if _ws_tdx_client is not None and not getattr(_ws_tdx_client, 'closed', False):
+        return _ws_tdx_client
+    from mootdx.quotes import Quotes
+    # 优先本地通达信
+    try:
+        import socket as _socket
+        _sk = _socket.create_connection(('127.0.0.1', 7709), timeout=1)
+        _sk.close()
+        _ws_tdx_client = Quotes.factory(market='std', server=('127.0.0.1', 7709), timeout=3, heartbeat=True)
+        _df = _ws_tdx_client.bars(symbol='000001', frequency=9, offset=1)
+        if _df is not None and len(_df) > 0:
+            return _ws_tdx_client
+    except Exception:
+        pass
+    # 远程服务器
+    srv = _REMOTE_TDX_SERVERS[_tdx_server_idx]
+    _ws_tdx_client = Quotes.factory(market='std', server=srv, timeout=5, heartbeat=True)
+    return _ws_tdx_client
+
+def _get_ws_tdx_lock():
+    """获取 WS 专用客户端的锁"""
+    global _ws_tdx_lock
+    if _ws_tdx_lock is None:
+        import threading
+        _ws_tdx_lock = threading.Lock()
+    return _ws_tdx_lock
+
+
 def _mootdx_offset(start):
     """根据 start 到今天估算需要抓取的日线根数(含60日回看)"""
     from datetime import datetime, date
