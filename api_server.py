@@ -136,6 +136,9 @@ submit_tasks = {}
 # 热门股计算任务状态
 hot_tasks = {}
 
+# 历史爆发股票汇总扫描任务状态
+explosive_tasks = {}
+
 # 最近一次热门股计算结果(服务端持久化, 刷新后恢复, 不受浏览器localStorage配额限制)
 hot_last = None
 HOT_LAST_FILE = '.hot_last_result.json'
@@ -623,6 +626,9 @@ def download_task(task_id, articles, base_dir='dataresource', skip_existing=True
             failed_details.append({'date': date_folder, 'reason': reason})
 
     for i, article in enumerate(articles):
+        # 用户请求中断：停止后续下载
+        if download_tasks[task_id].get('cancel_requested'):
+            break
         try:
             date_folder = article['date_folder']
             link = article['link']
@@ -712,7 +718,7 @@ def download_task(task_id, articles, base_dir='dataresource', skip_existing=True
             print(f"处理文章出错: {e}")
             _mark_failed(article.get('date_folder', 'unknown'), f"处理异常: {e}")
     
-    download_tasks[task_id]['status'] = 'completed'
+    download_tasks[task_id]['status'] = 'cancelled' if download_tasks[task_id].get('cancel_requested') else 'completed'
     download_tasks[task_id]['total'] = total_images
     download_tasks[task_id]['downloaded'] = success_images
     download_tasks[task_id]['skipped_folders'] = skipped_folders
@@ -740,6 +746,9 @@ def extract_task(task_id, dates, submit_to_db=True, base_dir='dataresource',
     t['items'] = items
 
     for i, d in enumerate(dates):
+        # 用户请求中断：停止后续提取
+        if t.get('cancel_requested'):
+            break
         it = items[i]
         folder = os.path.join(base_dir, d)
         try:
@@ -816,7 +825,7 @@ def extract_task(task_id, dates, submit_to_db=True, base_dir='dataresource',
         t['extracted'] = extracted
         t['submitted'] = submitted
 
-    t['status'] = 'completed'
+    t['status'] = 'cancelled' if t.get('cancel_requested') else 'completed'
     t['extracted'] = extracted
     t['submitted'] = submitted
 
@@ -848,6 +857,9 @@ def submit_batch_task(task_id, dates, output_dir='excelDataSource'):
         submitted_dates = set()
 
     for i, d in enumerate(dates):
+        # 用户请求中断：停止后续入库
+        if t.get('cancel_requested'):
+            break
         it = items[i]
         try:
             if d in submitted_dates:
@@ -880,7 +892,7 @@ def submit_batch_task(task_id, dates, output_dir='excelDataSource'):
         t['progress'] = int(done / max(total, 1) * 100)
         t['submitted'] = submitted
 
-    t['status'] = 'completed'
+    t['status'] = 'cancelled' if t.get('cancel_requested') else 'completed'
     t['submitted'] = submitted
 
 
@@ -1178,6 +1190,15 @@ def get_status(task_id):
     })
 
 
+@app.route('/api/download/cancel/<task_id>', methods=['POST'])
+def cancel_download(task_id):
+    """请求中断下载任务（当前图片下载完后停止后续日期）"""
+    if task_id not in download_tasks:
+        return jsonify({'success': False, 'error': '任务不存在'}), 404
+    download_tasks[task_id]['cancel_requested'] = True
+    return jsonify({'success': True, 'message': '已请求中断，正在停止…'})
+
+
 def _parse_order_expected(folder_path):
     """
     解析 _order.txt，返回应存在的图片文件名列表（按顺序）。
@@ -1347,6 +1368,15 @@ def extract_status(task_id):
     })
 
 
+@app.route('/api/extract/cancel/<task_id>', methods=['POST'])
+def cancel_extract(task_id):
+    """请求中断提取任务（当前日期处理完后停止后续日期）"""
+    if task_id not in extract_tasks:
+        return jsonify({'success': False, 'error': '任务不存在'}), 404
+    extract_tasks[task_id]['cancel_requested'] = True
+    return jsonify({'success': True, 'message': '已请求中断，正在停止…'})
+
+
 @app.route('/api/db/status', methods=['GET'])
 def db_status():
     """探测数据库连接状态"""
@@ -1437,6 +1467,15 @@ def db_submit_batch_status(task_id):
         'total': t['total'], 'submitted': t.get('submitted', 0),
         'items': t.get('items', []),
     })
+
+
+@app.route('/api/db/submit-batch/cancel/<task_id>', methods=['POST'])
+def cancel_submit_batch(task_id):
+    """请求中断批量入库任务（当前日期处理完后停止后续日期）"""
+    if task_id not in submit_tasks:
+        return jsonify({'success': False, 'error': '任务不存在'}), 404
+    submit_tasks[task_id]['cancel_requested'] = True
+    return jsonify({'success': True, 'message': '已请求中断，正在停止…'})
 
 
 @app.route('/api/excel/list', methods=['GET'])
@@ -3583,6 +3622,227 @@ def api_hot_refetch():
         'fetched': success,
         'skipped': len(codes) - len(need_fetch)
     })
+
+
+# ============== 历史爆发股票汇总 ==============
+
+def _bar_date8(b):
+    """K线 bar 的 date('YYYY-MM-DD') -> 'YYYYMMDD'"""
+    return str(b.get('date', ''))[:10].replace('-', '')
+
+
+def _build_windows(days, size, step):
+    """按交易日切窗口。days: 升序 YYYYMMDD 列表。
+    返回 [(start8, end8, [d,...]), ...]，相邻窗口以上一窗最后一日为下一窗起点(overlap=size-step)。"""
+    windows = []
+    i = 0
+    n = len(days)
+    while i + size <= n:
+        seg = days[i:i + size]
+        windows.append((seg[0], seg[-1], seg))
+        i += step
+    return windows
+
+
+def explosive_scan_task(task_id, month, size, step, threshold):
+    """
+    后台扫描：对某月按交易日切 size 天窗口(步进 step)，
+    找出窗口内 N 日涨幅 > threshold% 的非ST个股(数据来自通达信tq)。
+    N日涨幅 = (窗口最后一日收盘 - 窗口首日前一交易日收盘) / 前一交易日收盘 * 100
+    """
+    t = explosive_tasks[task_id]
+    t['status'] = 'running'
+
+    try:
+        import tdx_source as ts
+        if not ts.is_available():
+            t['status'] = 'failed'
+            t['error'] = '通达信tq接口不可用(请确认量化版客户端已开启并登录)'
+            return
+
+        month_start = month.replace('-', '') + '01'
+        # 月末
+        y, m = int(month[:4]), int(month[5:7])
+        if m == 12:
+            nm_y, nm = y + 1, 1
+        else:
+            nm_y, nm = y, m + 1
+        from datetime import date as _date, timedelta as _td2
+        month_end = (_date(nm_y, nm, 1) - _td2(days=1)).strftime('%Y%m%d')
+
+        days = trading_days_in_range(month_start, month_end)
+        if len(days) < size:
+            t['status'] = 'failed'
+            t['error'] = f'{month} 内交易日不足 {size} 天'
+            return
+        windows = _build_windows(days, size, step)
+        t['windows_count'] = len(windows)
+
+        today8 = datetime.now().strftime('%Y%m%d')
+        # 取窗口首日前 ~10 个自然日作为回溯起点(拿到前一交易日收盘)
+        scan_from = (datetime.strptime(month_start, '%Y%m%d') - timedelta(days=12)).strftime('%Y%m%d')
+        need = len(trading_days_in_range(scan_from, today8)) + 8
+        need = max(30, min(need, 1200))
+
+        # 全市场A股(含名称), 过滤ST/退市/北交所
+        lst = ts.stock_list('5', with_name=True) or []
+        universe = []
+        for it in lst:
+            code = str(it.get('code', '')).strip()
+            name = str(it.get('name', '') or '').strip()
+            if not re.match(r'^\d{6}$', code):
+                continue
+            if code.startswith(('4', '8')):  # 跳过北交所
+                continue
+            up = name.upper()
+            if 'ST' in up or '退' in name:  # 跳过ST/退市
+                continue
+            universe.append((code, name))
+
+        total = len(universe)
+        t['total'] = total
+        candidates = []
+
+        for i, (code, name) in enumerate(universe):
+            if t.get('cancel_requested'):
+                break
+            t['processed'] = i
+            t['progress'] = int(i / max(total, 1) * 100)
+            try:
+                bars = ts.kline(code, count=need, period='1d', dividend_type='none')
+                if not bars or len(bars) < size + 1:
+                    continue
+                closes = {}
+                order = []
+                for b in bars:
+                    d8 = _bar_date8(b)
+                    c = float(b.get('close', 0) or 0)
+                    if d8 and c > 0:
+                        closes[d8] = c
+                        order.append(d8)
+                order.sort()
+                for (w_start, w_end, seg) in windows:
+                    if w_start not in closes or w_end not in closes:
+                        continue
+                    # 窗口首日的前一交易日
+                    try:
+                        pos = order.index(w_start)
+                    except ValueError:
+                        continue
+                    if pos == 0:
+                        continue
+                    prev_close = closes[order[pos - 1]]
+                    if prev_close <= 0:
+                        continue
+                    gain = (closes[w_end] - prev_close) / prev_close * 100
+                    if gain >= threshold:
+                        candidates.append({
+                            'range_start': w_start,
+                            'range_end': w_end,
+                            'range_label': f'{w_start[4:6]}/{w_start[6:8]}~{w_end[4:6]}/{w_end[6:8]}',
+                            'code': code,
+                            'name': name,
+                            'gain': round(gain, 2),
+                        })
+            except Exception:
+                continue
+
+        # 按窗口起始 + 涨幅降序
+        candidates.sort(key=lambda x: (x['range_start'], -x['gain']))
+        t['processed'] = total
+        t['progress'] = 100
+        t['candidates'] = candidates
+        t['status'] = 'cancelled' if t.get('cancel_requested') else 'completed'
+    except Exception as e:
+        t['status'] = 'failed'
+        t['error'] = f'{type(e).__name__}: {e}'
+
+
+@app.route('/api/hot/explosive/scan', methods=['POST'])
+def api_explosive_scan():
+    """启动历史爆发股票扫描(异步)。参数: month(YYYY-MM), window(默认3), step(默认2), threshold(默认18)"""
+    data = request.get_json() or {}
+    month = str(data.get('month', '')).strip()
+    if not re.match(r'^\d{4}-\d{2}$', month):
+        return jsonify({'success': False, 'error': 'month 需为 YYYY-MM 格式'}), 400
+    try:
+        size = int(data.get('window', 3))
+        step = int(data.get('step', size - 1 if size > 1 else 1))
+        threshold = float(data.get('threshold', 18))
+    except (TypeError, ValueError):
+        return jsonify({'success': False, 'error': '参数格式错误'}), 400
+    size = max(2, min(size, 10))
+    step = max(1, min(step, size))
+
+    import uuid
+    task_id = str(uuid.uuid4())[:8]
+    explosive_tasks[task_id] = {
+        'status': 'pending', 'progress': 0, 'processed': 0, 'total': 0,
+        'month': month, 'window': size, 'step': step, 'threshold': threshold,
+        'candidates': [],
+    }
+    threading.Thread(target=explosive_scan_task,
+                     args=(task_id, month, size, step, threshold), daemon=True).start()
+    return jsonify({'success': True, 'task_id': task_id,
+                    'status_url': f'/api/hot/explosive/status/{task_id}'})
+
+
+@app.route('/api/hot/explosive/status/<task_id>', methods=['GET'])
+def api_explosive_status(task_id):
+    """查询扫描任务状态/结果"""
+    if task_id not in explosive_tasks:
+        return jsonify({'success': False, 'error': '任务不存在'}), 404
+    t = explosive_tasks[task_id]
+    return jsonify({
+        'success': True, 'task_id': task_id,
+        'status': t['status'], 'progress': t.get('progress', 0),
+        'processed': t.get('processed', 0), 'total': t.get('total', 0),
+        'threshold': t.get('threshold'), 'window': t.get('window'),
+        'error': t.get('error'),
+        'candidates': t.get('candidates', []),
+    })
+
+
+@app.route('/api/hot/explosive/cancel/<task_id>', methods=['POST'])
+def api_explosive_cancel(task_id):
+    """请求中断扫描任务"""
+    if task_id not in explosive_tasks:
+        return jsonify({'success': False, 'error': '任务不存在'}), 404
+    explosive_tasks[task_id]['cancel_requested'] = True
+    return jsonify({'success': True, 'message': '已请求中断，正在停止…'})
+
+
+@app.route('/api/hot/explosive/kline', methods=['GET'])
+def api_explosive_kline():
+    """个股日K线, 截止到 end(YYYYMMDD) 当日, 返回最近 count 根(默认250≈1年)。数据来自通达信tq。"""
+    code = request.args.get('code', '')
+    if not re.match(r'^\d{6}$', code):
+        return jsonify({'success': False, 'error': 'code 需为6位数字'}), 400
+    end = request.args.get('end', '')
+    if not re.match(r'^\d{8}$', end):
+        return jsonify({'success': False, 'error': 'end 需为 YYYYMMDD'}), 400
+    disp = request.args.get('count', default=250, type=int)
+    disp = max(60, min(disp, 500))
+    today8 = datetime.now().strftime('%Y%m%d')
+    need = len(trading_days_in_range(end, today8)) + disp + 10
+    need = max(disp + 10, min(need, 1400))
+    try:
+        import tdx_source as ts
+        if not ts.is_available():
+            return jsonify({'success': False, 'error': '通达信tq接口不可用'}), 503
+        bars = ts.kline(code, count=need, period='1d', dividend_type='none')
+        if not bars:
+            return jsonify({'success': False, 'error': f'{code} 无K线数据'}), 404
+        # 截止到 end 当日
+        bars = [b for b in bars if _bar_date8(b) <= end]
+        if not bars:
+            return jsonify({'success': False, 'error': f'{code} 无 {end} 前的K线数据'}), 404
+        bars = bars[-disp:]
+        for i in range(len(bars)):
+            bars[i]['last_close'] = bars[i - 1]['close'] if i > 0 else bars[i]['open']
+        return jsonify({'success': True, 'code': code, 'end': end, 'bars': bars})
+    except Exception as e:
+        return jsonify({'success': False, 'error': f'{type(e).__name__}: {e}'}), 500
 
 
 if __name__ == '__main__':

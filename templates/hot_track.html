@@ -470,6 +470,74 @@
   .compute-actions .compute-skip:hover { background: var(--border-color); color: var(--text-primary); }
   .compute-actions .compute-remove { background: #6b7280; }
   .compute-actions .compute-remove:hover { background: #4b5563; }
+
+  /* ===== 视图切换 Tab ===== */
+  .view-tabs { display: flex; gap: 0; margin-bottom: 14px; border-bottom: 2px solid var(--border-color); }
+  .view-tabs .vtab {
+    background: transparent; border: none; color: var(--text-secondary);
+    padding: 10px 20px; font-size: 14px; font-weight: 600; cursor: pointer;
+    border-bottom: 2px solid transparent; margin-bottom: -2px; transition: all .15s;
+  }
+  .view-tabs .vtab:hover { color: var(--text-primary); }
+  .view-tabs .vtab.active { color: #e63946; border-bottom-color: #e63946; }
+  .view-content { display: none; }
+  .view-content.active { display: block; }
+
+  /* ===== 历史爆发股票汇总 ===== */
+  .exp-toolbar {
+    display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+    background: var(--bg-card); padding: 12px 16px; border-radius: 10px;
+    margin-bottom: 12px; border: 1px solid var(--border-color);
+  }
+  .exp-toolbar label { font-size: 13px; color: var(--text-secondary); }
+  .exp-toolbar input {
+    background: var(--bg-input); border: 1px solid var(--border-color); color: var(--text-primary);
+    padding: 6px 10px; border-radius: 6px; font-size: 13px;
+  }
+  .exp-toolbar button {
+    background: #e63946; color: #fff; border: none; padding: 7px 18px;
+    border-radius: 6px; font-size: 13px; cursor: pointer; font-weight: 600;
+  }
+  .exp-toolbar button:hover { filter: brightness(1.1); }
+  .exp-toolbar button:disabled { background: #555; cursor: not-allowed; }
+  .exp-status { font-size: 12px; color: var(--text-muted); }
+  .exp-progress-wrap { margin-bottom: 12px; }
+  .exp-progress-bar { background: var(--bg-input); border: 1px solid var(--border-color); border-radius: 6px; height: 12px; overflow: hidden; }
+  .exp-progress-fill { height: 100%; width: 0%; background: linear-gradient(90deg,#e63946,#b5179e); transition: width .3s; }
+
+  .exp-layout { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 16px; }
+  .exp-col { background: var(--bg-card); border: 1px solid var(--border-color); border-radius: 10px; overflow: hidden; display: flex; flex-direction: column; }
+  .exp-col-head { display: flex; align-items: center; justify-content: space-between; padding: 10px 14px; border-bottom: 1px solid var(--border-color); }
+  .exp-col-head h3 { font-size: 14px; color: var(--text-primary); }
+  .exp-count { font-size: 12px; color: var(--text-muted); background: var(--bg-input); padding: 2px 8px; border-radius: 999px; }
+  .exp-list { max-height: 320px; overflow-y: auto; }
+  .exp-list table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  .exp-list th, .exp-list td { text-align: left; padding: 7px 12px; border-bottom: 1px solid var(--border-light); }
+  .exp-list th { color: var(--text-secondary); font-weight: 600; position: sticky; top: 0; background: var(--bg-card); z-index: 1; }
+  .exp-list .exp-range { color: #ffd166; font-size: 12px; white-space: nowrap; }
+  .exp-list .exp-code { color: var(--text-muted); font-size: 12px; }
+  .exp-list .exp-name { color: var(--text-primary); }
+  .exp-list .exp-gain { color: #ff6b6b; font-weight: 700; text-align: right; }
+  .exp-plus, .exp-minus {
+    width: 22px; height: 22px; line-height: 20px; text-align: center; padding: 0;
+    border-radius: 5px; border: 1px solid var(--border-color); background: var(--bg-input);
+    color: var(--text-primary); cursor: pointer; font-size: 15px; font-weight: 700;
+  }
+  .exp-plus:hover { background: #2ea043; color: #fff; border-color: #2ea043; }
+  .exp-minus:hover { background: #dc2626; color: #fff; border-color: #dc2626; }
+  .exp-charts-head { font-size: 13px; color: var(--text-secondary); font-weight: 600; margin: 6px 0 10px; }
+  .exp-charts { display: flex; flex-direction: column; gap: 10px; }
+  .exp-chart-row {
+    display: flex; align-items: stretch; gap: 12px; background: var(--chart-bg);
+    border: 1px solid var(--border-light); border-radius: 9px; padding: 8px 12px;
+  }
+  .exp-chart-info { flex: 0 0 150px; display: flex; flex-direction: column; gap: 4px; justify-content: center; border-right: 1px solid var(--border-light); padding-right: 10px; }
+  .exp-chart-info .ci-name { font-size: 14px; font-weight: 700; color: var(--text-primary); }
+  .exp-chart-info .ci-code { font-size: 11px; color: var(--text-muted); }
+  .exp-chart-info .ci-range { font-size: 11px; color: #ffd166; }
+  .exp-chart-info .ci-gain { font-size: 13px; color: #ff6b6b; font-weight: 700; }
+  .exp-chart-info button { margin-top: 4px; }
+  .exp-kline { flex: 1 1 auto; height: 200px; min-width: 0; }
 </style>
 </head>
 <body>
@@ -539,6 +607,12 @@
     </button>
   </div>
 
+  <!-- 视图切换 Tab -->
+  <div class="view-tabs">
+    <button class="vtab active" data-view="blocks" onclick="switchView('blocks')">板块统计</button>
+    <button class="vtab" data-view="explosive" onclick="switchView('explosive')">历史爆发股票汇总</button>
+  </div>
+
   <div class="meta" id="meta"></div>
 
   <!-- 计算执行框 -->
@@ -560,6 +634,7 @@
     </div>
   </div>
 
+  <div class="view-content active" id="view-blocks">
   <div class="split">
     <div class="pane pane-top" id="paneTop">
       <div class="pane-title" onclick="togglePane('paneTop')">
@@ -575,7 +650,45 @@
       <div id="charts" class="pane-body"></div>
     </div>
   </div>
+  </div><!-- /view-blocks -->
 
+  <!-- 历史爆发股票汇总 -->
+  <div class="view-content" id="view-explosive">
+    <div class="exp-toolbar">
+      <label>选择月份</label>
+      <input type="month" id="expMonth">
+      <label title="按交易日切几日一个窗口">窗口(交易日)</label>
+      <input type="number" id="expWindow" value="3" min="2" max="10" style="width:56px;">
+      <label title="N日涨幅阈值">涨幅≥(%)</label>
+      <input type="number" id="expThreshold" value="18" min="1" max="200" style="width:56px;">
+      <button id="expStart" onclick="startExplosive()">开始</button>
+      <button id="expCancel" onclick="cancelExplosive()" style="display:none;background:#6b7280;">中断</button>
+      <span id="expStatus" class="exp-status"></span>
+    </div>
+    <div class="exp-progress-wrap" id="expProgressWrap" style="display:none;">
+      <div class="exp-progress-bar"><div class="exp-progress-fill" id="expProgressFill"></div></div>
+    </div>
+    <div class="exp-layout">
+      <div class="exp-col">
+        <div class="exp-col-head">
+          <h3>待选 list</h3>
+          <span class="exp-count" id="expCandCount">0</span>
+        </div>
+        <div class="exp-list" id="expCandList"><div class="empty">选择月份后点击「开始」扫描</div></div>
+      </div>
+      <div class="exp-col">
+        <div class="exp-col-head">
+          <h3>已选 list</h3>
+          <span class="exp-count" id="expPickCount">0</span>
+        </div>
+        <div class="exp-list" id="expPickList"><div class="empty">点击待选项前的 + 加入</div></div>
+      </div>
+    </div>
+    <div class="exp-charts-head">股票K线（截止各自日期范围最后一日 · 展示近一年）</div>
+    <div class="exp-charts" id="expCharts"><div class="empty">扫描后显示待选股票K线，每行一个</div></div>
+  </div><!-- /view-explosive -->
+
+<script src="https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"></script>
 <script>
 let DATA = null;
 let curSort = 'times';       // 板块排序
@@ -1916,6 +2029,241 @@ function togglePane(id){
     try{ localStorage.setItem('paneTopH', top.style.height); }catch(e){}
   });
 })();
+
+// ============== 历史爆发股票汇总 ==============
+let expTaskId = null;
+let expPollTimer = null;
+let expCandidates = [];          // 待选(扫描结果)
+let expPicked = [];              // 已选
+const expCharts = {};            // key -> echarts 实例
+
+function switchView(view) {
+  document.querySelectorAll('.vtab').forEach(t => t.classList.toggle('active', t.dataset.view === view));
+  document.querySelectorAll('.view-content').forEach(c => c.classList.toggle('active', c.id === 'view-' + view));
+  try { localStorage.setItem('hot_view', view); } catch(e) {}
+  if (view === 'explosive') {
+    // 默认月份填充为最近数据月份
+    const mi = document.getElementById('expMonth');
+    if (!mi.value) {
+      const d = new Date();
+      mi.value = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
+    }
+    setTimeout(() => { Object.values(expCharts).forEach(c => c && c.resize()); }, 50);
+  }
+}
+
+function candKey(c) { return `${c.range_start}_${c.range_end}_${c.code}`; }
+
+function setExpBusy(busy) {
+  document.getElementById('expStart').disabled = busy;
+  const cancel = document.getElementById('expCancel');
+  cancel.style.display = busy ? '' : 'none';
+  if (busy) { cancel.disabled = false; cancel.textContent = '中断'; }
+}
+
+async function startExplosive() {
+  const month = document.getElementById('expMonth').value;
+  if (!month) { alert('请选择月份'); return; }
+  const window_ = parseInt(document.getElementById('expWindow').value) || 3;
+  const threshold = parseFloat(document.getElementById('expThreshold').value) || 18;
+  setExpBusy(true);
+  expCandidates = [];
+  document.getElementById('expCandList').innerHTML = '<div class="empty">扫描中…</div>';
+  document.getElementById('expProgressWrap').style.display = 'block';
+  setExpProgress(0, '正在创建扫描任务…');
+  try {
+    const resp = await fetch('/api/hot/explosive/scan', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ month, window: window_, threshold }) });
+    const data = await resp.json();
+    if (!data.success) { setExpProgress(0, '失败: ' + (data.error || '未知错误')); setExpBusy(false); return; }
+    expTaskId = data.task_id;
+    pollExplosive();
+  } catch (e) { setExpProgress(0, '请求异常: ' + e.message); setExpBusy(false); }
+}
+
+function pollExplosive() {
+  if (expPollTimer) clearInterval(expPollTimer);
+  expPollTimer = setInterval(async () => {
+    try {
+      const resp = await fetch('/api/hot/explosive/status/' + expTaskId);
+      const s = await resp.json();
+      if (!s.success) {
+        clearInterval(expPollTimer);
+        setExpProgress(0, '任务状态丢失（服务可能已重启），请重试');
+        setExpBusy(false);
+        return;
+      }
+      setExpProgress(s.progress, `扫描中 · ${s.processed}/${s.total} · 已命中 ${(s.candidates||[]).length} 个`);
+      if (s.status === 'completed' || s.status === 'cancelled' || s.status === 'failed') {
+        clearInterval(expPollTimer);
+        setExpBusy(false);
+        if (s.status === 'failed') { setExpProgress(0, '失败: ' + (s.error || '未知错误')); return; }
+        expCandidates = s.candidates || [];
+        const prefix = s.status === 'cancelled' ? '已中断' : '完成';
+        setExpProgress(100, `${prefix} · 命中 ${expCandidates.length} 个（窗口${s.window}日 · 涨幅≥${s.threshold}%）`);
+        renderCandList();
+        renderExpCharts();
+      }
+    } catch (e) {
+      clearInterval(expPollTimer);
+      setExpProgress(0, '查询状态失败（网络异常）');
+      setExpBusy(false);
+    }
+  }, 1000);
+}
+
+async function cancelExplosive() {
+  if (!expTaskId) return;
+  const btn = document.getElementById('expCancel');
+  btn.disabled = true; btn.textContent = '中断中…';
+  try { await fetch('/api/hot/explosive/cancel/' + expTaskId, { method: 'POST' }); } catch (e) {}
+}
+
+function setExpProgress(pct, text) {
+  document.getElementById('expProgressFill').style.width = pct + '%';
+  document.getElementById('expStatus').textContent = text;
+}
+
+function renderCandList() {
+  const box = document.getElementById('expCandList');
+  document.getElementById('expCandCount').textContent = expCandidates.length;
+  const pickedKeys = new Set(expPicked.map(candKey));
+  const avail = expCandidates.filter(c => !pickedKeys.has(candKey(c)));
+  if (!avail.length) {
+    box.innerHTML = '<div class="empty">' + (expCandidates.length ? '全部已加入已选' : '无命中个股') + '</div>';
+    return;
+  }
+  let html = `<table><thead><tr><th></th><th>日期范围</th><th>代码</th><th>股票名</th><th style="text-align:right;">涨幅</th></tr></thead><tbody>`;
+  for (const c of avail) {
+    html += `<tr>
+      <td><button class="exp-plus" title="加入已选" onclick="pickCand('${candKey(c)}')">+</button></td>
+      <td class="exp-range">${c.range_label}</td>
+      <td class="exp-code">${c.code}</td>
+      <td class="exp-name">${escapeHtmlHT(c.name)}</td>
+      <td class="exp-gain">+${c.gain}%</td>
+    </tr>`;
+  }
+  html += `</tbody></table>`;
+  box.innerHTML = html;
+}
+
+function renderPickList() {
+  const box = document.getElementById('expPickList');
+  document.getElementById('expPickCount').textContent = expPicked.length;
+  if (!expPicked.length) { box.innerHTML = '<div class="empty">点击待选项前的 + 加入</div>'; return; }
+  let html = `<table><thead><tr><th></th><th>日期范围</th><th>代码</th><th>股票名</th><th style="text-align:right;">涨幅</th></tr></thead><tbody>`;
+  for (const c of expPicked) {
+    html += `<tr>
+      <td><button class="exp-minus" title="移出已选" onclick="unpickCand('${candKey(c)}')">−</button></td>
+      <td class="exp-range">${c.range_label}</td>
+      <td class="exp-code">${c.code}</td>
+      <td class="exp-name">${escapeHtmlHT(c.name)}</td>
+      <td class="exp-gain">+${c.gain}%</td>
+    </tr>`;
+  }
+  html += `</tbody></table>`;
+  box.innerHTML = html;
+}
+
+function pickCand(key) {
+  const c = expCandidates.find(x => candKey(x) === key);
+  if (!c) return;
+  if (expPicked.some(x => candKey(x) === key)) return;
+  expPicked.push(c);
+  renderCandList();
+  renderPickList();
+}
+function unpickCand(key) {
+  expPicked = expPicked.filter(x => candKey(x) !== key);
+  renderCandList();
+  renderPickList();
+}
+
+// 待选股票K线: 每行一个, 截止日期范围最后一日, 展示近一年
+function renderExpCharts() {
+  const wrap = document.getElementById('expCharts');
+  // 清理旧实例
+  Object.values(expCharts).forEach(c => { try { c.dispose(); } catch(e){} });
+  for (const k in expCharts) delete expCharts[k];
+  if (!expCandidates.length) { wrap.innerHTML = '<div class="empty">无命中个股</div>'; return; }
+  wrap.innerHTML = '';
+  for (const c of expCandidates) {
+    const key = candKey(c);
+    const row = document.createElement('div');
+    row.className = 'exp-chart-row';
+    row.innerHTML = `
+      <div class="exp-chart-info">
+        <div class="ci-name">${escapeHtmlHT(c.name)}</div>
+        <div class="ci-code">${c.code}</div>
+        <div class="ci-range">${c.range_label}</div>
+        <div class="ci-gain">+${c.gain}%</div>
+        <button class="exp-plus" style="width:auto;padding:2px 10px;" onclick="pickCand('${key}')">+ 加入已选</button>
+      </div>
+      <div class="exp-kline" id="expk_${key}"></div>`;
+    wrap.appendChild(row);
+    loadExpKline(c, key);
+  }
+}
+
+async function loadExpKline(c, key) {
+  const dom = document.getElementById('expk_' + key);
+  if (!dom) return;
+  try {
+    const resp = await fetch(`/api/hot/explosive/kline?code=${c.code}&end=${c.range_end}&count=250`);
+    const data = await resp.json();
+    if (!data.success || !data.bars || !data.bars.length) {
+      dom.innerHTML = `<div class="chart-empty">K线加载失败: ${escapeHtmlHT(data.error||'无数据')}</div>`;
+      return;
+    }
+    renderExpKline(dom, key, data.bars, c);
+  } catch (e) {
+    dom.innerHTML = `<div class="chart-empty">K线请求异常: ${escapeHtmlHT(e.message)}</div>`;
+  }
+}
+
+function renderExpKline(dom, key, bars, c) {
+  const UP = '#ef5350', DOWN = '#26a69a';
+  const dates = bars.map(b => b.date);
+  const ohlc = bars.map(b => [b.open, b.close, b.low, b.high]);
+  function calcMA(n) {
+    const r = [];
+    for (let i = 0; i < bars.length; i++) {
+      if (i < n - 1) { r.push('-'); continue; }
+      let s = 0; for (let j = i - n + 1; j <= i; j++) s += bars[j].close;
+      r.push(+(s / n).toFixed(2));
+    }
+    return r;
+  }
+  let chart = expCharts[key];
+  if (!chart) { chart = echarts.init(dom, 'dark'); expCharts[key] = chart; }
+  // 标注日期范围最后一日
+  const endDash = `${c.range_end.slice(0,4)}-${c.range_end.slice(4,6)}-${c.range_end.slice(6,8)}`;
+  chart.setOption({
+    backgroundColor: 'transparent', animation: false,
+    tooltip: { trigger: 'axis', axisPointer: { type: 'cross' } },
+    grid: { left: 48, right: 12, top: 12, bottom: 24 },
+    xAxis: { type: 'category', data: dates, boundaryGap: true, axisLabel: { color: '#9aa0a6', fontSize: 9 } },
+    yAxis: { scale: true, splitLine: { lineStyle: { color: '#252a33' } }, axisLabel: { color: '#9aa0a6', fontSize: 9 } },
+    dataZoom: [{ type: 'inside', start: 0, end: 100 }],
+    series: [
+      { name: '日K', type: 'candlestick', data: ohlc,
+        itemStyle: { color: UP, color0: DOWN, borderColor: UP, borderColor0: DOWN },
+        markLine: { symbol: 'none', silent: true,
+          data: [{ xAxis: endDash, lineStyle: { color: '#ffd166', type: 'dashed', width: 1 },
+                   label: { formatter: '范围末日', color: '#ffd166', fontSize: 9 } }] } },
+      { name: 'MA5', type: 'line', data: calcMA(5), symbol: 'none', lineStyle: { color: '#facc15', width: 1 } },
+      { name: 'MA10', type: 'line', data: calcMA(10), symbol: 'none', lineStyle: { color: '#60a5fa', width: 1 } },
+      { name: 'MA20', type: 'line', data: calcMA(20), symbol: 'none', lineStyle: { color: '#a855f7', width: 1 } },
+    ],
+  }, true);
+  chart.resize();
+}
+
+window.addEventListener('resize', () => { Object.values(expCharts).forEach(c => c && c.resize()); });
+
+// 恢复上次视图
+try { const v = localStorage.getItem('hot_view'); if (v) switchView(v); } catch(e) {}
 
 // 初始化: 载入可选日期(不自动计算)
 populateDates();

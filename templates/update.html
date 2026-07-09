@@ -130,6 +130,7 @@
         <label>结束日期 <input type="date" id="endDate"></label>
         <button id="btnDownload" onclick="startDownload()">开始下载</button>
         <button id="btnToday" class="ghost" onclick="downloadToday()">只下载今日</button>
+        <button id="btnDownloadCancel" class="ghost" onclick="cancelDownload()" style="display:none;">中断</button>
       </div>
       <div class="hint">留空则下载全部；只下载A股交易日、跳过已下载。支持自定义任意日期范围（自动翻页获取历史文章）。</div>
       <div class="progress-wrap" id="progressWrap">
@@ -167,6 +168,7 @@
         <button id="btnExtractToday" class="ghost" onclick="extractToday()">仅今日提取</button>
         <button id="btnImport" class="ghost" onclick="startImport()">批量入库</button>
         <button id="btnImportToday" class="ghost" onclick="importToday()">仅今日入库</button>
+        <button id="btnUniCancel" class="ghost" onclick="cancelUni()" style="display:none;">中断</button>
       </div>
       <div class="hint">「提取并入库」= 从已下载图片提取Excel并写入数据库；「批量入库」= 仅上传已有Excel到数据库。均仅处理A股交易日。</div>
       <div class="progress-wrap" id="uniProgressWrap">
@@ -278,6 +280,7 @@ function d8ToDash(d) { return /^\d{8}$/.test(d) ? `${d.slice(0,4)}-${d.slice(4,6
 
 // ===== 下载 =====
 let pollTimer = null;
+let currentDownloadTask = null;
 function downloadToday() {
   const t = todayStr();
   document.getElementById('startDate').value = t;
@@ -300,9 +303,18 @@ async function startDownload(force) {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
     const data = await resp.json();
     if (!data.success) { setProgress(0, '失败: ' + (data.error || '未知错误')); setBusy(false); return; }
+    currentDownloadTask = data.task_id;
     setProgress(2, `已创建任务 ${data.task_id}，共 ${data.articles_count} 篇，下载中…`);
     pollStatus(data.task_id);
   } catch (e) { setProgress(0, '请求异常: ' + e.message); setBusy(false); }
+}
+async function cancelDownload() {
+  if (!currentDownloadTask) return;
+  const btn = document.getElementById('btnDownloadCancel');
+  btn.disabled = true; btn.textContent = '中断中…';
+  try {
+    await fetch('/api/download/cancel/' + currentDownloadTask, { method: 'POST' });
+  } catch (e) {}
 }
 function pollStatus(taskId) {
   if (pollTimer) clearInterval(pollTimer);
@@ -318,11 +330,11 @@ function pollStatus(taskId) {
         return;
       }
       setProgress(s.progress, `状态: ${s.status} · 进度 ${s.progress}% · 已下载 ${s.downloaded} 张`);
-      if (s.status === 'completed') {
+      if (s.status === 'completed' || s.status === 'cancelled') {
         clearInterval(pollTimer);
-        let msg = `完成 · 共 ${s.total} 张，已下载 ${s.downloaded} 张`;
+        let msg = (s.status === 'cancelled' ? '已中断' : '完成') + ` · 共 ${s.total} 张，已下载 ${s.downloaded} 张`;
         if (s.failed_dates && s.failed_dates.length) msg += ` · 失败 ${s.failed_dates.length} 个日期`;
-        setProgress(100, msg);
+        setProgress(s.progress, msg);
         renderFailures(s.failed_details || []);
         setBusy(false); loadFiles();
       }
@@ -341,6 +353,9 @@ function setProgress(pct, text) {
 function setBusy(busy) {
   document.getElementById('btnDownload').disabled = busy;
   document.getElementById('btnToday').disabled = busy;
+  const cancel = document.getElementById('btnDownloadCancel');
+  cancel.style.display = busy ? '' : 'none';
+  if (busy) { cancel.disabled = false; cancel.textContent = '中断'; }
 }
 function renderFailures(details) {
   const box = document.getElementById('failedBox'), list = document.getElementById('failedList');
@@ -392,6 +407,8 @@ async function loadFiles() {
 
 // ===== 提取与入库（合并） =====
 let uniPollTimer = null;
+let currentUniTask = null;
+let currentUniMode = null;
 function extractToday() {
   const t = todayStr();
   document.getElementById('uniStart').value = t;
@@ -419,6 +436,7 @@ async function startExtract() {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
     const data = await resp.json();
     if (!data.success) { setUniProgress(0, '失败: ' + (data.error || '未知错误')); setUniBusy(false); return; }
+    currentUniTask = data.task_id; currentUniMode = 'extract';
     setUniProgress(2, `已创建任务 ${data.task_id}，共 ${data.dates_count} 个交易日，提取中…`);
     fetchUniItems(data.task_id, 'extract');
     pollUni(data.task_id, 'extract');
@@ -439,10 +457,20 @@ async function startImport() {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
     const data = await resp.json();
     if (!data.success) { setUniProgress(0, '失败: ' + (data.error || '未知错误')); setUniBusy(false); return; }
+    currentUniTask = data.task_id; currentUniMode = 'import';
     setUniProgress(2, `已创建任务 ${data.task_id}，共 ${data.dates_count} 个交易日，入库中…`);
     fetchUniItems(data.task_id, 'import');
     pollUni(data.task_id, 'import');
   } catch (e) { setUniProgress(0, '请求异常: ' + e.message); setUniBusy(false); }
+}
+async function cancelUni() {
+  if (!currentUniTask) return;
+  const btn = document.getElementById('btnUniCancel');
+  btn.disabled = true; btn.textContent = '中断中…';
+  const url = currentUniMode === 'extract'
+    ? '/api/extract/cancel/' + currentUniTask
+    : '/api/db/submit-batch/cancel/' + currentUniTask;
+  try { await fetch(url, { method: 'POST' }); } catch (e) {}
 }
 function pollUni(taskId, mode) {
   if (uniPollTimer) clearInterval(uniPollTimer);
@@ -466,13 +494,14 @@ function pollUni(taskId, mode) {
       }
       setUniProgress(s.progress, msg);
       renderUniItems(s.items || [], mode);
-      if (s.status === 'completed') {
+      if (s.status === 'completed' || s.status === 'cancelled') {
         clearInterval(uniPollTimer);
+        const prefix = s.status === 'cancelled' ? '已中断' : '完成';
         if (mode === 'extract') {
-          setUniProgress(100, `完成 · 提取 ${s.extracted} 天 · 入库 ${s.submitted} 天`);
+          setUniProgress(s.progress, `${prefix} · 提取 ${s.extracted} 天 · 入库 ${s.submitted} 天`);
         } else {
           const missing = (s.items || []).filter(i => i.status === 'no_excel').length;
-          setUniProgress(100, `完成 · 入库 ${s.submitted} 天` + (missing ? ` · ${missing} 天缺Excel` : ''));
+          setUniProgress(s.progress, `${prefix} · 入库 ${s.submitted} 天` + (missing ? ` · ${missing} 天缺Excel` : ''));
         }
         setUniBusy(false);
         loadExcelList();
@@ -501,6 +530,9 @@ function setUniBusy(busy) {
   document.getElementById('btnExtractToday').disabled = busy;
   document.getElementById('btnImport').disabled = busy;
   document.getElementById('btnImportToday').disabled = busy;
+  const cancel = document.getElementById('btnUniCancel');
+  cancel.style.display = busy ? '' : 'none';
+  if (busy) { cancel.disabled = false; cancel.textContent = '中断'; }
 }
 function renderUniItems(items, mode) {
   const box = document.getElementById('uniItemsBox');
