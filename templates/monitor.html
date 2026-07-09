@@ -716,10 +716,39 @@ async function loadHistMinute(date) {
 // leadingLine: 领先指标换算的指数点位(黄线横线), 仅当日分时有; 历史分时传 null
 // stockPoints: 选中个股的当日分时(可选), 有则在同图叠加红色线
 // stockLastClose: 个股昨收价(可选), 优先于全局 stockDailyBars 用于涨幅基准
+// 全天固定分时时间轴: 9:25-9:29 集合竞价(5点) + 9:30-11:29(120点) + 13:00-14:59(120点) = 245点
+// 用于固定 x 轴范围, 让分时图一开始就显示完整交易日, 线条随时间推进填充
+function _fullDayAxis() {
+  const pad = n => n.toString().padStart(2, '0');
+  const axis = [];
+  for (let m = 25; m <= 29; m++) axis.push(`09:${pad(m)}`);   // 09:25-09:29 集合竞价
+  for (let m = 30; m <= 59; m++) axis.push(`09:${pad(m)}`);   // 09:30-09:59
+  for (let m = 0; m <= 59; m++) axis.push(`10:${pad(m)}`);    // 10:00-10:59
+  for (let m = 0; m <= 29; m++) axis.push(`11:${pad(m)}`);    // 11:00-11:29 (上午共120点)
+  for (let m = 0; m <= 59; m++) axis.push(`13:${pad(m)}`);    // 13:00-13:59
+  for (let m = 0; m <= 59; m++) axis.push(`14:${pad(m)}`);    // 14:00-14:59 (下午共120点)
+  return axis;  // 共 5 + 120 + 120 = 245 点
+}
+const _FULL_DAY_AXIS = _fullDayAxis();
+// 连续竞价数据(9:30起)在固定轴中的起始索引 = 5 (前面5个是集合竞价 9:25-9:29)
+const _TRADE_START_IDX = 5;
+
 function renderMinute(chartVar, domId, points, dateLabel, leadingLine, stockPoints, stockLastClose) {
-  const times = points.map(p => p.time);
-  const prices = points.map(p => p.price);
-  const vols = points.map(p => p.vol);
+  // 用固定全天轴(9:25-15:00共245点), 实际数据(9:30起)对齐到轴的第5位开始
+  // 未到的时段留空(null), 图表一开始就显示完整交易日坐标, 线条随时间推进填充
+  const times = _FULL_DAY_AXIS;
+  // 指数数据对齐到固定轴 (9:30起 -> 轴索引5)
+  const prices = new Array(_FULL_DAY_AXIS.length).fill(null);
+  const vols = new Array(_FULL_DAY_AXIS.length).fill(null);
+  // points 是 9:30 起的实际数据, 逐个填入轴索引 _TRADE_START_IDX + i
+  // 但历史分时(已收盘)数据可能满240点, 需按实际 time 标签匹配轴位置(更稳健)
+  const axisIdx = {};
+  times.forEach((t, i) => { axisIdx[t] = i; });
+  points.forEach(p => {
+    const idx = axisIdx[p.time];
+    if (idx != null) { prices[idx] = p.price; vols[idx] = p.vol; }
+  });
+  const _pts = points;  // 保留原始引用(下方颜色比较用)
 
   // 昨收基准: 优先用前一日K线收盘(最准确), 退而用第一个点近似
   // dailyData 倒数第二根 close = 昨收(最后一根是当日, 可能尚未收盘)
@@ -728,9 +757,11 @@ function renderMinute(chartVar, domId, points, dateLabel, leadingLine, stockPoin
     basePrice = dailyData[dailyData.length - 2].close;
   }
   if (!basePrice || basePrice <= 0) {
-    basePrice = prices.length > 0 ? prices[0] : 0;
+    const firstReal = prices.find(p => p != null);
+    basePrice = firstReal != null ? firstReal : 0;
   }
-  const maxDev = Math.max(...prices.map(p => Math.abs(p - basePrice))) || 1;
+  const realPrices = prices.filter(p => p != null);
+  const maxDev = (realPrices.length > 0 ? Math.max(...realPrices.map(p => Math.abs(p - basePrice))) : 1) || 1;
 
   const chart = echarts.init(document.getElementById(domId), 'dark');
   if (domId === 'minuteChart') minuteChart = chart;
@@ -746,10 +777,13 @@ function renderMinute(chartVar, domId, points, dateLabel, leadingLine, stockPoin
 
   // 大盘成交量红绿柱: 本分钟收盘价 vs 上一分钟收盘价
   // 红: 涨(c[i]>c[i-1])  绿: 跌(c[i]<c[i-1])  灰: 平(c[i]==c[i-1])
+  // 固定轴下可能有 null(集合竞价段/未到时段), null 不着色
   const indexVols = vols.map((v, i) => {
     let color;
-    if (i === 0) {
-      color = 'rgba(158,158,158,0.5)';  // 第一根无法比较, 灰色
+    if (v == null) {
+      return { value: null };
+    } else if (i === 0 || prices[i - 1] == null) {
+      color = 'rgba(158,158,158,0.5)';  // 第一根/前一根无数据, 灰色
     } else if (prices[i] > prices[i - 1]) {
       color = 'rgba(239,83,80,0.6)';   // 涨 红
     } else if (prices[i] < prices[i - 1]) {
@@ -766,8 +800,13 @@ function renderMinute(chartVar, domId, points, dateLabel, leadingLine, stockPoin
   let stockBasePrice = 0;
   let stockLimitDev = 0;  // 个股涨停幅度(用于Y轴尺度)
   if (stockPoints && stockPoints.length > 0) {
-    const stockPrices = stockPoints.map(p => p.price);
-    const stockVols = stockPoints.map(p => p.vol);
+    // 个股数据对齐到固定全天轴(同 index 数据, 9:30起->轴索引5)
+    const stockPrices = new Array(_FULL_DAY_AXIS.length).fill(null);
+    const stockVols = new Array(_FULL_DAY_AXIS.length).fill(null);
+    stockPoints.forEach(p => {
+      const idx = axisIdx[p.time];
+      if (idx != null) { stockPrices[idx] = p.price; stockVols[idx] = p.vol; }
+    });
     // 昨收基准: 优先用后端分时接口返回的 last_close(每次切换都带, 不依赖全局 stockDailyBars 就绪状态)
     // 其次用个股日K倒数第二根close; 最后退回第一个点
     if (stockLastClose && stockLastClose > 0) {
@@ -776,16 +815,19 @@ function renderMinute(chartVar, domId, points, dateLabel, leadingLine, stockPoin
       stockBasePrice = stockDailyBars[stockDailyBars.length - 2].close;
     }
     if (!stockBasePrice || stockBasePrice <= 0) {
-      stockBasePrice = stockPrices[0];
+      const firstReal = stockPrices.find(p => p != null);
+      stockBasePrice = firstReal != null ? firstReal : 0;
     }
     // 涨停幅度: 科创板688/创业板300/301 = 20%, 主板 = 10%
     const isKcb = curStockCode && (curStockCode.startsWith('688') || curStockCode.startsWith('300') || curStockCode.startsWith('301'));
     const limitRate = isKcb ? 0.2 : 0.1;
     stockLimitDev = stockBasePrice * limitRate;  // 涨停价-昨收 = 跌停价到昨收的距离
-    // 个股量红绿柱: 同样按本分钟 vs 上一分钟
+    // 个股量红绿柱: 同样按本分钟 vs 上一分钟(null 不着色)
     const svols = stockVols.map((v, i) => {
       let color;
-      if (i === 0) {
+      if (v == null) {
+        return { value: null };
+      } else if (i === 0 || stockPrices[i - 1] == null) {
         color = 'rgba(158,158,158,0.4)';
       } else if (stockPrices[i] > stockPrices[i - 1]) {
         color = 'rgba(239,83,80,0.5)';
@@ -798,6 +840,7 @@ function renderMinute(chartVar, domId, points, dateLabel, leadingLine, stockPoin
     });
     stockSeries = [{
       name: '个股', type: 'line', data: stockPrices, symbol: 'none',
+      connectNulls: false,  // 集合竞价段/未到时段断开
       lineStyle: { color: '#e63946', width: 1.5 },
       // 个股用左 y 轴(个股独占分时图时)
       yAxisIndex: 0,
@@ -820,17 +863,21 @@ function renderMinute(chartVar, domId, points, dateLabel, leadingLine, stockPoin
         ]
       }
     },
-    // 个股黄色均价线(VWAP: 累计成交额/累计成交量)
+    // 个股黄色均价线(VWAP: 累计成交额/累计成交量), 按固定轴逐点累计, null处保持上一值
     {
       name: '个股均价', type: 'line', symbol: 'none',
+      connectNulls: false,
       yAxisIndex: 0,
       lineStyle: { color: '#facc15', width: 1 },
       data: (function() {
         let cumAmt = 0, cumVol = 0;
-        return stockPoints.map(function(p) {
-          cumAmt += p.price * p.vol;
-          cumVol += p.vol;
-          return cumVol > 0 ? +(cumAmt / cumVol).toFixed(2) : p.price;
+        return stockPrices.map(function(p, i) {
+          const v = stockVols[i];
+          if (p != null && v != null) {
+            cumAmt += p * v;
+            cumVol += v;
+          }
+          return cumVol > 0 ? +(cumAmt / cumVol).toFixed(2) : null;
         });
       })(),
     }];
@@ -848,12 +895,14 @@ function renderMinute(chartVar, domId, points, dateLabel, leadingLine, stockPoin
   const seriesList = hasStock ? [
     // 上证白线(右隐藏轴, 仅作参考叠加, 不显示标签)
     { name: '指数', type: 'line', data: prices, smooth: true, symbol: 'none',
+      connectNulls: false,  // 集合竞价段/未到时段断开
       yAxisIndex: 2,  // 隐藏的右轴
       lineStyle: { color: 'rgba(255,255,255,0.35)', width: 1, type: 'dashed' },
     },
     // 个股(左轴) + 个股均价(左轴) + 个股量(隐藏轴)
   ].concat(stockSeries).concat(stockVolSeries) : [
     { name: '指数', type: 'line', data: prices, smooth: true, symbol: 'none',
+      connectNulls: false,  // 集合竞价段/未到时段断开
       lineStyle: { color: '#ffffff', width: 1.5 },
       areaStyle: { color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
         { offset: 0, color: 'rgba(255,255,255,0.10)' },
@@ -907,7 +956,8 @@ function renderMinute(chartVar, domId, points, dateLabel, leadingLine, stockPoin
       formatter: function(params) {
         let s = params[0].axisValue + '<br/>';
         params.forEach(p => {
-          if (p.value !== undefined && p.value !== '-' && p.seriesName !== '成交量' && p.seriesName !== '个股量') {
+          if (p.value === undefined || p.value === '-' || p.value === null) return;  // 空数据点跳过
+          if (p.seriesName !== '成交量' && p.seriesName !== '个股量') {
             // 显示价格 + 涨幅(相对昨收基准)
             let base = 0;
             if (p.seriesName === '指数') base = basePrice;
@@ -1558,29 +1608,58 @@ async function loadStockMinute5(code) {
 }
 
 function renderStockMinute5(points, days) {
-  // x轴: 用 "MM-DD HH:MM" 作标签, 每天的第一个点加日期分隔
-  const xLabels = points.map((p, i) => {
-    const prev = i > 0 ? points[i-1].day : null;
-    return p.day !== prev ? `${p.day} ${p.time}` : p.time;
-  });
-  const prices = points.map(p => p.price);
-  const vols = points.map(p => p.vol);
-  const basePrice = prices.length > 0 ? prices[0] : 0;
-  const maxDev = Math.max(...prices.map(p => Math.abs(p - basePrice))) || 1;
-  // 每天的分隔线位置(xIndex)
-  const markLines = [];
-  let lastDay = null;
-  points.forEach((p, i) => {
-    if (p.day !== lastDay && i > 0) {
-      markLines.push({ xAxis: i, lineStyle: { color: '#4a5568', type: 'dashed' } });
+  // 用固定全天轴拼接5天: 每天占245点(9:25-15:00), 共 days.length*245 个x轴点
+  // 实际数据按 time 对齐到当天块内, 未到的时段留空, 图表一开始就显示完整交易日范围
+  const dayCount = days.length;
+  const blockLen = _FULL_DAY_AXIS.length;  // 245
+  const totalLen = dayCount * blockLen;
+  // 构建x轴标签: 每天块的第5位(9:30)显示"MM-DD HH:MM", 其余显示HH:MM
+  const xLabels = new Array(totalLen).fill(null);
+  for (let d = 0; d < dayCount; d++) {
+    const dayLabel = days[d];
+    for (let i = 0; i < blockLen; i++) {
+      const globalIdx = d * blockLen + i;
+      xLabels[globalIdx] = (i === _TRADE_START_IDX) ? `${dayLabel} ${_FULL_DAY_AXIS[i]}` : _FULL_DAY_AXIS[i];
     }
-    lastDay = p.day;
+  }
+  // 时间->当天块内索引 的映射
+  const axisIdxMap = {};
+  _FULL_DAY_AXIS.forEach((t, i) => { axisIdxMap[t] = i; });
+  // 按天分组实际数据
+  const dayDataMap = {};  // {day: {timeIdx: point}}
+  points.forEach(p => {
+    if (!dayDataMap[p.day]) dayDataMap[p.day] = {};
+    const localIdx = axisIdxMap[p.time];
+    if (localIdx != null) dayDataMap[p.day][localIdx] = p;
   });
-  // 5日分时量红绿柱: 本分钟收盘价 vs 上一分钟(跨日第一根灰色)
-  const svols = points.map((p, i) => {
+  // 填充 prices/vols 全局数组(null 填充未到时段)
+  const prices = new Array(totalLen).fill(null);
+  const vols = new Array(totalLen).fill(null);
+  days.forEach((day, d) => {
+    const dm = dayDataMap[day] || {};
+    for (let i = 0; i < blockLen; i++) {
+      const p = dm[i];
+      if (p) { prices[d * blockLen + i] = p.price; vols[d * blockLen + i] = p.vol; }
+    }
+  });
+  // 昨收基准: 第一天第一个有效价
+  const firstReal = prices.find(p => p != null);
+  const basePrice = firstReal != null ? firstReal : 0;
+  const realPrices = prices.filter(p => p != null);
+  const maxDev = (realPrices.length > 0 ? Math.max(...realPrices.map(p => Math.abs(p - basePrice))) : 1) || 1;
+  // 每天的分隔线位置(每天块起始处)
+  const markLines = [];
+  for (let d = 1; d < dayCount; d++) {
+    markLines.push({ xAxis: d * blockLen, lineStyle: { color: '#4a5568', type: 'dashed' } });
+  }
+  // 5日分时量红绿柱: 本分钟收盘价 vs 上一分钟(跨日第一根/集合竞价段灰色)
+  const svols = vols.map((v, i) => {
+    if (v == null) return { value: null };
+    // 块内索引: 跨日第一根(i%blockLen==0) 或 集合竞价段(i%blockLen<5) 或 前一根无数据 -> 灰色
+    const localIdx = i % blockLen;
     let color;
-    if (i === 0 || points[i].day !== points[i-1].day) {
-      color = 'rgba(158,158,158,0.4)';  // 第一根/跨日第一根 灰色
+    if (localIdx === 0 || localIdx < _TRADE_START_IDX || prices[i - 1] == null) {
+      color = 'rgba(158,158,158,0.4)';  // 跨日第一根/集合竞价段/前一根无数据 灰色
     } else if (prices[i] > prices[i - 1]) {
       color = 'rgba(239,83,80,0.5)';   // 涨 红
     } else if (prices[i] < prices[i - 1]) {
@@ -1588,7 +1667,7 @@ function renderStockMinute5(points, days) {
     } else {
       color = 'rgba(158,158,158,0.4)'; // 平 灰
     }
-    return { value: p.vol, itemStyle: { color } };
+    return { value: v, itemStyle: { color } };
   });
   const dom = document.getElementById('stockMinute5Chart');
   if (!stockMinute5Chart || !dom.querySelector('canvas')) {
@@ -1596,7 +1675,25 @@ function renderStockMinute5(points, days) {
   }
   stockMinute5Chart.setOption({
     backgroundColor: 'transparent', animation: false,
-    tooltip: { trigger: 'axis' },
+    tooltip: {
+      trigger: 'axis',
+      formatter: function(params) {
+        if (!params[0] || params[0].value == null) return params[0] ? params[0].axisValue : '';
+        let s = params[0].axisValue + '<br/>';
+        params.forEach(p => {
+          if (p.value == null) return;
+          if (p.seriesName === '价格') {
+            const pct = basePrice > 0 ? ((p.value - basePrice) / basePrice * 100) : 0;
+            const sign = pct >= 0 ? '+' : '';
+            const color = pct >= 0 ? '#ef5350' : '#26a69a';
+            s += `${p.marker}${p.seriesName}: <b>${p.value}</b> <span style="color:${color}">${sign}${pct.toFixed(2)}%</span><br/>`;
+          } else {
+            s += `${p.marker}${p.seriesName}: <b>${p.value}</b><br/>`;
+          }
+        });
+        return s;
+      }
+    },
     // grid 用像素值, 小框也能紧凑显示; 底部留 dataZoom 空间
     grid: { left: 38, right: 12, top: 18, bottom: 36 },
     xAxis: { type: 'category', data: xLabels, boundaryGap: false,
@@ -1609,7 +1706,9 @@ function renderStockMinute5(points, days) {
       { splitLine: { show: false }, axisLabel: { show: false } },
     ],
     series: [
-      { name: '价格', type: 'line', data: prices, symbol: 'none', lineStyle: { color: '#e63946', width: 1 },
+      { name: '价格', type: 'line', data: prices, symbol: 'none',
+        connectNulls: false,  // 集合竞价段/未到时段断开, 连续竞价段连线
+        lineStyle: { color: '#e63946', width: 1 },
         markLine: { symbol: 'none', silent: true, data: markLines } },
       { name: '成交量', type: 'bar', yAxisIndex: 1, data: svols },
     ],

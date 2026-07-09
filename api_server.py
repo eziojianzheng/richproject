@@ -1613,10 +1613,11 @@ def monitor_page():
 
 # 分时时间轴生成 (9:30-11:30, 13:00-15:00 共240个点)
 def _minute_time_axis(n):
-    """生成 n 个分时时间点 (HH:MM)"""
+    """生成 n 个分时时间点 (HH:MM)。
+    A股连续竞价: 9:30-11:30 (120分钟) + 13:00-15:00 (120分钟) = 240点。
+    集合竞价 9:25-9:29 的数据由前端固定轴补齐(后端 mootdx minute 不含集合竞价段)。"""
     from datetime import datetime, timedelta
     times = []
-    # 上午 9:30-11:30 = 120 分钟, 下午 13:00-15:00 = 120 分钟
     am_start = datetime(2026, 1, 1, 9, 30)
     pm_start = datetime(2026, 1, 1, 13, 0)
     for i in range(min(n, 240)):
