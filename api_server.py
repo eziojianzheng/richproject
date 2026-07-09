@@ -2700,6 +2700,7 @@ def _fetch_zt_minutes(zt_codes, date_int, cancel_check=None):
     """批量拉涨停股的逐分钟分时数据, 按日期缓存(支持多日)。
     返回 {code: [price_per_minute, ...]}, 240个点(9:30-15:00)。
     涨停价 = 当日分时最高价; price == 最高价 即为封板状态。
+    优先级: 本地 .lc1 文件(秒级) > mootdx minutes 逐只远程(兜底)。
     cancel_check: 可选的无参回调, 返回True时中止。
     """
     global _concept_hist_minute_cache
@@ -2711,33 +2712,52 @@ def _fetch_zt_minutes(zt_codes, date_int, cancel_check=None):
     import time as _time
     fetched = 0
     failed = 0
+    src = ''
+
+    # ---------- 优先: 本地 .lc1 文件(需通达信盘后下载1分钟线) ----------
     try:
-        import hot_track as ht
-        with ht._get_tdx_lock():
-            client = ht._get_tdx_client()
-            for code in missing:
-                if cancel_check and cancel_check():
-                    break
-                try:
-                    t0 = _time.time()
-                    df = client.minutes(symbol=code, date=date_int)
-                    dt = _time.time() - t0
-                    if dt > 2:
-                        print(f'[概念] 分时 {code} 耗时{dt:.1f}s (慢)')
-                    if df is not None and not df.empty and 'price' in df.columns:
-                        prices = df['price'].tolist()
-                        if prices:
-                            day_cache[code] = prices
-                            fetched += 1
-                    else:
-                        failed += 1
-                except Exception as e:
-                    failed += 1
-                    print(f'[概念] 分时 {code} 异常: {e}')
-        _concept_hist_minute_cache[date_int] = day_cache
-        print(f'[概念] 分时拉取完成 date={date_int}: 成功{fetched} 失败{failed}/{len(missing)}')
+        local = _read_lc1_minutes_batch(missing, date_int)
+        if local:
+            for code, prices in local.items():
+                day_cache[code] = prices
+                fetched += 1
+                missing.remove(code)
+            src = 'lc1'
+            print(f'[概念] 分时 .lc1 本地读取 date={date_int}: {len(local)}只')
     except Exception as e:
-        print(f'[概念] 拉分时失败: {e}')
+        print(f'[概念] .lc1 本地读取失败: {e}')
+
+    # ---------- 兜底: mootdx minutes 逐只远程(仅本地缺失的) ----------
+    if missing and not (cancel_check and cancel_check()):
+        try:
+            import hot_track as ht
+            with ht._get_tdx_lock():
+                client = ht._get_tdx_client()
+                for code in missing:
+                    if cancel_check and cancel_check():
+                        break
+                    try:
+                        t0 = _time.time()
+                        df = client.minutes(symbol=code, date=date_int)
+                        dt = _time.time() - t0
+                        if dt > 2:
+                            print(f'[概念] 分时 {code} 耗时{dt:.1f}s (慢)')
+                        if df is not None and not df.empty and 'price' in df.columns:
+                            prices = df['price'].tolist()
+                            if prices:
+                                day_cache[code] = prices
+                                fetched += 1
+                        else:
+                            failed += 1
+                    except Exception as e:
+                        failed += 1
+                        print(f'[概念] 分时 {code} 异常: {e}')
+            src = src or 'mootdx'
+        except Exception as e:
+            print(f'[概念] 拉分时失败: {e}')
+
+    _concept_hist_minute_cache[date_int] = day_cache
+    print(f'[概念] 分时拉取完成 date={date_int} [{src}]: 成功{fetched} 失败{failed}')
 
     return day_cache
 
@@ -3479,10 +3499,170 @@ def api_hot_dates():
 _concept_daily_zt_cache = {}  # {date_int: {code: name}} 每日涨停股缓存
 
 
+def _read_day_files_zt(date_int, all_codes):
+    """读通达信本地 .day 日线文件, 判定某日涨停股。
+    .day 文件每条记录32字节: date(I) open(I*100) high(I*100) low(I*100) close(I*100)
+                            amount(f) vol(I) reserved(I)
+    3189只主板股票约1秒读完, 无网络依赖。
+    返回 {code: name} 涨停股字典(name暂用code代替, .day不含名称)。
+    """
+    import struct
+    import os
+    try:
+        import tdx_source as _ts
+        base = os.path.join(_ts.TDX_INSTALL_DIR, 'Vipdoc')
+    except Exception:
+        return {}
+    sh_dir = os.path.join(base, 'sh', 'lday')
+    sz_dir = os.path.join(base, 'sz', 'lday')
+    if not (os.path.isdir(sh_dir) and os.path.isdir(sz_dir)):
+        return {}
+
+    result = {}
+    target = int(date_int)
+    for code in all_codes:
+        if code.startswith('6'):
+            fp = os.path.join(sh_dir, f'sh{code}.day')
+        else:
+            fp = os.path.join(sz_dir, f'sz{code}.day')
+        try:
+            with open(fp, 'rb') as f:
+                data = f.read()
+            n = len(data) // 32
+            # 倒序找目标日期(.day按时间升序, 倒序更快)
+            for i in range(n - 1, 0, -1):
+                rec = data[i * 32:(i + 1) * 32]
+                d = struct.unpack('I', rec[:4])[0]
+                if d == target:
+                    close = struct.unpack('I', rec[16:20])[0] / 100.0
+                    prev_rec = data[(i - 1) * 32:i * 32]
+                    prev_close = struct.unpack('I', prev_rec[16:20])[0] / 100.0
+                    if prev_close > 0 and (close - prev_close) / prev_close * 100 >= 9.8:
+                        result[code] = code
+                    break
+                if d < target:
+                    break  # 已越过目标日期, 文件无该日数据
+        except Exception:
+            continue
+    return result
+
+
+def _read_day_closes_batch(codes):
+    """批量读通达信本地 .day 文件, 返回每只股票的 {date_int: close} 日线收盘价。
+    支持全市场(沪市6/科创板688 -> sh, 深市0/创业板300 -> sz)。
+    约5000只2秒读完, 无网络依赖。
+    返回 {code: {date_int: close_price}}。
+    """
+    import struct
+    import os
+    try:
+        import tdx_source as _ts
+        base = os.path.join(_ts.TDX_INSTALL_DIR, 'Vipdoc')
+    except Exception:
+        return {}
+    sh_dir = os.path.join(base, 'sh', 'lday')
+    sz_dir = os.path.join(base, 'sz', 'lday')
+    if not (os.path.isdir(sh_dir) and os.path.isdir(sz_dir)):
+        return {}
+
+    result = {}
+    for code in codes:
+        # 沪市: 6开头(主板60/科创板688) / 9开头 -> sh
+        # 深市: 0/3开头(主板00/创业板300) -> sz
+        if code.startswith('6') or code.startswith('9'):
+            fp = os.path.join(sh_dir, f'sh{code}.day')
+        else:
+            fp = os.path.join(sz_dir, f'sz{code}.day')
+        try:
+            with open(fp, 'rb') as f:
+                data = f.read()
+            closes = {}
+            for i in range(0, len(data), 32):
+                rec = data[i:i + 32]
+                if len(rec) < 32:
+                    break
+                d = struct.unpack('I', rec[:4])[0]
+                close = struct.unpack('I', rec[16:20])[0] / 100.0
+                if close > 0:
+                    closes[str(d)] = close
+            if closes:
+                result[code] = closes
+        except Exception:
+            continue
+    return result
+
+
+def _read_lc1_minutes(code, date_int):
+    """读通达信本地 .lc1 1分钟线文件, 提取指定日期的逐分钟价格。
+    .lc1 每条记录32字节: date(I) time(I) open(f) high(f) low(f) close(f) amount(f) vol(I)
+    返回 [price_per_minute, ...] (用close作为price, 对齐mootdx minutes的price列) 或 None。
+    """
+    import struct
+    import os
+    try:
+        import tdx_source as _ts
+        base = os.path.join(_ts.TDX_INSTALL_DIR, 'Vipdoc')
+    except Exception:
+        return None
+    if code.startswith('6') or code.startswith('9'):
+        fp = os.path.join(base, 'sh', 'minline', f'sh{code}.lc1')
+    else:
+        fp = os.path.join(base, 'sz', 'minline', f'sz{code}.lc1')
+    if not os.path.exists(fp):
+        return None
+
+    target = int(date_int)
+    try:
+        with open(fp, 'rb') as f:
+            data = f.read()
+        prices = []
+        for i in range(0, len(data), 32):
+            rec = data[i:i + 32]
+            if len(rec) < 32:
+                break
+            d = struct.unpack('I', rec[:4])[0]
+            if d < target:
+                continue
+            if d > target:
+                break  # 已越过目标日期
+            # d == target: 取close作为price
+            close = struct.unpack('f', rec[16:20])[0]
+            if close > 0:
+                prices.append(round(close, 3))
+        return prices if prices else None
+    except Exception:
+        return None
+
+
+def _read_lc1_minutes_batch(codes, date_int):
+    """批量读本地 .lc1 文件, 提取指定日期的逐分钟分时。
+    返回 {code: [price, ...]}, 只含成功读取的股票。
+    若 minline 目录无 .lc1 文件(未下载分钟线), 返回空dict, 调用方回退mootdx。
+    """
+    import os
+    try:
+        import tdx_source as _ts
+        base = os.path.join(_ts.TDX_INSTALL_DIR, 'Vipdoc')
+    except Exception:
+        return {}
+    sh_dir = os.path.join(base, 'sh', 'minline')
+    sz_dir = os.path.join(base, 'sz', 'minline')
+    if not os.path.isdir(sh_dir) and not os.path.isdir(sz_dir):
+        return {}
+
+    result = {}
+    for code in codes:
+        p = _read_lc1_minutes(code, date_int)
+        if p:
+            result[code] = p
+    return result
+
+
 def _fetch_daily_zt_codes(date_int, concept_map, cancel_check=None):
-    """用 mootdx 判定某日涨停股(不依赖 zt_stocks)。
-    - 今天: 用 quotes() 批量报价(80只/批), pct>=9.8% 判定, 快速(~3秒)
-    - 历史: 用 bars(frequency=9) 逐只拉日K, 慢(~60秒/3000只), 但按日缓存
+    """判定某日涨停股(主板60/00, pct>=9.8%), 按日缓存。
+    优先级:
+    - 今天: tqcenter batch_pricevol(走本地通达信, ~0.8秒) > mootdx quotes兜底
+    - 历史: 本地 .day 文件(~1秒) > mootdx bars逐只兜底(极慢)
     cancel_check: 可选的无参回调, 返回True时中止
     返回 {code: name} 涨停股字典。
     """
@@ -3498,75 +3678,99 @@ def _fetch_daily_zt_codes(date_int, concept_map, cancel_check=None):
     result = {}
     from datetime import datetime as _dt
     is_today = (date_int == int(_dt.now().strftime('%Y%m%d')))
+    src = ''
 
+    # ---------- 优先路径 ----------
     try:
-        import hot_track as ht
-        import pandas as pd
-        with ht._get_tdx_lock():
-            client = ht._get_tdx_client()
-
-            if is_today:
-                # 快速路径: 批量 quotes (80只/批)
-                frames = []
-                for i in range(0, len(all_codes), 80):
-                    if cancel_check and cancel_check():
-                        return result
-                    batch = all_codes[i:i + 80]
-                    df = client.quotes(symbol=batch)
-                    if df is not None and not df.empty:
-                        frames.append(df)
-                if frames:
-                    all_q = pd.concat(frames, ignore_index=True)
-                    for col in ('last_close', 'price'):
-                        if col in all_q.columns:
-                            all_q[col] = pd.to_numeric(all_q[col], errors='coerce')
-                    valid = all_q[(all_q['last_close'] > 0) & (all_q['price'] > 0)].copy()
-                    valid['pct'] = (valid['price'] - valid['last_close']) / valid['last_close'] * 100
-                    valid['code'] = valid['code'].astype(str).str.zfill(6)
-                    for _, r in valid.iterrows():
-                        if float(r['pct']) >= 9.8:
-                            name = r.get('name', '') if 'name' in valid.columns else ''
-                            result[str(r['code'])] = str(name)
-            else:
-                # 历史路径: 逐只拉日K
-                target = str(date_int)
-                for code in all_codes:
-                    if cancel_check and cancel_check():
-                        return result
-                    try:
-                        df = client.bars(symbol=code, frequency=9, offset=10)
-                        if df is None or df.empty:
-                            continue
-                        for idx in range(len(df)):
-                            row = df.iloc[idx]
-                            dt = str(row.get('datetime', ''))
-                            if dt[:10].replace('-', '') == target:
-                                close = float(row['close'])
-                                if idx > 0:
-                                    prev_close = float(df.iloc[idx - 1]['close'])
-                                else:
-                                    prev_close = float(row['open'])
-                                if prev_close > 0:
-                                    pct = (close - prev_close) / prev_close * 100
-                                    if pct >= 9.8:
-                                        result[code] = code
-                                break
-                    except Exception:
-                        pass
+        if is_today:
+            # 今天: tqcenter 批量报价(本地通达信, 不封IP, ~0.8秒)
+            import tdx_source as _ts
+            if _ts.is_available():
+                pv = _ts.batch_pricevol(all_codes)
+                if pv:
+                    for code, v in pv.items():
+                        if float(v.get('pct', 0)) >= 9.8:
+                            result[code] = code
+                    src = 'tqcenter'
+        else:
+            # 历史: 本地 .day 文件(~1秒, 无网络)
+            r = _read_day_files_zt(date_int, all_codes)
+            if r:
+                result = r
+                src = 'dayfile'
     except Exception as e:
-        print(f'[概念] 拉日K判定涨停失败: {e}')
+        print(f'[概念] 优先路径失败, 回退mootdx: {e}')
+
+    # ---------- 兜底: mootdx (优先路径无结果时) ----------
+    if not result and not (cancel_check and cancel_check()):
+        try:
+            import hot_track as ht
+            import pandas as pd
+            with ht._get_tdx_lock():
+                client = ht._get_tdx_client()
+
+                if is_today:
+                    # 兜底: mootdx 批量 quotes (80只/批)
+                    frames = []
+                    for i in range(0, len(all_codes), 80):
+                        if cancel_check and cancel_check():
+                            break
+                        batch = all_codes[i:i + 80]
+                        df = client.quotes(symbol=batch)
+                        if df is not None and not df.empty:
+                            frames.append(df)
+                    if frames:
+                        all_q = pd.concat(frames, ignore_index=True)
+                        for col in ('last_close', 'price'):
+                            if col in all_q.columns:
+                                all_q[col] = pd.to_numeric(all_q[col], errors='coerce')
+                        valid = all_q[(all_q['last_close'] > 0) & (all_q['price'] > 0)].copy()
+                        valid['pct'] = (valid['price'] - valid['last_close']) / valid['last_close'] * 100
+                        valid['code'] = valid['code'].astype(str).str.zfill(6)
+                        for _, r in valid.iterrows():
+                            if float(r['pct']) >= 9.8:
+                                name = r.get('name', '') if 'name' in valid.columns else ''
+                                result[str(r['code'])] = str(name)
+                        src = src or 'mootdx-quotes'
+                else:
+                    # 兜底: mootdx 逐只 bars (极慢~16分钟, 仅在.day文件缺失时)
+                    target = str(date_int)
+                    for code in all_codes:
+                        if cancel_check and cancel_check():
+                            break
+                        try:
+                            df = client.bars(symbol=code, frequency=9, offset=10)
+                            if df is None or df.empty:
+                                continue
+                            for idx in range(len(df)):
+                                row = df.iloc[idx]
+                                dt = str(row.get('datetime', ''))
+                                if dt[:10].replace('-', '') == target:
+                                    close = float(row['close'])
+                                    if idx > 0:
+                                        prev_close = float(df.iloc[idx - 1]['close'])
+                                    else:
+                                        prev_close = float(row['open'])
+                                    if prev_close > 0:
+                                        pct = (close - prev_close) / prev_close * 100
+                                        if pct >= 9.8:
+                                            result[code] = code
+                                    break
+                        except Exception:
+                            pass
+                    src = src or 'mootdx-bars'
+        except Exception as e:
+            print(f'[概念] mootdx兜底失败: {e}')
 
     _concept_daily_zt_cache[date_int] = result
-    print(f'[概念] 涨停判定 date={date_int} {"(今天,quotes)" if is_today else "(历史,bars)"}: {len(result)}只')
-    return result
-
-    _concept_daily_zt_cache[date_int] = result
-    print(f'[概念] 日K涨停判定 date={date_int}: {len(result)}只 / {len(all_codes)}只成分股')
+    print(f'[概念] 涨停判定 date={date_int} [{src}]: {len(result)}只')
     return result
 
 
 # ===== 同花顺概念追踪: 异步任务 (带进度+取消) =====
 _concept_tasks = {}  # {task_id: {status, progress, cur_date, total_dates, logs, result, error, _cancel, days_partial}}
+# 按天结果缓存(跨任务复用): {date_str: day_result}。今天的数据不缓存(实时变化)。
+_concept_day_cache = {}
 
 @app.route('/api/hot/concept-track', methods=['GET'])
 def api_hot_concept_track():
@@ -3681,6 +3885,8 @@ def _concept_track_task(task_id, start, end):
                 code_to_concepts.setdefault(c, set()).add(concept)
 
         days_result = []
+        from datetime import datetime as _dt
+        _today_str = _dt.now().strftime('%Y%m%d')
         for di, date_str in enumerate(trade_dates):
             # 检查取消
             if t['_cancel']:
@@ -3694,6 +3900,16 @@ def _concept_track_task(task_id, start, end):
             t['progress'] = int(di / max(len(trade_dates), 1) * 100)
             date_int = int(date_str)
             d_display = f'{date_str[:4]}-{date_str[4:6]}-{date_str[6:8]}'
+
+            # 缓存命中: 非今天且已计算过 -> 直接复用, 跳过重算
+            if date_str != _today_str and date_str in _concept_day_cache:
+                cached = _concept_day_cache[date_str]
+                days_result.append(cached)
+                top_name = cached['top10'][0]['concept'] if cached['top10'] else '无'
+                top_cnt = cached['top10'][0]['zt_count'] if cached['top10'] else 0
+                log(f'⏩ [{di+1}/{len(trade_dates)}] {d_display}: 命中缓存, Top概念 {top_name}({top_cnt}只)')
+                continue
+
             log(f'📍 [{di+1}/{len(trade_dates)}] 处理 {d_display} ...')
 
             # 用日K线判定涨停股(不依赖zt_stocks)
@@ -3786,12 +4002,16 @@ def _concept_track_task(task_id, start, end):
                     })
                     prev_counts = counts
 
-            days_result.append({
+            day_result = {
                 'date': date_str,
                 'top10': top10,
                 'timeline': timeline,
                 'top10_ever': sorted(top10_concepts),
-            })
+            }
+            days_result.append(day_result)
+            # 非今天的结果存入跨任务缓存(今天实时变化, 不缓存)
+            if date_str != _today_str:
+                _concept_day_cache[date_str] = day_result
             log(f'   ✅ {d_display}: 涨停{len(zt_codes)}只, Top概念 {top10[0]["concept"] if top10 else "无"}({top10[0]["zt_count"] if top10 else 0}只)')
 
         t['progress'] = 100
@@ -4474,24 +4694,36 @@ def explosive_scan_task(task_id, month, size, step, threshold):
         t['total'] = total
         candidates = []
 
+        # 批量读本地 .day 日线文件(全市场~2秒), 替代逐只 ts.kline(~18分钟)
+        all_codes = [c for c, _ in universe]
+        day_closes = _read_day_closes_batch(all_codes)
+        t['day_loaded'] = len(day_closes)
+        log_msg = f'本地日线加载 {len(day_closes)}/{len(all_codes)} 只'
+        # 统计本地缺失的股票(后续逐只回退tqcenter)
+        missing_codes = [c for c in all_codes if c not in day_closes]
+
         for i, (code, name) in enumerate(universe):
             if t.get('cancel_requested'):
                 break
             t['processed'] = i
             t['progress'] = int(i / max(total, 1) * 100)
             try:
-                bars = ts.kline(code, count=need, period='1d', dividend_type='none')
-                if not bars or len(bars) < size + 1:
+                closes = day_closes.get(code)
+                order = None
+                if not closes:
+                    # 本地无该股.day文件, 回退 tqcenter kline
+                    bars = ts.kline(code, count=need, period='1d', dividend_type='none')
+                    if not bars or len(bars) < size + 1:
+                        continue
+                    closes = {}
+                    for b in bars:
+                        d8 = _bar_date8(b)
+                        c = float(b.get('close', 0) or 0)
+                        if d8 and c > 0:
+                            closes[d8] = c
+                if not closes or len(closes) < size + 1:
                     continue
-                closes = {}
-                order = []
-                for b in bars:
-                    d8 = _bar_date8(b)
-                    c = float(b.get('close', 0) or 0)
-                    if d8 and c > 0:
-                        closes[d8] = c
-                        order.append(d8)
-                order.sort()
+                order = sorted(closes.keys())
                 for (w_start, w_end, seg) in windows:
                     if w_start not in closes or w_end not in closes:
                         continue
