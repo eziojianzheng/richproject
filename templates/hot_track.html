@@ -563,7 +563,10 @@
   .exp-chart-info .ci-range { font-size: 11px; color: #ffd166; }
   .exp-chart-info .ci-gain { font-size: 13px; color: #ff6b6b; font-weight: 700; }
   .exp-chart-info button { margin-top: 4px; }
+  .exp-chart-info button.picked { background: #2ea043; color: #fff; border-color: #2ea043; cursor: default; opacity: 0.8; }
+  .exp-chart-area { flex: 1 1 auto; display: flex; flex-direction: column; gap: 4px; min-width: 0; }
   .exp-kline { flex: 1 1 auto; height: 200px; min-width: 0; }
+  .exp-min10 { flex: 0 0 100px; min-width: 0; }
 </style>
 </head>
 <body>
@@ -2081,7 +2084,8 @@ let expTaskId = null;
 let expPollTimer = null;
 let expCandidates = [];          // 待选(扫描结果)
 let expPicked = [];              // 已选
-const expCharts = {};            // key -> echarts 实例
+const expCharts = {};            // key -> echarts 实例 (K线)
+const expMinCharts = {};         // key -> echarts 实例 (10日分时)
 
 // ===== Tab 切换 (统一管理 hnr/explosive/ths 三个视图) =====
 function switchTab(tab) {
@@ -2112,11 +2116,35 @@ function switchTab(tab) {
       const d = new Date();
       mi.value = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
     }
-    setTimeout(() => { Object.values(expCharts).forEach(c => c && c.resize()); }, 50);
+    setTimeout(() => { Object.values(expCharts).forEach(c => c && c.resize()); Object.values(expMinCharts).forEach(c => c && c.resize()); }, 50);
   }
 }
 
 function candKey(c) { return `${c.range_start}_${c.range_end}_${c.code}`; }
+
+// ===== 已选列表持久化 =====
+async function loadExpPicks() {
+  try {
+    const resp = await fetch('/api/hot/explosive/picks');
+    const data = await resp.json();
+    if (data.success && data.picks) {
+      expPicked = data.picks;
+      renderPickList();
+    }
+  } catch(e) {}
+}
+let _expPicksSaveTimer = null;
+function saveExpPicksDebounced() {
+  if (_expPicksSaveTimer) clearTimeout(_expPicksSaveTimer);
+  _expPicksSaveTimer = setTimeout(async () => {
+    try {
+      await fetch('/api/hot/explosive/picks', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ picks: expPicked })
+      });
+    } catch(e) {}
+  }, 500);
+}
 
 function setExpBusy(busy) {
   document.getElementById('expStart').disabled = busy;
@@ -2234,14 +2262,34 @@ function pickCand(key) {
   const c = expCandidates.find(x => candKey(x) === key);
   if (!c) return;
   if (expPicked.some(x => candKey(x) === key)) return;
+  c.picked_at = new Date().toISOString();
   expPicked.push(c);
   renderCandList();
   renderPickList();
+  updateExpChartBtn(key, true);
+  saveExpPicksDebounced();
 }
 function unpickCand(key) {
   expPicked = expPicked.filter(x => candKey(x) !== key);
   renderCandList();
   renderPickList();
+  updateExpChartBtn(key, false);
+  saveExpPicksDebounced();
+}
+
+// 更新K线行里的加入按钮状态
+function updateExpChartBtn(key, picked) {
+  const btn = document.querySelector(`button.exp-pick-btn[onclick="pickCand('${key}')"]`);
+  if (!btn) return;
+  if (picked) {
+    btn.textContent = '✓ 已加入';
+    btn.classList.add('picked');
+    btn.disabled = true;
+  } else {
+    btn.textContent = '+ 加入已选';
+    btn.classList.remove('picked');
+    btn.disabled = false;
+  }
 }
 
 // 待选股票K线: 每行一个, 截止日期范围最后一日, 展示近一年
@@ -2250,10 +2298,14 @@ function renderExpCharts() {
   // 清理旧实例
   Object.values(expCharts).forEach(c => { try { c.dispose(); } catch(e){} });
   for (const k in expCharts) delete expCharts[k];
+  Object.values(expMinCharts).forEach(c => { try { c.dispose(); } catch(e){} });
+  for (const k in expMinCharts) delete expMinCharts[k];
   if (!expCandidates.length) { wrap.innerHTML = '<div class="empty">无命中个股</div>'; return; }
   wrap.innerHTML = '';
+  const pickedKeys = new Set(expPicked.map(candKey));
   for (const c of expCandidates) {
     const key = candKey(c);
+    const isPicked = pickedKeys.has(key);
     const row = document.createElement('div');
     row.className = 'exp-chart-row';
     row.innerHTML = `
@@ -2262,11 +2314,15 @@ function renderExpCharts() {
         <div class="ci-code">${c.code}</div>
         <div class="ci-range">${c.range_label}</div>
         <div class="ci-gain">+${c.gain}%</div>
-        <button class="exp-plus" style="width:auto;padding:2px 10px;" onclick="pickCand('${key}')">+ 加入已选</button>
+        <button class="exp-pick-btn${isPicked ? ' picked' : ''}" style="width:auto;padding:2px 10px;" onclick="pickCand('${key}')" ${isPicked ? 'disabled' : ''}>${isPicked ? '✓ 已加入' : '+ 加入已选'}</button>
       </div>
-      <div class="exp-kline" id="expk_${key}"></div>`;
+      <div class="exp-chart-area">
+        <div class="exp-kline" id="expk_${key}"></div>
+        <div class="exp-min10" id="expm_${key}"></div>
+      </div>`;
     wrap.appendChild(row);
     loadExpKline(c, key);
+    loadExpMin10(c, key);
   }
 }
 
@@ -2290,6 +2346,9 @@ function renderExpKline(dom, key, bars, c) {
   const UP = '#ef5350', DOWN = '#26a69a';
   const dates = bars.map(b => b.date);
   const ohlc = bars.map(b => [b.open, b.close, b.low, b.high]);
+  const vols = bars.map(b => b.vol || 0);
+  // 成交量颜色: 涨红跌绿
+  const volColors = bars.map(b => b.close >= b.open ? UP : DOWN);
   function calcMA(n) {
     const r = [];
     for (let i = 0; i < bars.length; i++) {
@@ -2306,28 +2365,122 @@ function renderExpKline(dom, key, bars, c) {
   chart.setOption({
     backgroundColor: 'transparent', animation: false,
     tooltip: { trigger: 'axis', axisPointer: { type: 'cross' } },
-    grid: { left: 48, right: 12, top: 12, bottom: 24 },
-    xAxis: { type: 'category', data: dates, boundaryGap: true, axisLabel: { color: '#9aa0a6', fontSize: 9 } },
-    yAxis: { scale: true, splitLine: { lineStyle: { color: '#252a33' } }, axisLabel: { color: '#9aa0a6', fontSize: 9 } },
-    dataZoom: [{ type: 'inside', start: 0, end: 100 }],
+    grid: [
+      { left: 48, right: 12, top: 8, height: '62%' },           // K线区
+      { left: 48, right: 12, top: '76%', height: '20%' },        // 成交量区
+    ],
+    xAxis: [
+      { type: 'category', data: dates, boundaryGap: true, axisLabel: { color: '#9aa0a6', fontSize: 9 },
+        gridIndex: 0, axisTick: { show: false } },
+      { type: 'category', data: dates, gridIndex: 1, axisLabel: { show: false }, axisTick: { show: false }, axisLine: { show: false } },
+    ],
+    yAxis: [
+      { scale: true, splitLine: { lineStyle: { color: '#252a33' } }, axisLabel: { color: '#9aa0a6', fontSize: 9 }, gridIndex: 0 },
+      { scale: true, gridIndex: 1, splitNumber: 2, axisLabel: { color: '#9aa0a6', fontSize: 8 },
+        splitLine: { lineStyle: { color: '#252a33' } } },
+    ],
+    dataZoom: [
+      { type: 'inside', xAxisIndex: [0, 1], start: 0, end: 100 },
+    ],
     series: [
-      { name: '日K', type: 'candlestick', data: ohlc,
+      { name: '日K', type: 'candlestick', data: ohlc, xAxisIndex: 0, yAxisIndex: 0,
         itemStyle: { color: UP, color0: DOWN, borderColor: UP, borderColor0: DOWN },
         markLine: { symbol: 'none', silent: true,
           data: [{ xAxis: endDash, lineStyle: { color: '#ffd166', type: 'dashed', width: 1 },
                    label: { formatter: '范围末日', color: '#ffd166', fontSize: 9 } }] } },
-      { name: 'MA5', type: 'line', data: calcMA(5), symbol: 'none', lineStyle: { color: '#facc15', width: 1 } },
-      { name: 'MA10', type: 'line', data: calcMA(10), symbol: 'none', lineStyle: { color: '#60a5fa', width: 1 } },
-      { name: 'MA20', type: 'line', data: calcMA(20), symbol: 'none', lineStyle: { color: '#a855f7', width: 1 } },
+      { name: 'MA5', type: 'line', data: calcMA(5), xAxisIndex: 0, yAxisIndex: 0, symbol: 'none', lineStyle: { color: '#facc15', width: 1 } },
+      { name: 'MA10', type: 'line', data: calcMA(10), xAxisIndex: 0, yAxisIndex: 0, symbol: 'none', lineStyle: { color: '#60a5fa', width: 1 } },
+      { name: 'MA20', type: 'line', data: calcMA(20), xAxisIndex: 0, yAxisIndex: 0, symbol: 'none', lineStyle: { color: '#a855f7', width: 1 } },
+      { name: '成交量', type: 'bar', data: vols.map((v, i) => ({ value: v, itemStyle: { color: volColors[i] } })),
+        xAxisIndex: 1, yAxisIndex: 1 },
     ],
   }, true);
   chart.resize();
 }
 
-window.addEventListener('resize', () => { Object.values(expCharts).forEach(c => c && c.resize()); });
+// 10日分时连续图
+async function loadExpMin10(c, key) {
+  const dom = document.getElementById('expm_' + key);
+  if (!dom) return;
+  try {
+    const resp = await fetch(`/api/monitor/stock/minutes10?code=${c.code}`);
+    const data = await resp.json();
+    if (!data.success || !data.points || !data.points.length) {
+      dom.innerHTML = `<div class="chart-empty" style="font-size:11px;">10日分时: ${escapeHtmlHT(data.error || '无数据')}</div>`;
+      return;
+    }
+    renderExpMin10(dom, key, data);
+  } catch (e) {
+    dom.innerHTML = `<div class="chart-empty" style="font-size:11px;">10日分时请求异常</div>`;
+  }
+}
+
+function renderExpMin10(dom, key, data) {
+  const points = data.points;
+  const days = data.days || [];
+  // x轴: 序号(0..N-1), 每天用分隔线和标签
+  const xData = points.map((_, i) => i);
+  const prices = points.map(p => p.price);
+  let chart = expMinCharts[key];
+  if (!chart) { chart = echarts.init(dom, 'dark'); expMinCharts[key] = chart; }
+  // 计算每天起始索引, 用于 markLine 分隔
+  let dayMarks = [];
+  let prevDay = null;
+  let dayStartIdx = 0;
+  for (let i = 0; i < points.length; i++) {
+    if (points[i].day !== prevDay) {
+      if (prevDay !== null) {
+        dayMarks.push({ xAxis: i, lineStyle: { color: '#333', type: 'solid', width: 1 } });
+      }
+      dayStartIdx = i;
+      prevDay = points[i].day;
+    }
+  }
+  // 每天的日期标签(放在底部)
+  let dayLabels = [];
+  let pd = null;
+  for (let i = 0; i < points.length; i++) {
+    if (points[i].day !== pd) {
+      dayLabels.push({ value: points[i].day, xAxis: i });
+      pd = points[i].day;
+    }
+  }
+  chart.setOption({
+    backgroundColor: 'transparent', animation: false,
+    title: { text: '近10日分时连续', left: 8, top: 2, textStyle: { color: '#9aa0a6', fontSize: 10, fontWeight: 400 } },
+    tooltip: { trigger: 'axis', formatter: params => {
+      const p = points[params[0].dataIndex];
+      return p ? `${p.day} ${p.time}<br/>价格: ${p.price}` : '';
+    }},
+    grid: { left: 48, right: 12, top: 22, bottom: 20 },
+    xAxis: { type: 'category', data: xData, boundaryGap: false,
+      axisLabel: { color: '#9aa0a6', fontSize: 8, interval: (idx, val) => {
+        return dayLabels.some(d => d.xAxis === idx);
+      }, formatter: (val, idx) => {
+        const dl = dayLabels.find(d => d.xAxis === idx);
+        return dl ? dl.value : '';
+      }},
+      axisTick: { show: false }, axisLine: { lineStyle: { color: '#333' } } },
+    yAxis: { scale: true, splitLine: { lineStyle: { color: '#252a33' } },
+      axisLabel: { color: '#9aa0a6', fontSize: 8 } },
+    series: [{
+      type: 'line', data: prices, symbol: 'none', lineStyle: { color: '#42a5f5', width: 1 },
+      markLine: { symbol: 'none', silent: true, data: dayMarks },
+      areaStyle: { color: 'rgba(66,165,245,0.08)' },
+    }],
+  }, true);
+  chart.resize();
+}
+
+window.addEventListener('resize', () => {
+  Object.values(expCharts).forEach(c => c && c.resize());
+  Object.values(expMinCharts).forEach(c => c && c.resize());
+});
 
 // 恢复上次视图
 try { const v = localStorage.getItem('hot_view'); if (v) switchTab(v); } catch(e) {}
+// 恢复已选列表
+loadExpPicks();
 
 // ===== 同花顺概念追踪 =====
 function loadConceptTrack(forceRefresh) {

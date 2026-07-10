@@ -223,6 +223,47 @@ def _save_watchlist(wl):
         print(f'保存自选股失败: {e}')
 
 
+# ===== 爆发股已选列表持久化 (.exp_picks.json) =====
+EXP_PICKS_FILE = '.exp_picks.json'
+
+
+def _load_exp_picks():
+    """读取爆发股已选列表 [{range_start, range_end, range_label, code, name, gain, picked_at}]"""
+    try:
+        if os.path.exists(EXP_PICKS_FILE):
+            with open(EXP_PICKS_FILE, 'r', encoding='utf-8') as f:
+                return json.load(f)
+    except Exception:
+        pass
+    return []
+
+
+def _save_exp_picks(picks):
+    try:
+        with open(EXP_PICKS_FILE, 'w', encoding='utf-8') as f:
+            json.dump(picks, f, ensure_ascii=False)
+    except Exception as e:
+        print(f'保存爆发股已选失败: {e}')
+
+
+@app.route('/api/hot/explosive/picks', methods=['GET'])
+def api_explosive_picks_get():
+    """获取已保存的爆发股已选列表"""
+    return jsonify({'success': True, 'picks': _load_exp_picks()})
+
+
+@app.route('/api/hot/explosive/picks', methods=['POST'])
+def api_explosive_picks_save():
+    """保存爆发股已选列表 (全量覆盖)"""
+    try:
+        data = request.get_json(silent=True) or {}
+        picks = data.get('picks', [])
+        _save_exp_picks(picks)
+        return jsonify({'success': True, 'count': len(picks)})
+    except Exception as e:
+        return jsonify({'success': False, 'error': f'{type(e).__name__}: {e}'}), 500
+
+
 def get_article_list(user_id='444409'):
     """获取博客文章列表（首页，最近约30篇）"""
     url = f'https://www.tgb.cn/blog/{user_id}'
@@ -2382,6 +2423,45 @@ def monitor_stock_minutes5():
                     })
         if not all_points:
             return jsonify({'success': False, 'error': '无5日分时数据'}), 404
+        return jsonify({'success': True, 'points': all_points, 'days': day_labels, 'source': 'mootdx'})
+    except Exception as e:
+        return jsonify({'success': False, 'error': f'{type(e).__name__}: {e}'}), 500
+
+
+@app.route('/api/monitor/stock/minutes10', methods=['GET'])
+def monitor_stock_minutes10():
+    """个股近10个交易日分时拼接 (逐日拉 minutes, 拼成一条连续线)。
+    参数: code=300001"""
+    code = request.args.get('code', '')
+    if not re.match(r'^\d{6}$', code):
+        return jsonify({'success': False, 'error': 'code 需为6位数字'}), 400
+    try:
+        import hot_track as ht
+        lock = ht._get_tdx_lock()
+        with lock:
+            client = ht._get_tdx_client()
+            df_k = ht._tdx_call_with_timeout(client, 'bars', timeout=8, symbol=code, frequency=9, offset=10)
+            if df_k is None or len(df_k) == 0:
+                return jsonify({'success': False, 'error': f'{code} 无K线数据'}), 404
+            df_k = df_k.sort_index()
+            dates = [str(idx)[:10].replace('-', '') for idx in df_k.index]
+            all_points = []
+            day_labels = []
+            for d in dates:
+                df_m = ht._tdx_call_with_timeout(client, 'minutes', timeout=5, symbol=code, date=int(d))
+                if df_m is None or df_m.empty:
+                    continue
+                times = _minute_time_axis(len(df_m))
+                day_labels.append(f'{d[4:6]}-{d[6:8]}')
+                for i, row in df_m.iterrows():
+                    all_points.append({
+                        'time': times[i] if i < len(times) else str(i),
+                        'price': round(float(row['price']), 2),
+                        'vol': float(row['vol']),
+                        'day': f'{d[4:6]}-{d[6:8]}',
+                    })
+        if not all_points:
+            return jsonify({'success': False, 'error': '无10日分时数据'}), 404
         return jsonify({'success': True, 'points': all_points, 'days': day_labels, 'source': 'mootdx'})
     except Exception as e:
         return jsonify({'success': False, 'error': f'{type(e).__name__}: {e}'}), 500
