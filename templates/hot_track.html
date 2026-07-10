@@ -566,7 +566,7 @@
   .exp-chart-info button.picked { background: #2ea043; color: #fff; border-color: #2ea043; cursor: default; opacity: 0.8; }
   .exp-chart-area { flex: 1 1 auto; display: flex; flex-direction: column; gap: 4px; min-width: 0; }
   .exp-kline { flex: 1 1 auto; height: 200px; min-width: 0; }
-  .exp-min10 { flex: 0 0 100px; min-width: 0; }
+  .exp-min10 { flex: 0 0 140px; min-width: 0; }
 </style>
 </head>
 <body>
@@ -2160,6 +2160,12 @@ async function startExplosive() {
   const threshold = parseFloat(document.getElementById('expThreshold').value) || 18;
   setExpBusy(true);
   expCandidates = [];
+  // 清空旧图表(切换月份时不应残留上月K线)
+  Object.values(expCharts).forEach(c => { try { c.dispose(); } catch(e){} });
+  for (const k in expCharts) delete expCharts[k];
+  Object.values(expMinCharts).forEach(c => { try { c.dispose(); } catch(e){} });
+  for (const k in expMinCharts) delete expMinCharts[k];
+  document.getElementById('expCharts').innerHTML = '<div class="empty">扫描中…</div>';
   document.getElementById('expCandList').innerHTML = '<div class="empty">扫描中…</div>';
   document.getElementById('expProgressWrap').style.display = 'block';
   setExpProgress(0, '正在创建扫描任务…');
@@ -2418,25 +2424,23 @@ async function loadExpMin10(c, key) {
 function renderExpMin10(dom, key, data) {
   const points = data.points;
   const days = data.days || [];
-  // x轴: 序号(0..N-1), 每天用分隔线和标签
   const xData = points.map((_, i) => i);
   const prices = points.map(p => p.price);
+  const vols = points.map(p => p.vol || 0);
   let chart = expMinCharts[key];
   if (!chart) { chart = echarts.init(dom, 'dark'); expMinCharts[key] = chart; }
-  // 计算每天起始索引, 用于 markLine 分隔
+  // 每天分隔竖线
   let dayMarks = [];
   let prevDay = null;
-  let dayStartIdx = 0;
   for (let i = 0; i < points.length; i++) {
     if (points[i].day !== prevDay) {
       if (prevDay !== null) {
         dayMarks.push({ xAxis: i, lineStyle: { color: '#333', type: 'solid', width: 1 } });
       }
-      dayStartIdx = i;
       prevDay = points[i].day;
     }
   }
-  // 每天的日期标签(放在底部)
+  // 每天日期标签
   let dayLabels = [];
   let pd = null;
   for (let i = 0; i < points.length; i++) {
@@ -2445,29 +2449,41 @@ function renderExpMin10(dom, key, data) {
       pd = points[i].day;
     }
   }
+  // 成交量颜色: 当日价格涨红跌绿(与前一分钟比)
+  const volColors = points.map((p, i) => {
+    if (i === 0) return '#666';
+    return p.price >= points[i - 1].price ? '#ef5350' : '#26a69a';
+  });
   chart.setOption({
     backgroundColor: 'transparent', animation: false,
     title: { text: '近10日分时连续', left: 8, top: 2, textStyle: { color: '#9aa0a6', fontSize: 10, fontWeight: 400 } },
     tooltip: { trigger: 'axis', formatter: params => {
       const p = points[params[0].dataIndex];
-      return p ? `${p.day} ${p.time}<br/>价格: ${p.price}` : '';
+      return p ? `${p.day} ${p.time}<br/>价格: ${p.price}<br/>量: ${p.vol}` : '';
     }},
-    grid: { left: 48, right: 12, top: 22, bottom: 20 },
-    xAxis: { type: 'category', data: xData, boundaryGap: false,
-      axisLabel: { color: '#9aa0a6', fontSize: 8, interval: (idx, val) => {
-        return dayLabels.some(d => d.xAxis === idx);
-      }, formatter: (val, idx) => {
-        const dl = dayLabels.find(d => d.xAxis === idx);
-        return dl ? dl.value : '';
-      }},
-      axisTick: { show: false }, axisLine: { lineStyle: { color: '#333' } } },
-    yAxis: { scale: true, splitLine: { lineStyle: { color: '#252a33' } },
-      axisLabel: { color: '#9aa0a6', fontSize: 8 } },
-    series: [{
-      type: 'line', data: prices, symbol: 'none', lineStyle: { color: '#42a5f5', width: 1 },
-      markLine: { symbol: 'none', silent: true, data: dayMarks },
-      areaStyle: { color: 'rgba(66,165,245,0.08)' },
-    }],
+    grid: [
+      { left: 48, right: 12, top: 22, height: '55%' },       // 价格区
+      { left: 48, right: 12, top: '82%', height: '14%' },     // 量能区
+    ],
+    xAxis: [
+      { type: 'category', data: xData, boundaryGap: false, gridIndex: 0,
+        axisLabel: { color: '#9aa0a6', fontSize: 8, interval: (idx) => dayLabels.some(d => d.xAxis === idx),
+          formatter: (val, idx) => { const dl = dayLabels.find(d => d.xAxis === idx); return dl ? dl.value : ''; }},
+        axisTick: { show: false }, axisLine: { lineStyle: { color: '#333' } } },
+      { type: 'category', data: xData, gridIndex: 1, boundaryGap: false,
+        axisLabel: { show: false }, axisTick: { show: false }, axisLine: { show: false } },
+    ],
+    yAxis: [
+      { scale: true, gridIndex: 0, splitLine: { lineStyle: { color: '#252a33' } }, axisLabel: { color: '#9aa0a6', fontSize: 8 } },
+      { scale: true, gridIndex: 1, splitNumber: 2, axisLabel: { color: '#9aa0a6', fontSize: 7 }, splitLine: { lineStyle: { color: '#252a33' } } },
+    ],
+    series: [
+      { type: 'line', data: prices, xAxisIndex: 0, yAxisIndex: 0, symbol: 'none',
+        lineStyle: { color: '#42a5f5', width: 1 }, areaStyle: { color: 'rgba(66,165,245,0.08)' },
+        markLine: { symbol: 'none', silent: true, data: dayMarks } },
+      { type: 'bar', data: vols.map((v, i) => ({ value: v, itemStyle: { color: volColors[i] } })),
+        xAxisIndex: 1, yAxisIndex: 1 },
+    ],
   }, true);
   chart.resize();
 }
