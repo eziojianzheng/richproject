@@ -327,9 +327,49 @@ _tdx_local_ok = None  # 本地通达信可用性缓存(None=未检测)
 _tdx_server_idx = 0   # 当前使用的远程服务器索引
 
 
+def _get_tdx_local_port():
+    """从 config.yml 读取 tdx.local_port, 0 表示不尝试本地直连。
+    本地通达信客户端不开 7709 监听时设为 0, 避免每次 socket 预检浪费时间。"""
+    try:
+        import tdx_source as _ts
+        return getattr(_ts, 'TDX_LOCAL_PORT', 0)
+    except Exception:
+        return 0
+
+
+def _tdx_call_with_timeout(client, method_name, timeout=8, **kwargs):
+    """用线程+超时包裹 mootdx 数据调用(bars/minute/minutes/index_bars/quotes/stocks)。
+    mootdx 底层 socket 可能半开挂起, 应用层超时避免无限阻塞全局锁。
+    返回调用结果或 None(超时/异常)。"""
+    import threading
+    result = [None]
+    error = [None]
+
+    def _worker():
+        try:
+            method = getattr(client, method_name)
+            result[0] = method(**kwargs)
+        except Exception as e:
+            error[0] = e
+
+    t = threading.Thread(target=_worker, daemon=True)
+    t.start()
+    t.join(timeout=timeout)
+    if t.is_alive():
+        _ht_logger.warning(f'mootdx {method_name}({kwargs}) 超时({timeout}s), 可能服务器响应慢')
+        return None
+    if error[0] is not None:
+        _ht_logger.warning(f'mootdx {method_name}({kwargs}) 异常: {type(error[0]).__name__}: {error[0]}')
+        return None
+    return result[0]
+
+
 def _get_tdx_client():
     """获取(并复用)mootdx 行情客户端。
-    优先本地通达信(127.0.0.1:7709, 不限流不封IP), 不可用则用bestip自动测速选最快远程服务器。"""
+    根据 config.yml 的 tdx.local_port 决定是否尝试本地通达信:
+      - local_port=0 (默认): 直接走远程服务器, 不浪费 1 秒 socket 预检
+      - local_port>0: 先连本地 127.0.0.1:port, 不可用再走远程
+    远程首次用 bestip 自动测速(有 8s 超时保护), 失败回退备用服务器列表。"""
     global _tdx_client, _tdx_local_ok, _tdx_server_idx, _bestip_done
     # 连接已断开: 重连
     if _tdx_client is not None and getattr(_tdx_client, 'closed', False):
@@ -340,38 +380,55 @@ def _get_tdx_client():
             _tdx_client = None
     if _tdx_client is None:
         from mootdx.quotes import Quotes
-        # 先快速检测本地通达信(socket预检1秒, 避免mootdx connect卡5秒)
-        if _tdx_local_ok is None:
+        local_port = _get_tdx_local_port()
+        # 决定是否尝试本地通达信
+        if local_port > 0 and _tdx_local_ok is None:
             import socket as _socket
             _tdx_local_ok = False
             try:
-                _sk = _socket.create_connection(('127.0.0.1', 7709), timeout=1)
+                _sk = _socket.create_connection(('127.0.0.1', local_port), timeout=1)
                 _sk.close()
                 # socket通了再用mootdx连
-                _tdx_client = Quotes.factory(market='std', server=('127.0.0.1', 7709), timeout=3, heartbeat=True)
+                _tdx_client = Quotes.factory(market='std', server=('127.0.0.1', local_port), timeout=3, heartbeat=True)
                 _df = _tdx_client.bars(symbol='000001', frequency=9, offset=1)
                 _tdx_local_ok = _df is not None and len(_df) > 0
             except Exception:
                 _tdx_local_ok = False
             if _tdx_local_ok:
-                _ht_logger.info('使用本地通达信(127.0.0.1:7709)作为行情源')
+                _ht_logger.info(f'使用本地通达信(127.0.0.1:{local_port})作为行情源')
             else:
                 _ht_logger.info('本地通达信不可用, 使用远程最优服务器')
+        elif local_port == 0:
+            # 不尝试本地, 直接远程
+            _tdx_local_ok = False
         if not _tdx_local_ok:
-            # 首次: 用bestip自动测速选最快服务器(耗时约10秒, 但只跑一次)
+            # 首次: 用bestip自动测速选最快服务器(有超时保护, 避免无限阻塞)
             if not _bestip_done:
                 _bestip_done = True
                 try:
                     from mootdx.bestip import BestIP
                     _bestip = BestIP()
-                    _bestip.run()
-                    # bestip会把最快服务器写入 ~/.mootdx/config.json
-                    # mootdx不传server时会自动读config.json
-                    _tdx_client = Quotes.factory(market='std', timeout=10, heartbeat=True)
-                    _df = _tdx_client.bars(symbol='000001', frequency=9, offset=1)
-                    if _df is not None and len(_df) > 0:
-                        _ht_logger.info('bestip自动选服务器成功')
-                        return _tdx_client
+                    # bestip.run() 可能长时间阻塞, 用线程+超时包裹
+                    import threading
+                    _bestip_result = [False]
+                    def _run_bestip():
+                        try:
+                            _bestip.run()
+                            _bestip_result[0] = True
+                        except Exception as e:
+                            _ht_logger.warning(f'bestip测速异常: {e}')
+                    _bt = threading.Thread(target=_run_bestip, daemon=True)
+                    _bt.start()
+                    _bt.join(timeout=8)
+                    if _bt.is_alive():
+                        _ht_logger.warning('bestip测速超时(8s), 直接回退备用服务器列表')
+                    # bestip会把最快服务器写入 ~/.mootdx/config.json (若成功)
+                    if _bestip_result[0]:
+                        _tdx_client = Quotes.factory(market='std', timeout=10, heartbeat=True)
+                        _df = _tdx_client.bars(symbol='000001', frequency=9, offset=1)
+                        if _df is not None and len(_df) > 0:
+                            _ht_logger.info('bestip自动选服务器成功')
+                            return _tdx_client
                 except Exception as e:
                     _ht_logger.warning(f'bestip测速失败, 回退备用列表: {e}')
             # 回退: 用备用服务器列表
@@ -421,7 +478,8 @@ _ws_tdx_lock = None
 
 def _get_ws_tdx_client():
     """获取 WS 推送专用的 mootdx 客户端(独立连接, 不持主锁)。
-    与 _get_tdx_client 分离, 避免推送线程长时间持锁阻塞 HTTP 请求。"""
+    与 _get_tdx_client 分离, 避免推送线程长时间持锁阻塞 HTTP 请求。
+    根据 config.yml 的 tdx.local_port 决定是否尝试本地直连。"""
     global _ws_tdx_client, _ws_tdx_lock
     if _ws_tdx_lock is None:
         import threading
@@ -429,17 +487,19 @@ def _get_ws_tdx_client():
     if _ws_tdx_client is not None and not getattr(_ws_tdx_client, 'closed', False):
         return _ws_tdx_client
     from mootdx.quotes import Quotes
-    # 优先本地通达信
-    try:
-        import socket as _socket
-        _sk = _socket.create_connection(('127.0.0.1', 7709), timeout=1)
-        _sk.close()
-        _ws_tdx_client = Quotes.factory(market='std', server=('127.0.0.1', 7709), timeout=3, heartbeat=True)
-        _df = _ws_tdx_client.bars(symbol='000001', frequency=9, offset=1)
-        if _df is not None and len(_df) > 0:
-            return _ws_tdx_client
-    except Exception:
-        pass
+    local_port = _get_tdx_local_port()
+    # 本地通达信(local_port>0 时才尝试)
+    if local_port > 0:
+        try:
+            import socket as _socket
+            _sk = _socket.create_connection(('127.0.0.1', local_port), timeout=1)
+            _sk.close()
+            _ws_tdx_client = Quotes.factory(market='std', server=('127.0.0.1', local_port), timeout=3, heartbeat=True)
+            _df = _ws_tdx_client.bars(symbol='000001', frequency=9, offset=1)
+            if _df is not None and len(_df) > 0:
+                return _ws_tdx_client
+        except Exception:
+            pass
     # 远程服务器
     srv = _REMOTE_TDX_SERVERS[_tdx_server_idx]
     _ws_tdx_client = Quotes.factory(market='std', server=srv, timeout=5, heartbeat=True)
@@ -561,13 +621,17 @@ def fetch_range_mootdx(code, start, end):
 
 def fetch_range_local_tdx(code, start, end):
     """
-    连接本地通达信客户端(127.0.0.1:7709)拉取日线数据。
+    连接本地通达信客户端拉取日线数据(根据 config.yml 的 tdx.local_port)。
     作为 mootdx 标准服务器失败后的备用数据源。
+    local_port=0 时直接返回 False(不尝试本地)。
     返回: True 成功 / False 失败
     """
+    local_port = _get_tdx_local_port()
+    if local_port == 0:
+        return False  # 未配置本地端口, 不尝试
     try:
         from mootdx.quotes import Quotes
-        client = Quotes.factory(market='std', server=('127.0.0.1', 7709))
+        client = Quotes.factory(market='std', server=('127.0.0.1', local_port), timeout=5)
         offset = _mootdx_offset(start)
         df = client.bars(symbol=code, frequency=9, offset=offset)
         if df is None or len(df) == 0:

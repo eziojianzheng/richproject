@@ -1650,6 +1650,57 @@ def monitor_page():
     return render_template('monitor.html')
 
 
+@app.route('/api/monitor/health', methods=['GET'])
+def monitor_health():
+    """盯盘健康检查: 诊断 tqcenter / 通达信路径 / mootdx 连通性。
+    不持 _tdx_lock、不调 mootdx 客户端(避免自身被卡死), 用独立线程+超时探测。"""
+    import time as _time
+    import socket as _socket
+    import threading
+    result = {'ts': _time.time()}
+
+    # 1. 通达信路径 + tqcenter 状态 (从 tdx_source 拿, 不触发 mootdx)
+    try:
+        import tdx_source as ts
+        result['tdx'] = ts.get_tdx_info()
+    except Exception as e:
+        result['tdx'] = {'error': f'{type(e).__name__}: {e}'}
+
+    # 2. mootdx 远程服务器连通性 (独立线程+5s超时, 不建 mootdx 客户端)
+    def _probe_servers():
+        servers = [
+            ('218.75.126.9', 7709),
+            ('115.238.90.165', 7709),
+            ('115.238.56.198', 7709),
+            ('124.70.199.56', 7709),
+        ]
+        reachable = []
+        for ip, port in servers:
+            try:
+                _sk = _socket.create_connection((ip, port), timeout=2)
+                _sk.close()
+                reachable.append(ip)
+            except Exception:
+                pass
+        return reachable
+    _probe_result = [None]
+    _pt = threading.Thread(target=lambda: _probe_result.__setitem__(0, _probe_servers()), daemon=True)
+    _pt.start()
+    _pt.join(timeout=8)
+    result['mootdx'] = {
+        'remote_servers_reachable': _probe_result[0] if _probe_result[0] is not None else [],
+        'probe_timeout': _probe_result[0] is None,
+    }
+
+    # 3. 综合判断
+    tq_ok = result.get('tdx', {}).get('tqcenter_available', False)
+    mootdx_ok = bool(result['mootdx']['remote_servers_reachable'])
+    result['status'] = 'ok' if (tq_ok or mootdx_ok) else 'error'
+    result['tqcenter_ok'] = tq_ok
+    result['mootdx_ok'] = mootdx_ok
+    return jsonify(result)
+
+
 # 分时时间轴生成 (9:30-11:30, 13:00-15:00 共240个点)
 def _minute_time_axis(n):
     """生成 n 个分时时间点 (HH:MM)。
@@ -1671,31 +1722,13 @@ def _minute_time_axis(n):
 @app.route('/api/monitor/index/daily', methods=['GET'])
 def monitor_index_daily():
     """上证指数日K线
-    优先 mootdx index_bars(实时性好, 稳定), 回退 tqcenter。
+    优先 tqcenter index_kline (客户端开着最稳定, 走DLL不封IP), 回退 mootdx index_bars。
     参数: count=120 (取最近N根日K)
     """
     try:
-        import hot_track as ht
         count = request.args.get('count', default=120, type=int)
         count = max(20, min(count, 800))
-        # 优先 mootdx (稳定, 不卡)
-        with ht._get_tdx_lock():
-            client = ht._get_tdx_client()
-            df = client.index_bars(symbol='000001', frequency=9, start=0, offset=count)
-        if df is not None and not df.empty:
-            bars = []
-            for _, row in df.iterrows():
-                bars.append({
-                    'date': str(row['datetime'])[:10],
-                    'open': round(float(row['open']), 2),
-                    'close': round(float(row['close']), 2),
-                    'high': round(float(row['high']), 2),
-                    'low': round(float(row['low']), 2),
-                    'vol': float(row['vol']),
-                    'amount': float(row['amount']),
-                })
-            return jsonify({'success': True, 'bars': bars})
-        # 回退 tqcenter (超时保护, 防止卡死整个页面)
+        # 优先 tqcenter (带 3s 超时保护)
         try:
             import tdx_source as ts
             if ts.is_available():
@@ -1711,9 +1744,28 @@ def monitor_index_daily():
                 _t.join(timeout=3.0)
                 bars = _bars_result[0]
                 if bars and len(bars) >= 5:
-                    return jsonify({'success': True, 'bars': bars})
+                    return jsonify({'success': True, 'bars': bars, 'source': 'tqcenter'})
         except Exception as e:
             print(f'[TQ] 指数K线异常: {e}')
+        # 回退 mootdx index_bars (带应用层超时, 防止卡死)
+        import hot_track as ht
+        with ht._get_tdx_lock():
+            client = ht._get_tdx_client()
+            df = ht._tdx_call_with_timeout(client, 'index_bars', timeout=8,
+                                           symbol='000001', frequency=9, start=0, offset=count)
+        if df is not None and not df.empty:
+            bars = []
+            for _, row in df.iterrows():
+                bars.append({
+                    'date': str(row['datetime'])[:10],
+                    'open': round(float(row['open']), 2),
+                    'close': round(float(row['close']), 2),
+                    'high': round(float(row['high']), 2),
+                    'low': round(float(row['low']), 2),
+                    'vol': float(row['vol']),
+                    'amount': float(row['amount']),
+                })
+            return jsonify({'success': True, 'bars': bars, 'source': 'mootdx'})
         return jsonify({'success': False, 'error': '无数据'}), 404
     except Exception as e:
         return jsonify({'success': False, 'error': f'{type(e).__name__}: {e}'}), 500
@@ -1735,7 +1787,7 @@ def monitor_index_minute():
         import hot_track as ht
         with ht._get_tdx_lock():
             client = ht._get_tdx_client()
-            df = client.minute(symbol='1A0001')
+            df = ht._tdx_call_with_timeout(client, 'minute', timeout=8, symbol='1A0001')
         if df is None or df.empty:
             return jsonify({'success': False, 'error': '无当日分时数据(可能非交易时段)'}), 404
         times = _minute_time_axis(len(df))
@@ -1746,7 +1798,7 @@ def monitor_index_minute():
                 'price': round(float(row['price']), 2),
                 'vol': float(row['vol']),
             })
-        result = {'success': True, 'points': points, 'date': 'today'}
+        result = {'success': True, 'points': points, 'date': 'today', 'source': 'mootdx'}
         # tqcenter 补充: 涨跌幅/上涨下跌家数/均价(领先指标) - 超时1秒防止卡死
         try:
             import tdx_source as ts
@@ -1806,7 +1858,7 @@ def monitor_index_minutes():
         import hot_track as ht
         with ht._get_tdx_lock():
             client = ht._get_tdx_client()
-            df = client.minutes(symbol='1A0001', date=int(date))
+            df = ht._tdx_call_with_timeout(client, 'minutes', timeout=8, symbol='1A0001', date=int(date))
         if df is None or df.empty:
             return jsonify({'success': False, 'error': f'{date} 无分时数据'}), 404
         times = _minute_time_axis(len(df))
@@ -1819,7 +1871,7 @@ def monitor_index_minutes():
             })
         # 格式化日期显示
         date_fmt = f'{date[:4]}-{date[4:6]}-{date[6:8]}'
-        return jsonify({'success': True, 'points': points, 'date': date_fmt})
+        return jsonify({'success': True, 'points': points, 'date': date_fmt, 'source': 'mootdx'})
     except Exception as e:
         return jsonify({'success': False, 'error': f'{type(e).__name__}: {e}'}), 500
 
@@ -1849,8 +1901,10 @@ def monitor_index_leading():
             if _astock_codes_cache and (_time.time() - _astock_codes_cache['ts'] < 3600):
                 codes = _astock_codes_cache['codes']
             else:
-                sh = client.stocks(market=1)
-                sz = client.stocks(market=0)
+                sh = ht._tdx_call_with_timeout(client, 'stocks', timeout=8, market=1)
+                sz = ht._tdx_call_with_timeout(client, 'stocks', timeout=8, market=0)
+                if sh is None or sz is None:
+                    return jsonify({'success': False, 'error': '获取股票列表超时'}), 504
                 def _is_a(code):
                     return _re.match(r'^(60|00|30|68)\d{4}$', str(code)) is not None
                 codes = [c for c in sh['code'].tolist() if _is_a(c)] + \
@@ -1861,7 +1915,7 @@ def monitor_index_leading():
             frames = []
             for i in range(0, len(codes), 80):
                 batch = codes[i:i + 80]
-                df = client.quotes(symbol=batch)
+                df = ht._tdx_call_with_timeout(client, 'quotes', timeout=8, symbol=batch)
                 if df is not None and not df.empty:
                     frames.append(df)
             if not frames:
@@ -1872,12 +1926,13 @@ def monitor_index_leading():
                 return jsonify({'success': False, 'error': '无有效报价'}), 404
             pct = ((valid['price'] - valid['last_close']) / valid['last_close'] * 100).mean()
             # 取上证指数昨收(用于前端换算黄线点位)
-            idx_q = client.quotes(symbol='1A0001')
+            idx_q = ht._tdx_call_with_timeout(client, 'quotes', timeout=5, symbol='1A0001')
             idx_last_close = float(idx_q['last_close'].iloc[0]) if idx_q is not None and not idx_q.empty else 0
         result = {
             'success': True,
             'leading_pct': round(float(pct), 3),
             'index_last_close': round(idx_last_close, 2),
+            'source': 'mootdx',
         }
         _leading_cache = {'data': result, 'ts': _time.time()}
         return jsonify(result)
@@ -1934,7 +1989,9 @@ def _get_segment_codes(segment):
         client = ht._get_tdx_client()
         if segment == 'cyb':
             # 创业板300开头, 在深市market=0
-            sz = client.stocks(market=0)
+            sz = ht._tdx_call_with_timeout(client, 'stocks', timeout=8, market=0)
+            if sz is None:
+                return [], {}
             codes = [c for c in sz['code'].tolist() if _re.match(r'^30\d{4}$', str(c))]
             names = {}
             for _, r in sz.iterrows():
@@ -1942,7 +1999,9 @@ def _get_segment_codes(segment):
                     names[str(r['code'])] = str(r.get('name', '')).replace('\x00', '').strip()
         else:
             # 科创板688开头, 在沪市market=1
-            sh = client.stocks(market=1)
+            sh = ht._tdx_call_with_timeout(client, 'stocks', timeout=8, market=1)
+            if sh is None:
+                return [], {}
             codes = [c for c in sh['code'].tolist() if _re.match(r'^688\d{3}$', str(c))]
             names = {}
             for _, r in sh.iterrows():
@@ -1978,7 +2037,7 @@ def _fetch_all_a_quotes():
 
 def _fetch_segment_quotes(segment):
     """拉单个板块(创业板/科创板)的实时报价, 10秒缓存。
-    优先 mootdx 批量 quotes(实时性好, 80只一批), 回退 tqcenter batch_pricevol。"""
+    优先 tqcenter batch_pricevol (客户端开着最稳定), 回退 mootdx 批量 quotes。"""
     import time as _time
     import hot_track as ht
     cached = _segment_quotes_cache.get(segment)
@@ -1987,7 +2046,30 @@ def _fetch_segment_quotes(segment):
     codes, names = _get_segment_codes(segment)
     if not codes:
         return None
-    # 优先 mootdx 批量 quotes (实时性最好, 80只一批)
+    # 优先 tqcenter batch_pricevol (走DLL, 不封IP, 客户端开着最稳定)
+    try:
+        import tdx_source as ts
+        if ts.is_available():
+            pv = ts.batch_pricevol(codes)
+            if pv:
+                records = []
+                for c in codes:
+                    info = pv.get(c)
+                    if info:
+                        records.append({
+                            'code': c,
+                            'name': names.get(c, ''),
+                            'price': info['price'],
+                            'pct': info['pct'],
+                            'amount': 0.0,
+                            'vol': info['vol'],
+                        })
+                if records:
+                    _segment_quotes_cache[segment] = {'data': records, 'ts': _time.time(), 'source': 'tqcenter'}
+                    return records
+    except Exception as e:
+        print(f'[TQ] 板块报价 {segment} 异常: {e}')
+    # 回退 mootdx 批量 quotes (带应用层超时, 80只一批)
     try:
         import pandas as pd
         with ht._get_tdx_lock():
@@ -1995,7 +2077,7 @@ def _fetch_segment_quotes(segment):
             frames = []
             for i in range(0, len(codes), 80):
                 batch = codes[i:i + 80]
-                df = client.quotes(symbol=batch)
+                df = ht._tdx_call_with_timeout(client, 'quotes', timeout=8, symbol=batch)
                 if df is not None and not df.empty:
                     frames.append(df)
         if frames:
@@ -2022,33 +2104,10 @@ def _fetch_segment_quotes(segment):
                     'vol': float(row.get('vol', 0)),
                 })
             if records:
-                _segment_quotes_cache[segment] = {'data': records, 'ts': _time.time()}
+                _segment_quotes_cache[segment] = {'data': records, 'ts': _time.time(), 'source': 'mootdx'}
                 return records
     except Exception as e:
         print(f'[mootdx] 板块报价 {segment} 异常: {e}')
-    # 回退 tqcenter batch_pricevol
-    try:
-        import tdx_source as ts
-        if ts.is_available():
-            pv = ts.batch_pricevol(codes)
-            if pv:
-                records = []
-                for c in codes:
-                    info = pv.get(c)
-                    if info:
-                        records.append({
-                            'code': c,
-                            'name': names.get(c, ''),
-                            'price': info['price'],
-                            'pct': info['pct'],
-                            'amount': 0.0,
-                            'vol': info['vol'],
-                        })
-                if records:
-                    _segment_quotes_cache[segment] = {'data': records, 'ts': _time.time()}
-                    return records
-    except Exception as e:
-        print(f'[TQ] 板块报价 {segment} 异常: {e}')
     return None
 
 
@@ -2069,7 +2128,7 @@ def monitor_stocks_list():
     cache_key = (segment, sort)
     cached = _stock_list_cache.get(cache_key)
     if cached and (_time.time() - cached['ts'] < 10):
-        return jsonify({'success': True, 'stocks': cached['data'][:limit]})
+        return jsonify({'success': True, 'stocks': cached['data'][:limit], 'source': cached.get('source', '')})
     try:
         # 直接拉对应板块(不拉全市场), 10秒缓存
         all_records = _fetch_segment_quotes(segment)
@@ -2078,8 +2137,11 @@ def monitor_stocks_list():
         stocks = all_records
         # 排序
         stocks.sort(key=lambda r: r.get(sort, 0), reverse=True)
-        _stock_list_cache[cache_key] = {'data': stocks, 'ts': _time.time()}
-        return jsonify({'success': True, 'stocks': stocks[:limit]})
+        # 从板块报价缓存取数据源标签
+        seg_cache = _segment_quotes_cache.get(segment, {})
+        src = seg_cache.get('source', '')
+        _stock_list_cache[cache_key] = {'data': stocks, 'ts': _time.time(), 'source': src}
+        return jsonify({'success': True, 'stocks': stocks[:limit], 'source': src})
     except Exception as e:
         return jsonify({'success': False, 'error': f'{type(e).__name__}: {e}'}), 500
 
@@ -2115,7 +2177,7 @@ def debug_quote_sources():
         import hot_track as ht
         with ht._get_tdx_lock():
             client = ht._get_tdx_client()
-            df = client.quotes(symbol=[code])
+            df = ht._tdx_call_with_timeout(client, 'quotes', timeout=8, symbol=[code])
         if df is not None and not df.empty:
             import pandas as pd
             row = df.iloc[0].to_dict()
@@ -2135,40 +2197,14 @@ def debug_quote_sources():
 @app.route('/api/monitor/stock/daily', methods=['GET'])
 def monitor_stock_daily():
     """个股日K线
-    优先 mootdx bars (稳定, 不卡), 回退 tqcenter。
+    优先 tqcenter kline (客户端开着最稳定), 回退 mootdx bars。
     参数: code=300001, count=120"""
     code = request.args.get('code', '')
     if not re.match(r'^\d{6}$', code):
         return jsonify({'success': False, 'error': 'code 需为6位数字'}), 400
     count = request.args.get('count', default=120, type=int)
     count = max(20, min(count, 800))
-    # 优先 mootdx (稳定, 不卡)
-    try:
-        import hot_track as ht
-        with ht._get_tdx_lock():
-            client = ht._get_tdx_client()
-            df = client.bars(symbol=code, frequency=9, offset=count)
-        if df is not None and len(df) > 0:
-            df = df.sort_index()
-            bars = []
-            prev_close = None
-            for idx, row in df.iterrows():
-                close = round(float(row['close']), 2)
-                bars.append({
-                    'date': str(idx)[:10],
-                    'open': round(float(row['open']), 2),
-                    'close': close,
-                    'high': round(float(row['high']), 2),
-                    'low': round(float(row['low']), 2),
-                    'vol': float(row['vol']),
-                    'amount': float(row.get('amount', 0)),
-                    'last_close': prev_close if prev_close is not None else round(float(row['open']), 2),
-                })
-                prev_close = close
-            return jsonify({'success': True, 'bars': bars})
-    except Exception as e:
-        print(f'[mootdx] 个股K线异常: {e}')
-    # 回退 tqcenter (超时保护, 防止卡死)
+    # 优先 tqcenter (带 3s 超时保护)
     try:
         import tdx_source as ts
         if ts.is_available():
@@ -2187,9 +2223,35 @@ def monitor_stock_daily():
                 # 补 last_close (前一根收盘)
                 for i in range(len(bars)):
                     bars[i]['last_close'] = bars[i-1]['close'] if i > 0 else bars[i]['open']
-                return jsonify({'success': True, 'bars': bars})
+                return jsonify({'success': True, 'bars': bars, 'source': 'tqcenter'})
     except Exception as e:
         print(f'[TQ] 个股K线异常: {e}')
+    # 回退 mootdx bars (带应用层超时, 防止卡死)
+    try:
+        import hot_track as ht
+        with ht._get_tdx_lock():
+            client = ht._get_tdx_client()
+            df = ht._tdx_call_with_timeout(client, 'bars', timeout=8, symbol=code, frequency=9, offset=count)
+        if df is not None and len(df) > 0:
+            df = df.sort_index()
+            bars = []
+            prev_close = None
+            for idx, row in df.iterrows():
+                close = round(float(row['close']), 2)
+                bars.append({
+                    'date': str(idx)[:10],
+                    'open': round(float(row['open']), 2),
+                    'close': close,
+                    'high': round(float(row['high']), 2),
+                    'low': round(float(row['low']), 2),
+                    'vol': float(row['vol']),
+                    'amount': float(row.get('amount', 0)),
+                    'last_close': prev_close if prev_close is not None else round(float(row['open']), 2),
+                })
+                prev_close = close
+            return jsonify({'success': True, 'bars': bars, 'source': 'mootdx'})
+    except Exception as e:
+        print(f'[mootdx] 个股K线异常: {e}')
     return jsonify({'success': False, 'error': f'{code} 无数据'}), 404
 
 
@@ -2210,7 +2272,7 @@ def monitor_stock_minute():
         import hot_track as ht
         with ht._get_tdx_lock():
             client = ht._get_tdx_client()
-            df = client.minute(symbol=code)
+            df = ht._tdx_call_with_timeout(client, 'minute', timeout=8, symbol=code)
         if df is None or df.empty:
             return jsonify({'success': False, 'error': '无当日分时数据(可能非交易时段)'}), 404
         times = _minute_time_axis(len(df))
@@ -2221,7 +2283,7 @@ def monitor_stock_minute():
                 'price': round(float(row['price']), 2),
                 'vol': float(row['vol']),
             })
-        result = {'success': True, 'points': points, 'date': 'today'}
+        result = {'success': True, 'points': points, 'date': 'today', 'source': 'mootdx'}
         # 补充昨收(供前端算涨幅/涨跌停尺度)
         # mootdx bars 无 last_close 列, 取倒数第二根 close 当昨收(最后一根=当日)
         # 优先 tqcenter 快照(含真实 LastClose), 回退 mootdx bars
@@ -2236,7 +2298,7 @@ def monitor_stock_minute():
         if 'last_close' not in result:
             try:
                 with ht._get_tdx_lock():
-                    df_k = client.bars(symbol=code, frequency=9, offset=2)
+                    df_k = ht._tdx_call_with_timeout(client, 'bars', timeout=5, symbol=code, frequency=9, offset=2)
                 if df_k is not None and len(df_k) >= 2:
                     result['last_close'] = round(float(df_k.sort_index().iloc[-2]['close']), 3)
             except Exception:
@@ -2267,7 +2329,7 @@ def monitor_stock_minutes():
         import hot_track as ht
         with ht._get_tdx_lock():
             client = ht._get_tdx_client()
-            df = client.minutes(symbol=code, date=int(date))
+            df = ht._tdx_call_with_timeout(client, 'minutes', timeout=8, symbol=code, date=int(date))
         if df is None or df.empty:
             return jsonify({'success': False, 'error': f'{date} 无分时数据'}), 404
         times = _minute_time_axis(len(df))
@@ -2279,7 +2341,7 @@ def monitor_stock_minutes():
                 'vol': float(row['vol']),
             })
         date_fmt = f'{date[:4]}-{date[4:6]}-{date[6:8]}'
-        return jsonify({'success': True, 'points': points, 'date': date_fmt})
+        return jsonify({'success': True, 'points': points, 'date': date_fmt, 'source': 'mootdx'})
     except Exception as e:
         return jsonify({'success': False, 'error': f'{type(e).__name__}: {e}'}), 500
 
@@ -2297,7 +2359,7 @@ def monitor_stock_minutes5():
         with lock:
             client = ht._get_tdx_client()
             # 先取最近5个交易日日期
-            df_k = client.bars(symbol=code, frequency=9, offset=5)
+            df_k = ht._tdx_call_with_timeout(client, 'bars', timeout=8, symbol=code, frequency=9, offset=5)
             if df_k is None or len(df_k) == 0:
                 return jsonify({'success': False, 'error': f'{code} 无K线数据'}), 404
             df_k = df_k.sort_index()
@@ -2306,10 +2368,7 @@ def monitor_stock_minutes5():
             all_points = []
             day_labels = []
             for d in dates:
-                try:
-                    df_m = client.minutes(symbol=code, date=int(d))
-                except Exception:
-                    df_m = None
+                df_m = ht._tdx_call_with_timeout(client, 'minutes', timeout=5, symbol=code, date=int(d))
                 if df_m is None or df_m.empty:
                     continue
                 times = _minute_time_axis(len(df_m))
@@ -2323,7 +2382,7 @@ def monitor_stock_minutes5():
                     })
         if not all_points:
             return jsonify({'success': False, 'error': '无5日分时数据'}), 404
-        return jsonify({'success': True, 'points': all_points, 'days': day_labels})
+        return jsonify({'success': True, 'points': all_points, 'days': day_labels, 'source': 'mootdx'})
     except Exception as e:
         return jsonify({'success': False, 'error': f'{type(e).__name__}: {e}'}), 500
 
@@ -2421,7 +2480,7 @@ def monitor_stocks_volume_ratio():
                     code = s['code']
                     try:
                         # 一次 bars 调用同时取当日量和5日均量(日K vol=全天总成交量, 单位:手)
-                        df_k = client.bars(symbol=code, frequency=9, offset=6)
+                        df_k = ht._tdx_call_with_timeout(client, 'bars', timeout=5, symbol=code, frequency=9, offset=6)
                         if df_k is None or len(df_k) == 0:
                             ratios[code] = {'day_vol': 0, 'avg5_vol': 0, 'ratio': 0, 'pass': False}
                             continue
@@ -2447,7 +2506,7 @@ def monitor_stocks_volume_ratio():
         except Exception as e:
             print(f'[mootdx] 量比异常: {e}')
         _volume_ratio_cache[segment] = {'data': ratios, 'ts': _time.time()}
-        return jsonify({'success': True, 'ratios': ratios})
+        return jsonify({'success': True, 'ratios': ratios, 'source': 'mootdx'})
     except Exception as e:
         return jsonify({'success': False, 'error': f'{type(e).__name__}: {e}'}), 500
 
@@ -2482,13 +2541,13 @@ def monitor_stocks_minute_vol_ratio():
                 code = s['code']
                 try:
                     # 当日分时最大量
-                    df_today = client.minute(symbol=code)
+                    df_today = ht._tdx_call_with_timeout(client, 'minute', timeout=5, symbol=code)
                     if df_today is not None and not df_today.empty:
                         max_minute_vol = float(df_today['vol'].max())
                     else:
                         max_minute_vol = 0
                     # 前5天: 先取6根日K(最后一根=今日), 对前5天逐日拉分时取max
-                    df_k = client.bars(symbol=code, frequency=9, offset=6)
+                    df_k = ht._tdx_call_with_timeout(client, 'bars', timeout=5, symbol=code, frequency=9, offset=6)
                     if df_k is None or len(df_k) < 2:
                         ratios[code] = {'max_minute_vol': max_minute_vol, 'avg5_max_minute_vol': 0, 'ratio': 0, 'pass': False}
                         continue
@@ -2497,11 +2556,10 @@ def monitor_stocks_minute_vol_ratio():
                     prev_dates = [str(idx)[:10].replace('-', '') for idx in df_k.index[:-1]]
                     prev_max_vols = []
                     for d in prev_dates[-5:]:  # 最近5天
-                        try:
-                            df_m = client.minutes(symbol=code, date=int(d))
-                            if df_m is not None and not df_m.empty:
-                                prev_max_vols.append(float(df_m['vol'].max()))
-                        except Exception:
+                        df_m = ht._tdx_call_with_timeout(client, 'minutes', timeout=5, symbol=code, date=int(d))
+                        if df_m is not None and not df_m.empty:
+                            prev_max_vols.append(float(df_m['vol'].max()))
+                        else:
                             continue
                     avg5_max = float(sum(prev_max_vols) / len(prev_max_vols)) if prev_max_vols else 0
                     # 盘前 fallback: 当日无分时数据时, 用昨日最大分时量代替
@@ -2517,7 +2575,7 @@ def monitor_stocks_minute_vol_ratio():
                 except Exception:
                     ratios[code] = {'max_minute_vol': 0, 'avg5_max_minute_vol': 0, 'ratio': 0, 'pass': False}
         _minute_vol_ratio_cache[segment] = {'data': ratios, 'ts': _time.time()}
-        return jsonify({'success': True, 'ratios': ratios})
+        return jsonify({'success': True, 'ratios': ratios, 'source': 'mootdx'})
     except Exception as e:
         return jsonify({'success': False, 'error': f'{type(e).__name__}: {e}'}), 500
 
@@ -2553,7 +2611,7 @@ def monitor_stocks_open_gain():
             try:
                 with ht._get_tdx_lock():
                     client = ht._get_tdx_client()
-                    df_k = client.bars(symbol=code, frequency=9, offset=3)
+                    df_k = ht._tdx_call_with_timeout(client, 'bars', timeout=5, symbol=code, frequency=9, offset=3)
                 if df_k is None or len(df_k) < 3:
                     return None
                 df_k = df_k.sort_index()
@@ -2590,7 +2648,7 @@ def monitor_stocks_open_gain():
                             }
                     if gains:
                         _open_gain_cache[segment] = {'data': gains, 'ts': _time.time()}
-                        return jsonify({'success': True, 'gains': gains})
+                        return jsonify({'success': True, 'gains': gains, 'source': 'tqcenter'})
         except Exception as e:
             print(f'[TQ] 开盘涨幅 {segment} 异常: {e}')
         # 回退 mootdx quotes(含 open / last_close 列)
@@ -2599,7 +2657,7 @@ def monitor_stocks_open_gain():
             client = ht._get_tdx_client()
             for i in range(0, len(codes), 80):
                 batch = codes[i:i + 80]
-                df = client.quotes(symbol=batch)
+                df = ht._tdx_call_with_timeout(client, 'quotes', timeout=8, symbol=batch)
                 if df is None or df.empty:
                     continue
                 for col in ('open', 'last_close', 'price'):
@@ -2624,7 +2682,7 @@ def monitor_stocks_open_gain():
                         'pass': og > 3.0,
                     }
         _open_gain_cache[segment] = {'data': gains, 'ts': _time.time()}
-        return jsonify({'success': True, 'gains': gains})
+        return jsonify({'success': True, 'gains': gains, 'source': 'mootdx'})
     except Exception as e:
         return jsonify({'success': False, 'error': f'{type(e).__name__}: {e}'}), 500
 
@@ -2738,7 +2796,7 @@ def _fetch_zt_minutes(zt_codes, date_int, cancel_check=None):
                         break
                     try:
                         t0 = _time.time()
-                        df = client.minutes(symbol=code, date=date_int)
+                        df = ht._tdx_call_with_timeout(client, 'minutes', timeout=5, symbol=code, date=date_int)
                         dt = _time.time() - t0
                         if dt > 2:
                             print(f'[概念] 分时 {code} 耗时{dt:.1f}s (慢)')
@@ -2931,7 +2989,7 @@ def monitor_concept_zt_stats():
             frames = []
             for i in range(0, len(all_codes), 80):
                 batch = all_codes[i:i + 80]
-                df = client.quotes(symbol=batch)
+                df = ht._tdx_call_with_timeout(client, 'quotes', timeout=8, symbol=batch)
                 if df is not None and not df.empty:
                     frames.append(df)
         if not frames:
@@ -3053,6 +3111,7 @@ def monitor_concept_zt_stats():
             'concepts': top_concepts,
             'top10_ever': ever_list,
             'timeline': timeline_out,
+            'source': 'mootdx',
         }
         _concept_zt_cache = {'data': result, 'ts': now_ts}
         return jsonify(result)
@@ -3124,7 +3183,7 @@ def _fetch_quotes_batch(codes):
             frames = []
             for i in range(0, len(codes), 80):
                 batch = codes[i:i + 80]
-                df = client.quotes(symbol=batch)
+                df = ht._tdx_call_with_timeout(client, 'quotes', timeout=8, symbol=batch)
                 if df is not None and not df.empty:
                     frames.append(df)
         if frames:
@@ -3183,7 +3242,7 @@ def _fetch_minute_mootdx(symbol):
         import hot_track as ht
         with ht._get_ws_tdx_lock():
             client = ht._get_ws_tdx_client()
-            df = client.minute(symbol=symbol)
+            df = ht._tdx_call_with_timeout(client, 'minute', timeout=8, symbol=symbol)
         if df is None or df.empty or len(df) < 2:
             return None
         times = _minute_time_axis(len(df))
@@ -3228,7 +3287,7 @@ def _ws_push_loop():
             try:
                 points = _fetch_minute_mootdx('1A0001')
                 if points:
-                    _minute_cache['data'] = {'success': True, 'points': points, 'date': 'today'}
+                    _minute_cache['data'] = {'success': True, 'points': points, 'date': 'today', 'source': 'mootdx'}
                     _minute_cache['ts'] = time.time()
                     # tqcenter 补充: 涨跌幅/上涨下跌家数/均价 (超时1.5秒, 防止卡死推送循环)
                     if tq_mode:
@@ -3263,7 +3322,7 @@ def _ws_push_loop():
                 try:
                     points = _fetch_minute_mootdx(code)
                     if points:
-                        result = {'success': True, 'points': points, 'date': 'today'}
+                        result = {'success': True, 'points': points, 'date': 'today', 'source': 'mootdx-ws'}
                         _stock_minute_cache[code] = {'ts': time.time(), 'data': result}
                         with _tq_emit_lock:
                             socketio.emit('stock_minute', {'code': code, **result})
@@ -3716,7 +3775,7 @@ def _fetch_daily_zt_codes(date_int, concept_map, cancel_check=None):
                         if cancel_check and cancel_check():
                             break
                         batch = all_codes[i:i + 80]
-                        df = client.quotes(symbol=batch)
+                        df = ht._tdx_call_with_timeout(client, 'quotes', timeout=8, symbol=batch)
                         if df is not None and not df.empty:
                             frames.append(df)
                     if frames:
@@ -3739,7 +3798,7 @@ def _fetch_daily_zt_codes(date_int, concept_map, cancel_check=None):
                         if cancel_check and cancel_check():
                             break
                         try:
-                            df = client.bars(symbol=code, frequency=9, offset=10)
+                            df = ht._tdx_call_with_timeout(client, 'bars', timeout=5, symbol=code, frequency=9, offset=10)
                             if df is None or df.empty:
                                 continue
                             for idx in range(len(df)):

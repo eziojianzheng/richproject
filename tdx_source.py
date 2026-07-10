@@ -27,6 +27,11 @@ import json
 import threading
 import logging
 
+try:
+    import yaml
+except Exception:
+    yaml = None
+
 _logger = logging.getLogger('tdx_source')
 _logger.setLevel(logging.INFO)
 if not _logger.handlers:
@@ -36,15 +41,56 @@ if not _logger.handlers:
 
 # ============== tqcenter 路径配置 ==============
 # 通达信量化版安装目录
-#   优先级: 环境变量 TDX_INSTALL_DIR > 自动探测(注册表/常见路径) > 默认值
-#   自动探测命中后会缓存, 避免重复扫描
-def _detect_tdx_install_dir():
-    """自动探测通达信量化版安装目录。返回路径字符串或 None。"""
-    # 1. 环境变量
-    env = os.environ.get('TDX_INSTALL_DIR', '').strip()
-    if env and os.path.isdir(env):
-        return env
-    # 2. 常见安装路径(按命中概率排序)
+#   优先级: config.yml 的 tdx.install_dir > 环境变量 TDX_INSTALL_DIR > 自动探测(注册表/常见路径) > 默认值
+#   自动探测命中后会回写到 config.yml, 下次启动直接命中, 避免重复扫描
+
+_CONFIG_PATH = 'config.yml'
+
+
+def _load_tdx_config():
+    """从 config.yml 读取 tdx 配置段。返回 (install_dir, local_port)。
+    install_dir 为空串表示未配置(需自动探测); local_port 为 0 表示不尝试本地直连。"""
+    install_dir = ''
+    local_port = 0
+    if yaml and os.path.exists(_CONFIG_PATH):
+        try:
+            with open(_CONFIG_PATH, 'r', encoding='utf-8') as f:
+                data = yaml.safe_load(f) or {}
+            tdx = data.get('tdx') or {}
+            install_dir = str(tdx.get('install_dir') or '').strip()
+            try:
+                local_port = int(tdx.get('local_port') or 0)
+            except (TypeError, ValueError):
+                local_port = 0
+        except Exception:
+            pass
+    return install_dir, local_port
+
+
+def _save_tdx_install_dir(install_dir):
+    """把探测到的安装目录回写到 config.yml 的 tdx.install_dir, 保留其他配置段。"""
+    if not yaml or not os.path.exists(_CONFIG_PATH):
+        return
+    try:
+        with open(_CONFIG_PATH, 'r', encoding='utf-8') as f:
+            data = yaml.safe_load(f) or {}
+        tdx = data.get('tdx')
+        if not isinstance(tdx, dict):
+            tdx = {}
+            data['tdx'] = tdx
+        if str(tdx.get('install_dir') or '').strip() == install_dir:
+            return  # 已一致, 无需写
+        tdx['install_dir'] = install_dir
+        with open(_CONFIG_PATH, 'w', encoding='utf-8') as f:
+            yaml.safe_dump(data, f, allow_unicode=True, default_flow_style=False, sort_keys=False)
+        _logger.info(f'已把通达信安装目录回写到 config.yml: {install_dir}')
+    except Exception as e:
+        _logger.warning(f'回写 config.yml 失败(不影响运行): {e}')
+
+
+def _auto_detect_tdx_install_dir():
+    """自动探测通达信量化版安装目录(不读 config/环境变量)。返回路径字符串或 None。"""
+    # 1. 常见安装路径(按命中概率排序)
     candidates = [
         r'D:\game\tdx',          # 本机实际安装位置
         r'C:\new_tdx',
@@ -56,7 +102,7 @@ def _detect_tdx_install_dir():
     for p in candidates:
         if os.path.isdir(os.path.join(p, 'PYPlugins')):
             return p
-    # 3. 注册表探测(通达信量化版写入的卸载项)
+    # 2. 注册表探测(通达信量化版写入的卸载项)
     try:
         import winreg
         for hive in (winreg.HKEY_CURRENT_USER, winreg.HKEY_LOCAL_MACHINE):
@@ -82,7 +128,31 @@ def _detect_tdx_install_dir():
     return None
 
 
-TDX_INSTALL_DIR = _detect_tdx_install_dir() or r'C:\new_tdx_mock'
+def _resolve_tdx_install_dir():
+    """按优先级解析安装目录: config.yml > 环境变量 > 自动探测 > 回写config > 默认值。
+    返回 (install_dir, source) where source in {'config','env','auto','default'}。"""
+    # 1. config.yml 显式配置
+    cfg_dir, _ = _load_tdx_config()
+    if cfg_dir and os.path.isdir(os.path.join(cfg_dir, 'PYPlugins')):
+        return cfg_dir, 'config'
+    if cfg_dir:
+        _logger.warning(f'config.yml 中 tdx.install_dir="{cfg_dir}" 无效(找不到 PYPlugins), 尝试自动探测')
+    # 2. 环境变量
+    env = os.environ.get('TDX_INSTALL_DIR', '').strip()
+    if env and os.path.isdir(os.path.join(env, 'PYPlugins')):
+        return env, 'env'
+    # 3. 自动探测
+    detected = _auto_detect_tdx_install_dir()
+    if detected:
+        # 探测命中 -> 回写到 config.yml, 下次直接命中
+        _save_tdx_install_dir(detected)
+        return detected, 'auto'
+    # 4. 兜底
+    return r'C:\new_tdx_mock', 'default'
+
+
+TDX_INSTALL_DIR, TDX_INSTALL_SOURCE = _resolve_tdx_install_dir()
+TDX_LOCAL_PORT = _load_tdx_config()[1]
 PYPLUGINS_DIR = os.path.join(TDX_INSTALL_DIR, 'PYPlugins')
 SYS_DIR = os.path.join(PYPLUGINS_DIR, 'sys')
 
@@ -555,6 +625,34 @@ def selftest():
     idx = index_snapshot()
     print(f'5. 上证指数快照: {"OK" if idx else "FAIL"} {idx}')
     return all([ok, s, k, lst, idx])
+
+
+def get_tdx_info():
+    """返回通达信安装/数据目录的诊断信息(供健康检查路由使用)。"""
+    vipdoc = os.path.join(TDX_INSTALL_DIR, 'Vipdoc')
+    sh_lday = os.path.join(vipdoc, 'sh', 'lday')
+    sz_lday = os.path.join(vipdoc, 'sz', 'lday')
+    sh_minline = os.path.join(vipdoc, 'sh', 'minline')
+    sz_minline = os.path.join(vipdoc, 'sz', 'minline')
+    # 统计 minline 是否有 .lc1 文件
+    minline_count = 0
+    for d in (sh_minline, sz_minline):
+        if os.path.isdir(d):
+            try:
+                minline_count += len([f for f in os.listdir(d) if f.endswith('.lc1')])
+            except Exception:
+                pass
+    return {
+        'install_dir': TDX_INSTALL_DIR,
+        'install_source': TDX_INSTALL_SOURCE,   # config / env / auto / default
+        'local_port': TDX_LOCAL_PORT,
+        'pyplugins_exists': os.path.isdir(PYPLUGINS_DIR),
+        'vipdoc_exists': os.path.isdir(vipdoc),
+        'sh_lday_exists': os.path.isdir(sh_lday),
+        'sz_lday_exists': os.path.isdir(sz_lday),
+        'minline_file_count': minline_count,
+        'tqcenter_available': is_available(),
+    }
 
 
 if __name__ == '__main__':

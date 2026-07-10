@@ -6,7 +6,7 @@
 <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
 <meta http-equiv="Pragma" content="no-cache">
 <title>盯盘 · 上证指数</title>
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/gridstack@11/dist/gridstack.min.css">
+<link rel="stylesheet" href="/static/libs/gridstack.min.css" onerror="this.href='https://cdn.jsdelivr.net/npm/gridstack@11/dist/gridstack.min.css'">
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
   :root {
@@ -49,6 +49,15 @@
   .chart-title .date-tag {
     font-size: 12px; color: var(--text-muted); font-weight: 400;
   }
+  /* 数据源角标 */
+  .src-tag {
+    font-size: 10px; font-weight: 600; padding: 1px 5px; border-radius: 3px;
+    margin-left: 6px; vertical-align: middle; white-space: nowrap;
+  }
+  .src-tag.tqcenter { background: rgba(76,175,80,0.2); color: #66bb6a; border: 1px solid rgba(76,175,80,0.4); }
+  .src-tag.mootdx { background: rgba(255,152,0,0.2); color: #ffb74d; border: 1px solid rgba(255,152,0,0.4); }
+  .src-tag.local { background: rgba(33,150,243,0.2); color: #64b5f6; border: 1px solid rgba(33,150,243,0.4); }
+  .src-tag.none { background: rgba(158,158,158,0.15); color: #9e9e9e; border: 1px solid rgba(158,158,158,0.3); }
   .indicator-toggle {
     margin-left: auto; display: flex; gap: 12px; align-items: center;
     font-size: 12px; font-weight: 400;
@@ -441,10 +450,13 @@
 
   </div>
 
-<script src="https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/gridstack@11/dist/gridstack-all.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/socket.io-client@4/dist/socket.io.min.js"></script>
+<script src="/static/libs/echarts.min.js" onerror="this.onerror=null;this.src='https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js'"></script>
+<script src="/static/libs/gridstack-all.min.js" onerror="this.onerror=null;this.src='https://cdn.jsdelivr.net/npm/gridstack@11/dist/gridstack-all.min.js'"></script>
+<script src="/static/libs/socket.io.min.js" onerror="this.onerror=null;this.src='https://cdn.jsdelivr.net/npm/socket.io-client@4/dist/socket.io.min.js'"></script>
 <script>
+window._errlog = [];
+window.addEventListener('error', function(e) { window._errlog.push((e.message||'')+(e.filename?(' @'+e.filename.split('/').pop()+':'+e.lineno):'')); });
+window.addEventListener('unhandledrejection', function(e) { window._errlog.push('REJ: '+(e.reason&&e.reason.message?e.reason.message:e.reason)); });
 const UP = '#ef5350', DOWN = '#26a69a';
 let dailyChart = null, minuteChart = null, histMinuteChart = null;
 let dailyData = [];   // 缓存日K数据
@@ -478,6 +490,29 @@ async function fetchWithTimeout(url, opts, ms) {
   }
 }
 
+// ===== 数据源角标 =====
+// 在指定元素的 chart-title 或 list-head 里显示数据源标签
+// selector: 图表容器选择器(如 '#item-daily', '#item-cyb')
+// source: 'tqcenter' | 'mootdx' | 'local' | ''
+const _srcLabels = {tqcenter:'TQ', mootdx:'mootdx', local:'本地', 'mootdx-ws':'mootdx'};
+function setSrcTag(selector, source) {
+  const item = document.querySelector(selector);
+  if (!item) return;
+  // 图表面板: 追加到 .chart-title; 列表面板: 追加到 .list-title (避免 space-between 布局错位)
+  const title = item.querySelector('.chart-title') || item.querySelector('.list-title');
+  if (!title) return;
+  let tag = title.querySelector('.src-tag');
+  const cls = source ? (source.startsWith('tq') ? 'tqcenter' : source === 'local' ? 'local' : 'mootdx') : 'none';
+  const label = _srcLabels[source] || (source || '-');
+  if (!tag) {
+    tag = document.createElement('span');
+    tag.className = 'src-tag';
+    title.appendChild(tag);
+  }
+  tag.className = 'src-tag ' + cls;
+  tag.textContent = label;
+}
+
 // ===== 日K线图 =====
 async function loadDaily(retry) {
   try {
@@ -488,6 +523,7 @@ async function loadDaily(retry) {
       return;
     }
     dailyData = data.bars;
+    setSrcTag('#item-daily', data.source);
     renderDaily(data.bars);
     // 更新顶部价格信息
     if (data.bars.length > 0) {
@@ -697,6 +733,7 @@ async function loadMinute(retry) {
       return;
     }
     _minutePoints = data.points;
+    setSrcTag('#item-minute', data.source);
     renderMinute(minuteChart, 'minuteChart', data.points, data.date, null, _stockMinutePoints, _stockLastClose);
     hint.textContent = `${data.points.length} 个数据点`;
     // 异步拉领先指标(不阻塞分时渲染), 到了重新渲染整图补上黄线
@@ -777,6 +814,7 @@ async function loadHistMinute(date) {
       if (histMinuteChart) histMinuteChart.clear();
       return;
     }
+    setSrcTag('#item-hist', data.source);
     renderMinute(histMinuteChart, 'histMinuteChart', data.points, data.date);
     hint.textContent = `${data.points.length} 个数据点`;
   } catch (e) {
@@ -1174,7 +1212,7 @@ function initGridStack() {
     resizeAllCharts();
   });
 }
-initGridStack();
+try { initGridStack(); } catch(e) { console.error('[initGridStack] 异常:', e); window._errlog.push('[initGridStack] ' + e.message); }
 
 // 指标 checkbox 控制: 用 dispatchAction 显隐 series, 按 data-target 路由到对应图表
 document.querySelectorAll('.indicator-toggle input[type="checkbox"]').forEach(function(cb) {
@@ -1241,6 +1279,7 @@ async function loadStockList(seg) {
       return;
     }
     renderStockList(seg, data.stocks);
+    setSrcTag('#item-' + seg, data.source);
     // 渲染后订阅报价推送(WS每秒推送这些股票的最新价)
     subscribeQuotes(seg);
     // 列表渲染后重新应用筛选(若条件已勾选但数据未就绪, 异步补上)
@@ -1443,6 +1482,7 @@ async function loadStockDaily(code) {
     }
     if (!_stockCache[code]) _stockCache[code] = {};
     _stockCache[code].daily = data.bars;
+    setSrcTag('#item-sdaily', data.source);
     // 只有当前还在看这只票时才重绘(避免切走后覆盖)
     if (curStockCode === code) renderStockDaily(data.bars);
   } catch(e) {
@@ -1678,6 +1718,7 @@ async function loadStockMinute5(code) {
     }
     if (!_stockCache[code]) _stockCache[code] = {};
     _stockCache[code].minute5 = {points: data.points, days: data.days};
+    setSrcTag('#item-sm5', data.source);
     if (curStockCode === code) {
       renderStockMinute5(data.points, data.days);
       tag.textContent = data.days.join(' / ');
@@ -1813,6 +1854,7 @@ async function loadStockHistMinute(code, date) {
       hint.textContent = '';
       return;
     }
+    setSrcTag('#item-shist', data.source);
     renderStockHistMinute(data.points, data.date);
     hint.textContent = `${data.points.length} 个数据点`;
   } catch(e) {
@@ -2072,7 +2114,6 @@ Promise.all([_dailyP, _listP]).then(() => {
     restoreIndicatorState();
   }));
 });
-});
 
 // ===== 概念板块涨停统计 =====
 async function loadConceptZtStats() {
@@ -2087,6 +2128,7 @@ async function loadConceptZtStats() {
       return;
     }
     _conceptZtData = data;
+    setSrcTag('#item-czt', data.source);
     renderConceptZtChart(data);
     renderConceptDistChart(data);
     const top3 = data.concepts.slice(0, 3).map(c => `${c.concept}(${c.zt_count})`).join(' ');
@@ -2597,6 +2639,41 @@ document.addEventListener('visibilitychange', () => {
   }
   setTimeout(() => { _visReloading = false; }, 2000);
 });
+
+// === 调试面板(可隐藏, URL带?debug=1才显示) ===
+setTimeout(function() {
+  if (!location.search.includes('debug=1')) return;
+  var info = [];
+  info.push('echarts: ' + (typeof echarts !== 'undefined' ? 'OK' : 'MISSING'));
+  info.push('GridStack: ' + (typeof GridStack !== 'undefined' ? 'OK' : 'MISSING'));
+  info.push('io: ' + (typeof io !== 'undefined' ? 'OK' : 'MISSING'));
+  info.push('grid: ' + (typeof grid !== 'undefined' ? (grid ? 'OK' : 'null') : 'undef'));
+  info.push('dailyChart: ' + (typeof dailyChart));
+  info.push('errlog: ' + (window._errlog.length ? window._errlog.join(' | ') : 'none'));
+  var dc = document.getElementById('dailyChart');
+  info.push('dailyChart div: ' + (dc ? (dc.offsetWidth+'x'+dc.offsetHeight) : 'NOT FOUND'));
+  var gs = document.querySelector('.grid-stack');
+  info.push('grid-stack div: ' + (gs ? (gs.offsetWidth+'x'+gs.offsetHeight) : 'NOT FOUND'));
+  var wrap = document.createElement('div');
+  wrap.id = '_debugPanel';
+  wrap.style.cssText = 'position:fixed;bottom:0;right:0;z-index:99999;background:#1a1a2e;color:#0f0;padding:0;font-size:12px;font-family:monospace;max-height:50vh;overflow:auto;border:1px solid #0f0;border-radius:6px 0 0 0;box-shadow:-2px -2px 8px rgba(0,0,0,.5)';
+  var bar = document.createElement('div');
+  bar.style.cssText = 'display:flex;justify-content:space-between;align-items:center;padding:4px 10px;background:#16213e;cursor:pointer;user-select:none';
+  bar.textContent = '🔧 调试信息';
+  var closeBtn = document.createElement('span');
+  closeBtn.textContent = '✕';
+  closeBtn.style.cssText = 'color:#e94560;font-weight:bold;padding:0 4px';
+  closeBtn.title = '隐藏(刷新或加?debug=1恢复)';
+  closeBtn.onclick = function(e) { e.stopPropagation(); wrap.remove(); };
+  bar.appendChild(closeBtn);
+  bar.onclick = function() { body.style.display = body.style.display === 'none' ? 'block' : 'none'; };
+  var body = document.createElement('pre');
+  body.style.cssText = 'margin:0;padding:8px 12px;white-space:pre-wrap;max-width:60vw';
+  body.textContent = info.join('\n');
+  wrap.appendChild(bar);
+  wrap.appendChild(body);
+  document.body.appendChild(wrap);
+}, 3000);
 </script>
 </body>
 </html>
