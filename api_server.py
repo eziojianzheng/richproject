@@ -264,6 +264,46 @@ def api_explosive_picks_save():
         return jsonify({'success': False, 'error': f'{type(e).__name__}: {e}'}), 500
 
 
+# ===== 爆发股扫描结果持久化 (.exp_scan.json) =====
+EXP_SCAN_FILE = '.exp_scan.json'
+
+
+def _load_exp_scan():
+    """读取上次扫描结果 {month, window, threshold, candidates, saved_at}"""
+    try:
+        if os.path.exists(EXP_SCAN_FILE):
+            with open(EXP_SCAN_FILE, 'r', encoding='utf-8') as f:
+                return json.load(f)
+    except Exception:
+        pass
+    return None
+
+
+def _save_exp_scan(scan_data):
+    try:
+        with open(EXP_SCAN_FILE, 'w', encoding='utf-8') as f:
+            json.dump(scan_data, f, ensure_ascii=False)
+    except Exception as e:
+        print(f'保存爆发股扫描结果失败: {e}')
+
+
+@app.route('/api/hot/explosive/scan-result', methods=['GET'])
+def api_explosive_scan_result_get():
+    """获取上次保存的扫描结果"""
+    return jsonify({'success': True, 'scan': _load_exp_scan()})
+
+
+@app.route('/api/hot/explosive/scan-result', methods=['POST'])
+def api_explosive_scan_result_save():
+    """保存扫描结果 (全量覆盖)"""
+    try:
+        data = request.get_json(silent=True) or {}
+        _save_exp_scan(data)
+        return jsonify({'success': True})
+    except Exception as e:
+        return jsonify({'success': False, 'error': f'{type(e).__name__}: {e}'}), 500
+
+
 def get_article_list(user_id='444409'):
     """获取博客文章列表（首页，最近约30篇）"""
     url = f'https://www.tgb.cn/blog/{user_id}'

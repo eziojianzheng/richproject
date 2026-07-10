@@ -2146,6 +2146,40 @@ function saveExpPicksDebounced() {
   }, 500);
 }
 
+// ===== 扫描结果持久化 (刷新后恢复待选列表+图表) =====
+function saveExpScanResult() {
+  const month = document.getElementById('expMonth').value;
+  const window_ = parseInt(document.getElementById('expWindow').value) || 3;
+  const threshold = parseFloat(document.getElementById('expThreshold').value) || 18;
+  const payload = {
+    month, window: window_, threshold,
+    candidates: expCandidates,
+    saved_at: new Date().toISOString()
+  };
+  fetch('/api/hot/explosive/scan-result', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload)
+  }).catch(() => {});
+}
+
+async function loadExpScanResult() {
+  try {
+    const resp = await fetch('/api/hot/explosive/scan-result');
+    const data = await resp.json();
+    if (!data.success || !data.scan || !data.scan.candidates) return;
+    const s = data.scan;
+    // 恢复输入框
+    if (s.month) document.getElementById('expMonth').value = s.month;
+    if (s.window) document.getElementById('expWindow').value = s.window;
+    if (s.threshold) document.getElementById('expThreshold').value = s.threshold;
+    // 恢复待选列表和图表
+    expCandidates = s.candidates;
+    setExpProgress(100, `已恢复 · 命中 ${expCandidates.length} 个（窗口${s.window}日 · 涨幅≥${s.threshold}%）`);
+    renderCandList();
+    renderExpCharts();
+  } catch(e) {}
+}
+
 function setExpBusy(busy) {
   document.getElementById('expStart').disabled = busy;
   const cancel = document.getElementById('expCancel');
@@ -2202,6 +2236,7 @@ function pollExplosive() {
         setExpProgress(100, `${prefix} · 命中 ${expCandidates.length} 个（窗口${s.window}日 · 涨幅≥${s.threshold}%）`);
         renderCandList();
         renderExpCharts();
+        saveExpScanResult();
       }
     } catch (e) {
       clearInterval(expPollTimer);
@@ -2497,6 +2532,8 @@ window.addEventListener('resize', () => {
 try { const v = localStorage.getItem('hot_view'); if (v) switchTab(v); } catch(e) {}
 // 恢复已选列表
 loadExpPicks();
+// 恢复上次扫描结果(待选列表+K线+分时图)
+loadExpScanResult();
 
 // ===== 同花顺概念追踪 =====
 function loadConceptTrack(forceRefresh) {
