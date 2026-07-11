@@ -590,9 +590,11 @@ async function loadExcelList() {
       let action = '';
       if (it.excel === 'verified') {
         const label = it.submitted ? '重新上传' : '上传';
-        action = `<button class="btn-sm" onclick="uploadDate('${it.date}', this)">${label}</button>`;
+        action = `<button class="btn-sm" onclick="uploadDate('${it.date}', this)">${label}</button>`
+          + ` <button class="btn-sm ghost" onclick="extractAndUpload('${it.date}', this, true)">重新提取</button>`;
       } else if (it.excel === 'manualcheck') {
-        action = `<span class="hint" style="margin:0;">需人工复核</span>`;
+        action = `<span class="hint" style="margin:0;">需人工复核</span>`
+          + ` <button class="btn-sm ghost" onclick="extractAndUpload('${it.date}', this, true)">重新提取</button>`;
       } else {
         action = `<button class="btn-sm ghost" onclick="extractAndUpload('${it.date}', this)">提取并上传</button>`;
       }
@@ -607,15 +609,16 @@ async function loadExcelList() {
     box.innerHTML = html;
   } catch (e) { box.innerHTML = '<div class="empty">加载失败: ' + e.message + '</div>'; }
 }
-async function extractAndUpload(date, btn) {
+async function extractAndUpload(date, btn, force = false) {
+  if (force && !confirm(date + ' 将重新提取并覆盖已有Excel，确定？')) return;
   btn.disabled = true;
   const orig = btn.textContent;
-  btn.textContent = '提取中…';
+  btn.textContent = force ? '重新提取中…' : '提取中…';
   const dash = d8ToDash(date);
   try {
     const resp = await fetch('/api/extract', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ start_date: dash, end_date: dash, submit_to_db: true }) });
+      body: JSON.stringify({ start_date: dash, end_date: dash, submit_to_db: true, force: !!force }) });
     const data = await resp.json();
     if (!data.success) { btn.disabled = false; btn.textContent = orig; alert('失败: ' + (data.error || '未知错误')); return; }
     const tid = data.task_id;

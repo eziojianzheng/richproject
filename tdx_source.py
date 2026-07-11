@@ -158,6 +158,8 @@ SYS_DIR = os.path.join(PYPLUGINS_DIR, 'sys')
 
 _tq = None           # tqcenter.tq 模块引用
 _tq_available = None  # None=未检测, True=可用, False=不可用
+_tq_unavail_ts = 0.0  # 上次探测到"不可用"的时间戳(用于冷却重试, 避免永久缓存失败)
+_TQ_RECHECK_COOLDOWN = 30  # 不可用后至少 30 秒才重新探测一次
 _tq_lock = threading.Lock()
 # initialize 需要一个文件路径作为连接标识(run_id), 用本模块自身路径即可, 不依赖外部文件
 _tq_init_path = os.path.abspath(__file__)
@@ -175,35 +177,47 @@ def _ensure_path():
             sys.path.insert(0, p)
 
 
-def is_available():
-    """检测 tqcenter 是否可用 (客户端是否开着)"""
-    global _tq_available
-    if _tq_available is not None:
-        return _tq_available
+def is_available(force=False):
+    """检测 tqcenter 是否可用 (客户端是否开着)。
+
+    缓存策略: 可用(True)结果永久缓存; 不可用(False)结果仅缓存 _TQ_RECHECK_COOLDOWN 秒,
+    到期后自动重新探测。这样即使 api_server 先于通达信客户端启动, 客户端登录后也能自动恢复,
+    无需重启服务。force=True 可强制立即重新探测。
+    """
+    global _tq_available, _tq_unavail_ts
+    import time as _time
+    if not force:
+        if _tq_available is True:
+            return True
+        if _tq_available is False and (_time.time() - _tq_unavail_ts) < _TQ_RECHECK_COOLDOWN:
+            return False
     _ensure_path()
+    _probe = None
     try:
         from tqcenter import tq as _tq_mod
-        _tq = _tq_mod
-        _tq.initialize(_tq_init_path)
+        _probe = _tq_mod
+        _probe.initialize(_tq_init_path)
         # 测试一次快照确认连接正常
-        snap = _tq.get_market_snapshot(stock_code='000001.SH', field_list=[])
+        snap = _probe.get_market_snapshot(stock_code='000001.SH', field_list=[])
         if snap and snap.get('ErrorId') == '0':
             _tq_available = True
             _logger.info('tqcenter 可用 (通达信量化版已连接)')
             return True
         else:
             _tq_available = False
+            _tq_unavail_ts = _time.time()
             _logger.warning(f'tqcenter 快照测试失败: {snap}')
             return False
     except Exception as e:
         _tq_available = False
+        _tq_unavail_ts = _time.time()
         _logger.warning(f'tqcenter 不可用 (通达信量化版未启动?): {e}')
         return False
     finally:
         # 检测时不要保持连接, 后续 initialize() 会重新建
         try:
-            if _tq is not None:
-                _tq.close()
+            if _probe is not None:
+                _probe.close()
         except Exception:
             pass
 

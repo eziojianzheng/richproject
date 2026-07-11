@@ -808,10 +808,11 @@ def download_task(task_id, articles, base_dir='dataresource', skip_existing=True
 
 
 def extract_task(task_id, dates, submit_to_db=True, base_dir='dataresource',
-                 output_dir='excelDataSource'):
+                 output_dir='excelDataSource', force=False):
     """
     后台提取任务：对每个日期跑 extract_glm 生成 Excel，可选提交入库。
     dates: 交易日列表(YYYYMMDD)
+    force: True 时忽略"已存在Excel"，强制重新提取(重新覆盖生成)。
     """
     global extract_tasks
     import extract_glm as eg
@@ -833,9 +834,9 @@ def extract_task(task_id, dates, submit_to_db=True, base_dir='dataresource',
         it = items[i]
         folder = os.path.join(base_dir, d)
         try:
-            # 默认跳过已存在 Excel(verified 或 manualcheck), 避免重复提取
+            # 默认跳过已存在 Excel(verified 或 manualcheck), 避免重复提取; force=True 时不跳过
             exist_fp, exist_st = _db.find_excel(d, output_dir)
-            if exist_fp:
+            if exist_fp and not force:
                 it['status'] = 'skipped'
                 it['message'] = f'已存在Excel({exist_st})，跳过提取'
                 extracted += 1
@@ -868,13 +869,24 @@ def extract_task(task_id, dates, submit_to_db=True, base_dir='dataresource',
                 it['message'] = '未下载图片（无 dataresource 文件夹）'
             else:
                 it['status'] = 'extracting'
-                it['message'] = '正在提取…'
+                it['message'] = '正在重新提取…' if (force and exist_fp) else '正在提取…'
                 ok = eg.extract_date(d, base_dir, output_dir)
                 if not ok:
                     it['status'] = 'failed'
                     it['message'] = '提取失败（未找到03/04或识别失败）'
                 else:
                     extracted += 1
+                    # 重新提取成功后, 清理与新结果状态不一致的旧Excel(避免 verified/manualcheck 并存)
+                    if force:
+                        _new_fp, _new_st = _db.find_excel(d, output_dir)
+                        for _st in ('verified', 'manualcheck'):
+                            if _st != _new_st:
+                                _stale = os.path.join(output_dir, f'{d}_涨停复盘_{_st}.xlsx')
+                                try:
+                                    if os.path.exists(_stale):
+                                        os.remove(_stale)
+                                except Exception:
+                                    pass
                     if submit_to_db:
                         it['status'] = 'submitting'
                         it['message'] = '正在入库…'
@@ -1390,6 +1402,7 @@ def extract_data():
     start_date = data.get('start_date')
     end_date = data.get('end_date')
     submit_to_db = data.get('submit_to_db', True)
+    force = bool(data.get('force', False))
 
     # 默认当天
     if not start_date and not end_date:
@@ -1416,12 +1429,13 @@ def extract_data():
     extract_tasks[task_id] = {
         'status': 'pending', 'progress': 0,
         'total': len(dates), 'extracted': 0, 'submitted': 0,
-        'submit_to_db': bool(submit_to_db),
+        'submit_to_db': bool(submit_to_db), 'force': force,
         'items': [{'date': d, 'status': 'pending', 'message': '待处理'} for d in dates],
     }
     thread = threading.Thread(
         target=extract_task,
         args=(task_id, dates, bool(submit_to_db)),
+        kwargs={'force': force},
     )
     thread.daemon = True
     thread.start()

@@ -2084,8 +2084,10 @@ let expTaskId = null;
 let expPollTimer = null;
 let expCandidates = [];          // 待选(扫描结果)
 let expPicked = [];              // 已选
+let _expScanFetched = false;     // 是否已从服务端拉取过扫描结果(避免切tab重复请求)
 const expCharts = {};            // key -> echarts 实例 (K线)
 const expMinCharts = {};         // key -> echarts 实例 (10日分时)
+let _expIO = null;               // 待选K线行的懒加载观察器(进入视口才拉数据)
 
 // ===== Tab 切换 (统一管理 hnr/explosive/ths 三个视图) =====
 function switchTab(tab) {
@@ -2115,6 +2117,19 @@ function switchTab(tab) {
     if (!mi.value) {
       const d = new Date();
       mi.value = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
+    }
+    // 扫描进行中: 不动数据, 交给 poll 处理
+    if (!expPollTimer) {
+      if (expCandidates.length) {
+        // 内存里有数据: 若图表尚未渲染(切走后可能被释放)则重建, 否则仅 resize
+        if (!Object.keys(expCharts).length) {
+          renderCandList();
+          renderExpCharts();
+        }
+      } else if (!_expScanFetched) {
+        // 内存为空且尚未拉取过: 从服务端恢复上次扫描结果(仅一次, 避免切tab重复请求)
+        loadExpScanResult();
+      }
     }
     setTimeout(() => { Object.values(expCharts).forEach(c => c && c.resize()); Object.values(expMinCharts).forEach(c => c && c.resize()); }, 50);
   }
@@ -2163,10 +2178,12 @@ function saveExpScanResult() {
 }
 
 async function loadExpScanResult() {
+  _expScanFetched = true;  // 标记已尝试拉取, 避免切tab重复请求
   try {
     const resp = await fetch('/api/hot/explosive/scan-result');
     const data = await resp.json();
-    if (!data.success || !data.scan || !data.scan.candidates) return;
+    // 无有效结果(或上次扫描为空)时不覆盖当前状态/显示, 避免清掉失败提示
+    if (!data.success || !data.scan || !Array.isArray(data.scan.candidates) || !data.scan.candidates.length) return;
     const s = data.scan;
     // 恢复输入框
     if (s.month) document.getElementById('expMonth').value = s.month;
@@ -2175,8 +2192,12 @@ async function loadExpScanResult() {
     // 恢复待选列表和图表
     expCandidates = s.candidates;
     setExpProgress(100, `已恢复 · 命中 ${expCandidates.length} 个（窗口${s.window}日 · 涨幅≥${s.threshold}%）`);
+    // 仅在爆发页可见时渲染图表: ECharts 在 display:none 容器里 init 会得到 0 尺寸,
+    // 之后 resize 也无法可靠恢复 K线/分时。隐藏时先只渲染列表, 切到该页时再画图。
     renderCandList();
-    renderExpCharts();
+    if (_curTab === 'explosive') {
+      renderExpCharts();
+    }
   } catch(e) {}
 }
 
@@ -2208,10 +2229,10 @@ async function startExplosive() {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ month, window: window_, threshold }) });
     const data = await resp.json();
-    if (!data.success) { setExpProgress(0, '失败: ' + (data.error || '未知错误')); setExpBusy(false); return; }
+    if (!data.success) { setExpProgress(0, '失败: ' + (data.error || '未知错误')); setExpBusy(false); loadExpScanResult(); return; }
     expTaskId = data.task_id;
     pollExplosive();
-  } catch (e) { setExpProgress(0, '请求异常: ' + e.message); setExpBusy(false); }
+  } catch (e) { setExpProgress(0, '请求异常: ' + e.message); setExpBusy(false); loadExpScanResult(); }
 }
 
 function pollExplosive() {
@@ -2230,7 +2251,7 @@ function pollExplosive() {
       if (s.status === 'completed' || s.status === 'cancelled' || s.status === 'failed') {
         clearInterval(expPollTimer);
         setExpBusy(false);
-        if (s.status === 'failed') { setExpProgress(0, '失败: ' + (s.error || '未知错误')); return; }
+        if (s.status === 'failed') { setExpProgress(0, '失败: ' + (s.error || '未知错误')); loadExpScanResult(); return; }
         expCandidates = s.candidates || [];
         const prefix = s.status === 'cancelled' ? '已中断' : '完成';
         setExpProgress(100, `${prefix} · 命中 ${expCandidates.length} 个（窗口${s.window}日 · 涨幅≥${s.threshold}%）`);
@@ -2341,9 +2362,28 @@ function renderExpCharts() {
   for (const k in expCharts) delete expCharts[k];
   Object.values(expMinCharts).forEach(c => { try { c.dispose(); } catch(e){} });
   for (const k in expMinCharts) delete expMinCharts[k];
+  // 断开旧观察器
+  if (_expIO) { try { _expIO.disconnect(); } catch(e){} _expIO = null; }
   if (!expCandidates.length) { wrap.innerHTML = '<div class="empty">无命中个股</div>'; return; }
   wrap.innerHTML = '';
   const pickedKeys = new Set(expPicked.map(candKey));
+  // 懒加载: 命中可能上百只, 若一次性并发拉取全部K线+分时会瞬间打满 tq 接口(后端单锁串行),
+  // 导致长时间看不到图。这里仅在行滚动进入视口时才拉取该行数据。
+  const supportsIO = 'IntersectionObserver' in window;
+  const pending = new Map();  // rowEl -> {c, key}
+  if (supportsIO) {
+    _expIO = new IntersectionObserver((entries) => {
+      for (const en of entries) {
+        if (!en.isIntersecting) continue;
+        const info = pending.get(en.target);
+        if (!info) continue;
+        pending.delete(en.target);
+        _expIO.unobserve(en.target);
+        loadExpKline(info.c, info.key);
+        loadExpMin10(info.c, info.key);
+      }
+    }, { root: null, rootMargin: '300px 0px', threshold: 0.01 });
+  }
   for (const c of expCandidates) {
     const key = candKey(c);
     const isPicked = pickedKeys.has(key);
@@ -2362,8 +2402,13 @@ function renderExpCharts() {
         <div class="exp-min10" id="expm_${key}"></div>
       </div>`;
     wrap.appendChild(row);
-    loadExpKline(c, key);
-    loadExpMin10(c, key);
+    if (supportsIO) {
+      pending.set(row, { c, key });
+      _expIO.observe(row);
+    } else {
+      loadExpKline(c, key);
+      loadExpMin10(c, key);
+    }
   }
 }
 
@@ -2533,7 +2578,8 @@ try { const v = localStorage.getItem('hot_view'); if (v) switchTab(v); } catch(e
 // 恢复已选列表
 loadExpPicks();
 // 恢复上次扫描结果(待选列表+K线+分时图)
-loadExpScanResult();
+// 若已在爆发页, switchTab 内已触发加载, 这里不再重复(避免重复拉取全部 K线/分时)
+if (_curTab !== 'explosive') loadExpScanResult();
 
 // ===== 同花顺概念追踪 =====
 function loadConceptTrack(forceRefresh) {
