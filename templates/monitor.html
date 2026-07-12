@@ -237,6 +237,27 @@
   .grid-stack-item.gs-locked > .grid-stack-item-content .chart-title,
   .grid-stack-item.gs-locked > .grid-stack-item-content .list-head { cursor: default; }
   .grid-stack-item.gs-locked > .ui-resizable-handle { display: none !important; }
+
+  /* 产业链盯盘 */
+  .cb-chain { border: 1px solid var(--border-color); border-radius: 8px; margin-bottom: 8px; overflow: hidden; }
+  .cb-chain-head { display: flex; align-items: center; gap: 10px; padding: 6px 10px; cursor: pointer; background: rgba(255,255,255,0.03); }
+  .cb-chain-head .cb-name { font-weight: 700; font-size: 13px; min-width: 130px; }
+  .cb-chain-head .cb-stat { font-size: 11px; color: var(--text-secondary); }
+  .cb-bar { flex: 1; height: 8px; border-radius: 4px; background: #2c313a; position: relative; overflow: hidden; min-width: 60px; }
+  .cb-bar > i { position: absolute; top: 0; bottom: 0; }
+  .cb-body { display: none; padding: 4px 10px 8px; }
+  .cb-chain.open .cb-body { display: block; }
+  .cb-tier { margin: 6px 0; }
+  .cb-tier-name { font-size: 11px; color: var(--text-muted); margin-bottom: 3px; border-left: 3px solid var(--accent); padding-left: 6px; }
+  .cb-cons { display: flex; flex-wrap: wrap; gap: 5px; }
+  .cb-con { display: flex; flex-direction: column; gap: 2px; padding: 4px 8px; border-radius: 6px; border: 1px solid var(--border-color); min-width: 132px; background: var(--bg-body); }
+  .cb-con .cb-con-top { display: flex; align-items: baseline; gap: 6px; }
+  .cb-con .cb-con-name { font-size: 12px; font-weight: 600; }
+  .cb-con .cb-con-pct { font-size: 12px; font-weight: 700; margin-left: auto; }
+  .cb-con .cb-con-sub { font-size: 10px; color: var(--text-muted); }
+  .cb-con .cb-lu { color: #ffd60a; }
+  .cb-chev { transition: transform .15s; font-size: 10px; color: var(--text-muted); }
+  .cb-chain.open .cb-chev { transform: rotate(90deg); }
 </style>
 </head>
 <body>
@@ -444,6 +465,21 @@
             <div id="conceptDistChart"></div>
           </div>
           <div class="hint-bar" id="conceptDistHint">等待数据…</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 产业链盯盘 -->
+    <div class="grid-stack-item" gs-id="item-chainboard" gs-x="0" gs-y="40" gs-w="12" gs-h="16" id="item-chainboard">
+      <div class="grid-stack-item-content">
+        <div class="chart-card" style="display:flex;flex-direction:column;">
+          <div class="chart-title">
+            🏭 产业链盯盘 <span class="date-tag" id="chainBoardTs">实时聚合成员股涨幅/涨停</span>
+            <span class="chart-toggle" onclick="loadChainBoard(true)">🔄 刷新</span>
+          </div>
+          <div id="chainBoard" style="flex:1;min-height:0;overflow:auto;padding:4px 2px;">
+            <div class="loading">点击刷新或等待自动加载…</div>
+          </div>
         </div>
       </div>
     </div>
@@ -2610,6 +2646,69 @@ function startDailyRefresh() {
     } catch(e) { /* 静默 */ }
   }, 60000);
 }
+
+// ===== 产业链盯盘 =====
+function _pctCls(p) { return p > 0 ? 'up' : (p < 0 ? 'down' : 's-flat'); }
+async function loadChainBoard(force) {
+  const box = document.getElementById('chainBoard');
+  if (force) box.innerHTML = '<div class="loading">刷新中…</div>';
+  try {
+    const resp = await fetchWithTimeout('/api/monitor/chain-board', 25000);
+    const d = await resp.json();
+    if (!d.success) { box.innerHTML = '<div class="error-msg">' + (d.error || '加载失败') + '</div>'; return; }
+    document.getElementById('chainBoardTs').textContent = '更新 ' + d.ts + ' · 实时聚合成员股';
+    renderChainBoard(d.chains);
+  } catch (e) {
+    box.innerHTML = '<div class="error-msg">请求异常: ' + e.message + '</div>';
+  }
+}
+function renderChainBoard(chains) {
+  const box = document.getElementById('chainBoard');
+  // 记住已展开的链, 刷新后保持
+  const opened = new Set(Array.from(box.querySelectorAll('.cb-chain.open')).map(el => el.dataset.id));
+  const barHtml = (p) => {
+    const w = Math.min(100, Math.abs(p) * 8);
+    const col = p >= 0 ? '#ef5350' : '#26a69a';
+    const side = p >= 0 ? 'left:50%;' : 'right:50%;';
+    return `<div class="cb-bar"><i style="${side}width:${w/2}%;background:${col};"></i>
+      <i style="left:50%;width:1px;background:#555;"></i></div>`;
+  };
+  let html = '';
+  for (const ch of chains) {
+    const s = ch.summary;
+    const open = opened.has(ch.id) ? ' open' : '';
+    let tiersHtml = '';
+    for (const t of ch.tiers) {
+      const cons = t.concepts.filter(c => c.quoted > 0);
+      if (!cons.length) continue;
+      let consHtml = '';
+      for (const c of cons) {
+        const top = (c.top || []).map(x => `${x.name} ${x.pct >= 0 ? '+' : ''}${x.pct}%`).join(' / ');
+        consHtml += `<div class="cb-con">
+          <div class="cb-con-top"><span class="cb-con-name">${c.concept}</span>
+            <span class="cb-con-pct ${_pctCls(c.avg)}">${c.avg >= 0 ? '+' : ''}${c.avg}%</span></div>
+          <div class="cb-con-sub">红 ${c.up}/${c.quoted} · <span class="cb-lu">停 ${c.limitup}</span></div>
+          <div class="cb-con-sub" title="${top}">${top || '—'}</div>
+        </div>`;
+      }
+      tiersHtml += `<div class="cb-tier"><div class="cb-tier-name">${t.tier}</div><div class="cb-cons">${consHtml}</div></div>`;
+    }
+    html += `<div class="cb-chain${open}" data-id="${ch.id}">
+      <div class="cb-chain-head" onclick="this.parentNode.classList.toggle('open')">
+        <span class="cb-chev">▶</span>
+        <span class="cb-name">${ch.name}</span>
+        <span class="cb-con-pct ${_pctCls(s.avg)}">${s.avg >= 0 ? '+' : ''}${s.avg}%</span>
+        ${barHtml(s.avg)}
+        <span class="cb-stat">涨停 <b class="cb-lu">${s.limitup}</b> · 红 ${s.up}/${s.quoted}</span>
+      </div>
+      <div class="cb-body">${tiersHtml || '<div class="cb-con-sub">无报价</div>'}</div>
+    </div>`;
+  }
+  box.innerHTML = html;
+}
+// 首屏加载 + 每20秒刷新(交易时段)
+setTimeout(() => loadChainBoard(true), 1500);
+setInterval(() => { if (isTradeTime && isTradeTime()) loadChainBoard(); }, 20000);
 
 // 启动: 优先WebSocket推送, 断开时自动降级轮询
 initSocket();

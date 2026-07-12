@@ -3963,7 +3963,35 @@ def _fetch_daily_zt_codes(date_int, concept_map, cancel_check=None):
 # ===== 同花顺概念追踪: 异步任务 (带进度+取消) =====
 _concept_tasks = {}  # {task_id: {status, progress, cur_date, total_dates, logs, result, error, _cancel, days_partial}}
 # 按天结果缓存(跨任务复用): {date_str: day_result}。今天的数据不缓存(实时变化)。
+# 持久化到磁盘, 重启后历史日期不再重复计算(历史分时数据不变, 结果确定)。
+_CONCEPT_DAY_CACHE_FILE = '.concept_day_cache.json'
 _concept_day_cache = {}
+_concept_day_cache_lock = threading.Lock()
+
+
+def _load_concept_day_cache():
+    global _concept_day_cache
+    try:
+        if os.path.exists(_CONCEPT_DAY_CACHE_FILE):
+            with open(_CONCEPT_DAY_CACHE_FILE, 'r', encoding='utf-8') as f:
+                _concept_day_cache = json.load(f) or {}
+            print(f'[概念] 已载入按天缓存 {len(_concept_day_cache)} 天(历史日期不再重算)')
+    except Exception as e:
+        print(f'[概念] 载入按天缓存失败: {e}')
+        _concept_day_cache = {}
+
+
+def _save_concept_day_cache():
+    """全量落盘(按天缓存, 数量不大, 几十~几百天)。"""
+    try:
+        with _concept_day_cache_lock:
+            with open(_CONCEPT_DAY_CACHE_FILE, 'w', encoding='utf-8') as f:
+                json.dump(_concept_day_cache, f, ensure_ascii=False)
+    except Exception as e:
+        print(f'[概念] 保存按天缓存失败: {e}')
+
+
+_load_concept_day_cache()
 
 @app.route('/api/hot/concept-track', methods=['GET'])
 def api_hot_concept_track():
@@ -3972,6 +4000,7 @@ def api_hot_concept_track():
     """
     start = request.args.get('start', '')
     end = request.args.get('end', '')
+    force = request.args.get('force') in ('1', 'true', 'True', 'yes')
     if not start or not end:
         return jsonify({'success': False, 'error': '需要 start 和 end 参数'}), 400
 
@@ -3980,12 +4009,12 @@ def api_hot_concept_track():
     _concept_tasks[task_id] = {
         'status': 'pending', 'progress': 0,
         'cur_date': '', 'total_dates': 0, 'cur_idx': 0,
-        'start': start, 'end': end,
+        'start': start, 'end': end, 'force': force,
         'logs': [], 'result': None, 'error': None,
         '_cancel': False,
     }
     threading.Thread(target=_concept_track_task,
-                     args=(task_id, start, end), daemon=True).start()
+                     args=(task_id, start, end, force), daemon=True).start()
     return jsonify({'success': True, 'task_id': task_id,
                     'status_url': f'/api/hot/concept-track/status/{task_id}'})
 
@@ -4027,8 +4056,9 @@ def api_hot_concept_track_cancel(task_id):
     return jsonify({'success': True, 'msg': '已发送取消信号'})
 
 
-def _concept_track_task(task_id, start, end):
-    """概念追踪后台任务: 逐日拉取涨停分时, 重建概念涨停轨迹。"""
+def _concept_track_task(task_id, start, end, force=False):
+    """概念追踪后台任务: 逐日拉取涨停分时, 重建概念涨停轨迹。
+    force=True 时忽略按天缓存, 强制重算并覆盖缓存。"""
     global _concept_tasks
     t = _concept_tasks[task_id]
     t['status'] = 'running'
@@ -4094,8 +4124,8 @@ def _concept_track_task(task_id, start, end):
             date_int = int(date_str)
             d_display = f'{date_str[:4]}-{date_str[4:6]}-{date_str[6:8]}'
 
-            # 缓存命中: 非今天且已计算过 -> 直接复用, 跳过重算
-            if date_str != _today_str and date_str in _concept_day_cache:
+            # 缓存命中: 非今天且已计算过且非强制刷新 -> 直接复用, 跳过重算
+            if not force and date_str != _today_str and date_str in _concept_day_cache:
                 cached = _concept_day_cache[date_str]
                 days_result.append(cached)
                 top_name = cached['top10'][0]['concept'] if cached['top10'] else '无'
@@ -4202,9 +4232,10 @@ def _concept_track_task(task_id, start, end):
                 'top10_ever': sorted(top10_concepts),
             }
             days_result.append(day_result)
-            # 非今天的结果存入跨任务缓存(今天实时变化, 不缓存)
+            # 非今天的结果存入跨任务缓存并落盘(今天实时变化, 不缓存)
             if date_str != _today_str:
                 _concept_day_cache[date_str] = day_result
+                _save_concept_day_cache()
             log(f'   ✅ {d_display}: 涨停{len(zt_codes)}只, Top概念 {top10[0]["concept"] if top10 else "无"}({top10[0]["zt_count"] if top10 else 0}只)')
 
         t['progress'] = 100
@@ -5039,6 +5070,618 @@ def api_explosive_kline():
         return jsonify({'success': True, 'code': code, 'end': end, 'bars': bars})
     except Exception as e:
         return jsonify({'success': False, 'error': f'{type(e).__name__}: {e}'}), 500
+
+
+# ============== 复盘: 每日概念热力(今天在炒啥) ==============
+
+# ===== 概念成员每日收盘缓存(供"当日在涨谁/在杀谁"统计) =====
+_MEMBER_CLOSES_FILE = '.member_closes.json'
+_member_closes = {}                 # {code: {YYYYMMDD: close}}
+_member_closes_lock = threading.Lock()
+_daymap_build_tasks = {}            # {task_id: {...}}
+_daymap_members_cache = {'ts': 0, 'data': None}
+
+
+def _load_member_closes():
+    global _member_closes
+    try:
+        if os.path.exists(_MEMBER_CLOSES_FILE):
+            with open(_MEMBER_CLOSES_FILE, 'r', encoding='utf-8') as f:
+                _member_closes = json.load(f) or {}
+            print(f'[daymap] 已载入成员收盘缓存 {len(_member_closes)} 只')
+    except Exception as e:
+        print(f'[daymap] 载入收盘缓存失败: {e}')
+        _member_closes = {}
+
+
+def _save_member_closes():
+    try:
+        with _member_closes_lock:
+            with open(_MEMBER_CLOSES_FILE, 'w', encoding='utf-8') as f:
+                json.dump(_member_closes, f, ensure_ascii=False)
+    except Exception as e:
+        print(f'[daymap] 保存收盘缓存失败: {e}')
+
+
+_load_member_closes()
+
+
+def _member_pct(code, date, prev):
+    """从收盘缓存算某日涨跌幅%(相对前一交易日)。缺数据返回 None。"""
+    m = _member_closes.get(code)
+    if not m:
+        return None
+    c = m.get(date)
+    p = m.get(prev)
+    if c and p and p > 0:
+        return (c - p) / p * 100
+    return None
+
+
+def _get_daymap_members(cur):
+    """全部产业链概念的成员映射 {concept: set(code)}, 1小时缓存。"""
+    import time as _t
+    import concept_chain as _cc
+    if _daymap_members_cache['data'] and _t.time() - _daymap_members_cache['ts'] < 3600:
+        return _daymap_members_cache['data']
+    concepts = list(set(_cc.meaningful_concepts()))
+    cur.execute("SELECT concept, stock_code FROM ths.concept_member WHERE concept = ANY(%s)", (concepts,))
+    d = {}
+    for con, code in cur.fetchall():
+        d.setdefault(con, set()).add(code)
+    _daymap_members_cache['data'] = d
+    _daymap_members_cache['ts'] = _t.time()
+    return d
+
+
+def _daymap_build_task(task_id):
+    """拉取全部产业链概念成员的日线收盘, 写入持久缓存(供当日涨/杀统计)。"""
+    import concept_chain as _cc
+    import db as _db
+    import tdx_source as _ts
+    t = _daymap_build_tasks[task_id]
+    t['status'] = 'running'
+    try:
+        concepts = list(set(_cc.meaningful_concepts()))
+        conn = _db.get_conn()
+        with conn.cursor() as cur:
+            cur.execute("SELECT DISTINCT stock_code FROM ths.concept_member WHERE concept = ANY(%s)", (concepts,))
+            codes = sorted({r[0] for r in cur.fetchall()})
+        conn.close()
+        if not _ts.is_available():
+            t['status'] = 'failed'
+            t['error'] = '通达信tq接口不可用(请确认量化版客户端已开启并登录)'
+            return
+        t['total'] = len(codes)
+        done = 0
+        for code in codes:
+            if t.get('_cancel'):
+                t['status'] = 'cancelled'
+                _save_member_closes()
+                return
+            bars = _ts.kline(code, count=260, period='1d', dividend_type='none')
+            if bars:
+                m = _member_closes.setdefault(code, {})
+                for b in bars:
+                    m[b['date'].replace('-', '')] = b['close']
+            done += 1
+            t['done'] = done
+            t['progress'] = int(done / max(len(codes), 1) * 100)
+            if done % 500 == 0:
+                _save_member_closes()
+        _save_member_closes()
+        t['status'] = 'completed'
+    except Exception as e:
+        t['status'] = 'failed'
+        t['error'] = f'{type(e).__name__}: {e}'
+
+
+@app.route('/api/hot/daymap/build', methods=['POST'])
+def api_daymap_build():
+    """构建/刷新 成员日收盘缓存(供当日涨/杀统计)。首次较慢(拉全部成员日线)。"""
+    import uuid
+    for tid, t in _daymap_build_tasks.items():
+        if t['status'] in ('pending', 'running'):
+            return jsonify({'success': True, 'task_id': tid, 'reused': True})
+    task_id = str(uuid.uuid4())[:8]
+    _daymap_build_tasks[task_id] = {'status': 'pending', 'progress': 0, 'done': 0,
+                                    'total': 0, 'error': None, '_cancel': False}
+    threading.Thread(target=_daymap_build_task, args=(task_id,), daemon=True).start()
+    return jsonify({'success': True, 'task_id': task_id})
+
+
+@app.route('/api/hot/daymap/build/status/<task_id>', methods=['GET'])
+def api_daymap_build_status(task_id):
+    t = _daymap_build_tasks.get(task_id)
+    if not t:
+        return jsonify({'success': False, 'error': '任务不存在'}), 404
+    return jsonify({'success': True, 'status': t['status'], 'progress': t['progress'],
+                    'done': t.get('done', 0), 'total': t.get('total', 0), 'error': t.get('error')})
+
+
+def _parse_board(s):
+    """从连板字段解析当前连板数(如 '3板'/'2/3天2板'->取末尾N板)。复盘收录默认至少首板=1。"""
+    if not s:
+        return 1
+    m = re.findall(r'(\d+)\s*板', str(s))
+    if m:
+        return int(m[-1])
+    m2 = re.match(r'^\s*(\d+)\s*$', str(s))
+    return int(m2.group(1)) if m2 else 1
+
+
+@app.route('/api/hot/ladder-concepts', methods=['GET'])
+def api_ladder_concepts():
+    """板块梯队视图的概念下拉: 返回产业链概念 + 累计复盘活跃度, 按活跃度降序。"""
+    import db as _db
+    import concept_chain as _cc
+    try:
+        conn = _db.get_conn()
+        with conn.cursor() as cur:
+            cur.execute("SELECT cm.concept, count(*) FROM zt_stocks zs "
+                        "JOIN ths.concept_member cm ON cm.stock_code=zs.code GROUP BY cm.concept")
+            rows = cur.fetchall()
+        conn.close()
+    except Exception as e:
+        return jsonify({'success': False, 'error': f'{e}'}), 503
+    out = []
+    for con, n in rows:
+        ci = _cc.concept_to_chain(con)
+        if not ci or _cc.is_blocked(con):
+            continue
+        out.append({'concept': con, 'chain': ci.get('chain_name', ''), 'total': n})
+    out.sort(key=lambda x: -x['total'])
+    return jsonify({'success': True, 'concepts': out})
+
+
+@app.route('/api/hot/sector-ladder', methods=['GET'])
+def api_sector_ladder():
+    """板块内部梯队/龙头健康。两套口径都返回:
+    emotion(情绪梯队): 每日 龙头高度 + 高位(≥3板)/中位(2板)/低位(首板) 涨停数 + 结构标签。
+    trend(趋势主升): 每日 创60日新高数 / 沿均线主升数(收盘>MA20且MA5>MA20) / MA20上方数 + 龙头是否新高 + 标签。
+    参数: concept(必填), start,end(YYYYMMDD, 缺省=最近30交易日)。"""
+    import db as _db
+    from collections import defaultdict
+    concept = request.args.get('concept', '').strip()
+    start = request.args.get('start', '')
+    end = request.args.get('end', '')
+    if not concept:
+        return jsonify({'success': False, 'error': '需要 concept 参数'}), 400
+    try:
+        conn = _db.get_conn()
+        with conn.cursor() as cur:
+            cur.execute("SELECT to_char(trade_date,'YYYYMMDD') FROM zt_stocks GROUP BY trade_date ORDER BY trade_date")
+            all_dates = [x[0] for x in cur.fetchall()]
+            if not re.match(r'^\d{8}$', end):
+                end = all_dates[-1] if all_dates else datetime.now().strftime('%Y%m%d')
+            if not re.match(r'^\d{8}$', start):
+                idx = all_dates.index(end) if end in all_dates else len(all_dates) - 1
+                start = all_dates[max(0, idx - 29)] if all_dates else end
+            dates = [d for d in all_dates if start <= d <= end]
+            # 概念成员
+            cur.execute("SELECT stock_code FROM ths.concept_member WHERE concept=%s", (concept,))
+            members = [r[0] for r in cur.fetchall()]
+            # 该概念成员在区间内的复盘连板记录
+            sd = f'{start[:4]}-{start[4:6]}-{start[6:8]}'
+            ed = f'{end[:4]}-{end[4:6]}-{end[6:8]}'
+            cur.execute(
+                "SELECT to_char(zs.trade_date,'YYYYMMDD') d, zs.code, zs.lianban FROM zt_stocks zs "
+                "JOIN ths.concept_member cm ON cm.stock_code=zs.code "
+                "WHERE cm.concept=%s AND zs.trade_date>=%s AND zs.trade_date<=%s", (concept, sd, ed))
+            zt = cur.fetchall()
+        conn.close()
+    except Exception as e:
+        return jsonify({'success': False, 'error': f'{type(e).__name__}: {e}'}), 500
+
+    # ---- 情绪梯队 ----
+    day_boards = defaultdict(list)
+    for d, code, lb in zt:
+        day_boards[d].append(_parse_board(lb))
+    emotion = []
+    prev_top = 0
+    for d in dates:
+        b = day_boards.get(d, [])
+        tot = len(b)
+        top = max(b) if b else 0
+        hi = sum(1 for x in b if x >= 3)
+        mid = sum(1 for x in b if x == 2)
+        lo = sum(1 for x in b if x <= 1)
+        if tot == 0:
+            tag = ''
+        elif top >= 4 and hi >= 2:
+            tag = '强·高位梯队在走'
+        elif top > prev_top and top >= 3:
+            tag = '转强·龙头晋级'
+        elif hi == 0 and lo >= tot * 0.7:
+            tag = '弱·全低位补涨'
+        elif prev_top and top < prev_top:
+            tag = '退·龙头断板'
+        else:
+            tag = ''
+        emotion.append({'date': d, 'total': tot, 'top': top, 'hi': hi, 'mid': mid, 'lo': lo, 'tag': tag})
+        if tot:
+            prev_top = top
+
+    # ---- 趋势主升(需成员日收盘缓存) ----
+    trend_ready = len(_member_closes) > 0
+    trend = []
+    if trend_ready:
+        # 预排每个成员的收盘日期序列
+        mdates = {}
+        for c in members:
+            mc = _member_closes.get(c)
+            if mc:
+                mdates[c] = sorted(mc.keys())
+        prev_nh = 0
+        for d in dates:
+            newhigh = rising = above = quoted = 0
+            biases = []
+            leader_ratio = 0.0
+            for c in members:
+                mc = _member_closes.get(c)
+                dl = mdates.get(c)
+                if not mc or not dl or d not in mc:
+                    continue
+                i = dl.index(d) if d in dl else -1
+                if i < 5:
+                    continue
+                win = dl[max(0, i - 59):i + 1]
+                closes = [mc[x] for x in win]
+                close = mc[d]
+                if close <= 0:
+                    continue
+                quoted += 1
+                hi60 = max(closes)
+                ma20 = sum(closes[-20:]) / len(closes[-20:])
+                ma5 = sum(closes[-5:]) / len(closes[-5:])
+                if close >= hi60 * 0.999:
+                    newhigh += 1
+                if close > ma20:
+                    above += 1
+                    if ma5 > ma20:
+                        rising += 1
+                        biases.append((close - ma20) / ma20 * 100)
+                leader_ratio = max(leader_ratio, close / hi60 if hi60 > 0 else 0)
+            avg_bias = round(sum(biases) / len(biases), 1) if biases else 0
+            leader_nh = leader_ratio >= 0.999
+            if quoted == 0:
+                tag = ''
+            elif leader_nh and newhigh >= prev_nh and newhigh >= 2:
+                tag = '强·主升续创新高'
+            elif newhigh > 0 and newhigh >= prev_nh:
+                tag = '转强·新高增多'
+            elif newhigh == 0 and rising > 0:
+                tag = '弱·无新高(滞涨)'
+            elif prev_nh and newhigh < prev_nh:
+                tag = '退·新高减少'
+            else:
+                tag = ''
+            trend.append({'date': d, 'members': quoted, 'newhigh': newhigh,
+                          'rising': rising, 'above': above, 'avg_bias': avg_bias,
+                          'leader_nh': leader_nh, 'tag': tag})
+            if quoted:
+                prev_nh = newhigh
+
+    return jsonify({'success': True, 'concept': concept, 'start': start, 'end': end,
+                    'all_dates': all_dates, 'dates': dates, 'members': len(members),
+                    'emotion': emotion, 'trend': trend, 'trend_ready': trend_ready})
+
+
+@app.route('/api/hot/concept-daymap', methods=['GET'])
+def api_concept_daymap():
+    """某一交易日的产业链地图: 按 产业链 -> 上下游层级 -> 概念。
+    每个概念给出: 复盘涨停数(zt) + 当日涨(>5%)数(up) + 杀(<-5%,含跌停)数(down)。
+    涨/杀 来自成员日收盘缓存(需先 /api/hot/daymap/build 构建, 未构建则只有复盘涨停)。
+    参数: date(YYYYMMDD, 缺省=最新交易日)。"""
+    import db as _db
+    import concept_chain as _cc
+    from collections import defaultdict
+    date = request.args.get('date', '')
+    try:
+        conn = _db.get_conn()
+    except Exception as e:
+        return jsonify({'success': False, 'error': f'数据库不可用: {e}'}), 503
+    try:
+        with conn.cursor() as cur:
+            if not re.match(r'^\d{8}$', date):
+                cur.execute("SELECT to_char(max(trade_date),'YYYYMMDD') FROM zt_stocks")
+                r = cur.fetchone()
+                date = (r and r[0]) or datetime.now().strftime('%Y%m%d')
+            dd = f'{date[:4]}-{date[4:6]}-{date[6:8]}'
+            cur.execute(
+                "SELECT zs.code, cm.concept FROM zt_stocks zs "
+                "JOIN ths.concept_member cm ON cm.stock_code = zs.code "
+                "WHERE zs.trade_date = %s", (dd,))
+            zt_rows = cur.fetchall()
+            cur.execute("SELECT to_char(trade_date,'YYYYMMDD') FROM zt_stocks GROUP BY trade_date ORDER BY trade_date")
+            all_dates = [x[0] for x in cur.fetchall()]
+            con_members = _get_daymap_members(cur)
+    except Exception as e:
+        return jsonify({'success': False, 'error': f'{type(e).__name__}: {e}'}), 500
+    finally:
+        conn.close()
+
+    # 复盘涨停: 概念 -> 个股集合
+    concept_zt = defaultdict(set)
+    for code, con in zt_rows:
+        ci = _cc.concept_to_chain(con)
+        if not ci or _cc.is_blocked(con):
+            continue
+        concept_zt[con].add(code)
+
+    # 前一交易日(用于算涨跌幅)
+    prev = None
+    if date in all_dates:
+        i = all_dates.index(date)
+        if i > 0:
+            prev = all_dates[i - 1]
+    price_ready = bool(prev) and len(_member_closes) > 0
+
+    def con_sets(con):
+        """返回 4 类互斥的成员集合: lu涨停 / up5(5%~涨停) / dn5(-5%~跌停) / ld跌停。"""
+        S = {'lu': set(), 'up5': set(), 'dn5': set(), 'ld': set()}
+        if price_ready:
+            for c in con_members.get(con, ()):
+                pct = _member_pct(c, date, prev)
+                if pct is None:
+                    continue
+                thr = _limit_threshold(c)
+                if pct >= thr:
+                    S['lu'].add(c)
+                elif pct > 5:
+                    S['up5'].add(c)
+                if pct <= -thr:
+                    S['ld'].add(c)
+                elif pct < -5:
+                    S['dn5'].add(c)
+        return S
+
+    info = _cc.chain_info()
+    all_chains = [{'id': cid, 'name': c['name']} for cid, c in info.items()]
+    chains = []
+    for cid, c in info.items():
+        agg = {'zt': set(), 'lu': set(), 'up5': set(), 'dn5': set(), 'ld': set()}
+        n_tiers = len(c['tiers'])
+        tiers = []
+        for i, t in enumerate(c['tiers']):
+            pos = ('中游' if n_tiers == 1 else
+                   '上游' if i == 0 else '下游' if i == n_tiers - 1 else '中游')
+            cons = []
+            for con in t['concepts']:
+                zt = concept_zt.get(con, set())
+                S = con_sets(con)
+                active = len(zt) + len(S['lu']) + len(S['up5']) + len(S['dn5']) + len(S['ld'])
+                if active == 0:
+                    continue
+                agg['zt'] |= zt
+                for k in ('lu', 'up5', 'dn5', 'ld'):
+                    agg[k] |= S[k]
+                cons.append({'concept': con, 'zt': len(zt),
+                             'lu': len(S['lu']), 'up5': len(S['up5']),
+                             'dn5': len(S['dn5']), 'ld': len(S['ld'])})
+            cons.sort(key=lambda x: -(x['lu'] * 100 + x['up5'] * 10 + x['zt']))
+            if cons:
+                tiers.append({'tier': t['tier'], 'pos': pos, 'concepts': cons})
+        tot = sum(len(agg[k]) for k in ('lu', 'up5', 'dn5', 'ld')) + len(agg['zt'])
+        if tot > 0:
+            chains.append({'id': cid, 'name': c['name'],
+                           'zt': len(agg['zt']), 'lu': len(agg['lu']), 'up5': len(agg['up5']),
+                           'dn5': len(agg['dn5']), 'ld': len(agg['ld']),
+                           'total': tot, 'tiers': tiers})
+    chains.sort(key=lambda x: -x['total'])
+    return jsonify({'success': True, 'date': date, 'prev': prev, 'price_ready': price_ready,
+                    'all_dates': all_dates, 'all_chains': all_chains, 'chains': chains})
+
+
+@app.route('/api/hot/breadth-scan', methods=['GET'])
+def api_breadth_scan():
+    """板块广度起爆信号扫描: 在日期区间内, 逐日算每个产业链概念的广度
+    (上涨占比、涨>5%占比、涨停数、平均涨幅), 标记"起爆日"(广度突然爆发=资金整体扫货)。
+    起爆判定(默认): 有效成员≥MIN, 上涨占比≥UP, 涨>5%占比≥UP5。
+    需先构建成员日收盘缓存(/api/hot/daymap/build)。
+    参数: start,end(YYYYMMDD, 缺省=最近30交易日); up(默认0.85); up5(默认0.25); min(默认15)。"""
+    import db as _db
+    import concept_chain as _cc
+    if len(_member_closes) == 0:
+        return jsonify({'success': False, 'needs_build': True,
+                        'error': '未构建成员日收盘缓存, 请先在「每日热力」点「计算涨/杀」构建'}), 400
+    start = request.args.get('start', '')
+    end = request.args.get('end', '')
+    try:
+        UP = float(request.args.get('up', 0.85))
+        UP5 = float(request.args.get('up5', 0.25))
+        MIN = int(request.args.get('min', 15))
+        MINLU = int(request.args.get('minlu', 5))
+    except Exception:
+        UP, UP5, MIN, MINLU = 0.85, 0.25, 15, 5
+    try:
+        conn = _db.get_conn()
+        with conn.cursor() as cur:
+            cur.execute("SELECT to_char(trade_date,'YYYYMMDD') FROM zt_stocks GROUP BY trade_date ORDER BY trade_date")
+            all_dates = [x[0] for x in cur.fetchall()]
+            if not re.match(r'^\d{8}$', end):
+                end = all_dates[-1] if all_dates else datetime.now().strftime('%Y%m%d')
+            if not re.match(r'^\d{8}$', start):
+                idx = all_dates.index(end) if end in all_dates else len(all_dates) - 1
+                start = all_dates[max(0, idx - 29)] if all_dates else end
+            con_members = _get_daymap_members(cur)
+    except Exception as e:
+        return jsonify({'success': False, 'error': f'{type(e).__name__}: {e}'}), 500
+    finally:
+        try: conn.close()
+        except Exception: pass
+
+    dates = [d for d in all_dates if start <= d <= end]
+    prev_of = {}
+    for i, d in enumerate(all_dates):
+        prev_of[d] = all_dates[i - 1] if i > 0 else None
+
+    events = []           # 起爆事件(concept-day)
+    first_ignite = {}     # concept -> 区间内首个起爆日
+    for con, mem in con_members.items():
+        if _cc.is_blocked(con):
+            continue
+        ci = _cc.concept_to_chain(con)
+        chain = ci.get('chain_name', '') if ci else ''
+        mem = list(mem)
+        if len(mem) < MIN:
+            continue
+        for d in dates:
+            p = prev_of.get(d)
+            if not p:
+                continue
+            quoted = up = up5 = lu = 0
+            ssum = 0.0
+            for c in mem:
+                pct = _member_pct(c, d, p)
+                if pct is None:
+                    continue
+                quoted += 1
+                ssum += pct
+                if pct > 0:
+                    up += 1
+                if pct >= 5:
+                    up5 += 1
+                if pct >= _limit_threshold(c):
+                    lu += 1
+            if quoted < MIN:
+                continue
+            up_ratio = up / quoted
+            up5_ratio = up5 / quoted
+            avg = ssum / quoted
+            ignited = up_ratio >= UP and up5_ratio >= UP5 and lu >= MINLU
+            if ignited:
+                score = round(up5_ratio * 100 + lu * 2 + avg, 1)
+                is_first = con not in first_ignite
+                if is_first:
+                    first_ignite[con] = d
+                events.append({
+                    'concept': con, 'chain': chain, 'date': d,
+                    'quoted': quoted, 'up': up, 'up5': up5, 'lu': lu,
+                    'up_ratio': round(up_ratio * 100, 1), 'up5_ratio': round(up5_ratio * 100, 1),
+                    'avg': round(avg, 2), 'score': score, 'first': is_first,
+                })
+    # 排序: 先日期升序(时间线), 同日按强度降序
+    events.sort(key=lambda e: (e['date'], -e['score']))
+    return jsonify({'success': True, 'start': start, 'end': end, 'all_dates': all_dates,
+                    'threshold': {'up': UP, 'up5': UP5, 'min': MIN, 'minlu': MINLU},
+                    'count': len(events), 'events': events})
+
+
+# ============== 盯盘: 产业链实时盯盘 ==============
+
+_chain_board_cache = {'ts': 0, 'data': None}
+_chain_members_cache = {'ts': 0, 'members': None}
+_astock_name_cache = {'ts': 0, 'names': {}}
+
+
+def _limit_threshold(code):
+    """涨停判定阈值: 双创(300/301/688)=19.8, 其它主板=9.8"""
+    return 19.8 if code[:3] in ('300', '301', '688') else 9.8
+
+
+@app.route('/api/monitor/chain-board', methods=['GET'])
+def api_chain_board():
+    """产业链实时盯盘: 按 产业链->上下游层级->概念 聚合成员股实时涨幅/涨停数/领涨股。
+    数据来源: ths.concept_member(成员) + 通达信实时批量报价。结果缓存 15 秒。"""
+    import time as _t
+    import concept_chain as _cc
+    import db as _db
+    import tdx_source as _ts
+    now = _t.time()
+    if _chain_board_cache['data'] and now - _chain_board_cache['ts'] < 15:
+        return jsonify(_chain_board_cache['data'])
+
+    ci = _cc.chain_info()
+    concept_set = set()
+    for c in ci.values():
+        concept_set.update(c['concepts'])
+
+    # 概念->成员(缓存1小时, 成员变化慢)
+    if not _chain_members_cache['members'] or now - _chain_members_cache['ts'] > 3600:
+        try:
+            conn = _db.get_conn()
+        except Exception as e:
+            return jsonify({'success': False, 'error': f'数据库不可用: {e}'}), 503
+        con_members = {}
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT concept, stock_code FROM ths.concept_member WHERE concept = ANY(%s)",
+                            (list(concept_set),))
+                for con, code in cur.fetchall():
+                    con_members.setdefault(con, set()).add(code)
+        finally:
+            conn.close()
+        _chain_members_cache['members'] = con_members
+        _chain_members_cache['ts'] = now
+    con_members = _chain_members_cache['members']
+
+    all_codes = set()
+    for s in con_members.values():
+        all_codes |= s
+    if not all_codes:
+        return jsonify({'success': False, 'error': '概念成员为空(请先同步同花顺概念数据)'}), 404
+
+    if not _ts.is_available():
+        return jsonify({'success': False, 'error': '通达信tq接口不可用(请确认量化版客户端已开启并登录)'}), 503
+
+    # 名称表(缓存1小时)
+    if not _astock_name_cache['names'] or now - _astock_name_cache['ts'] > 3600:
+        lst = _ts.stock_list('5', with_name=True) or []
+        _astock_name_cache['names'] = {x['code']: x['name'] for x in lst}
+        _astock_name_cache['ts'] = now
+    names = _astock_name_cache['names']
+
+    # 批量实时报价(分块)
+    quotes = {}
+    codes = list(all_codes)
+    for i in range(0, len(codes), 800):
+        q = _ts.batch_pricevol(codes[i:i + 800]) or {}
+        quotes.update(q)
+
+    def agg(code_set):
+        pcts = []
+        up = lu = 0
+        tops = []
+        for c in code_set:
+            q = quotes.get(c)
+            if not q:
+                continue
+            p = q.get('pct', 0)
+            pcts.append(p)
+            if p > 0:
+                up += 1
+            if p >= _limit_threshold(c):
+                lu += 1
+            tops.append((c, p))
+        tops.sort(key=lambda x: -x[1])
+        top3 = [{'code': c, 'name': names.get(c, c), 'pct': round(p, 2)} for c, p in tops[:3]]
+        return {'members': len(code_set), 'quoted': len(pcts),
+                'avg': round(sum(pcts) / len(pcts), 2) if pcts else 0,
+                'up': up, 'limitup': lu, 'top': top3}
+
+    chains = []
+    for cid, c in ci.items():
+        tiers = []
+        chain_codes = set()
+        for t in c['tiers']:
+            cons = []
+            for con in t['concepts']:
+                m = con_members.get(con, set())
+                chain_codes |= m
+                a = agg(m)
+                a['concept'] = con
+                cons.append(a)
+            cons.sort(key=lambda x: -x['avg'])
+            tiers.append({'tier': t['tier'], 'concepts': cons})
+        summ = agg(chain_codes)
+        chains.append({'id': cid, 'name': c['name'], 'summary': summ, 'tiers': tiers})
+    chains.sort(key=lambda x: -x['summary']['avg'])
+
+    out = {'success': True, 'ts': datetime.now().strftime('%H:%M:%S'), 'chains': chains}
+    _chain_board_cache['data'] = out
+    _chain_board_cache['ts'] = now
+    return jsonify(out)
 
 
 if __name__ == '__main__':

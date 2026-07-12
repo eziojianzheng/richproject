@@ -432,7 +432,10 @@
   .charts-offset { flex:0 0 auto; width:329px; }
   .chart-card h4 { font-size:13px; color:var(--text-primary); margin-bottom:2px; }
   .chart-card .csub { font-size:10px; color:var(--text-muted); margin-bottom:6px; }
-  .chart-card h5 { font-size:11px; color:var(--text-secondary); margin:8px 0 2px; }
+  .chart-card h5 { font-size:11px; color:var(--text-secondary); margin:8px 0 2px; display:flex; justify-content:space-between; align-items:center; }
+  .chart-card h5 .zoom-hint { font-size:9px; color:var(--text-muted); font-weight:normal; }
+  .chart-zoom { cursor:pointer; border-radius:6px; transition:background .15s; padding:2px; }
+  .chart-zoom:hover { background:var(--bg-hover, rgba(255,255,255,.06)); }
   .legend { display:flex; flex-wrap:wrap; gap:6px; margin-top:6px; }
   .legend span { font-size:9px; color:var(--text-secondary); display:flex; align-items:center; gap:3px; }
   .legend i { width:9px; height:3px; display:inline-block; border-radius:2px; }
@@ -567,11 +570,71 @@
   .exp-chart-area { flex: 1 1 auto; display: flex; flex-direction: column; gap: 4px; min-width: 0; }
   .exp-kline { flex: 1 1 auto; height: 200px; min-width: 0; }
   .exp-min10 { flex: 0 0 140px; min-width: 0; }
+
+  /* ===== 每日产业链地图(网格·纵向上中下游) ===== */
+  .heat-wrap { display: flex; gap: 12px; align-items: flex-start; }
+  /* 左侧日期列: 点击跳转, 当前日高亮 */
+  .heat-datecol { flex: 0 0 90px; display: flex; flex-direction: column; gap: 4px;
+    max-height: 72vh; overflow-y: auto; padding-right: 2px; }
+  .heat-datecol .dchip { padding: 5px 6px; border-radius: 6px; cursor: pointer; font-size: 12px;
+    text-align: center; white-space: nowrap; background: var(--bg-card);
+    border: 1px solid var(--border-color); color: var(--text-secondary); transition: all .12s; }
+  .heat-datecol .dchip:hover { border-color: #e63946; color: var(--text-primary); }
+  .heat-datecol .dchip.active { background: #e63946; color: #fff; border-color: #e63946; font-weight: 700; }
+  .heat-datecol .dchip .dw { font-size: 9px; opacity: .7; margin-left: 2px; }
+  #heatMap { flex: 1 1 auto; min-width: 0; overflow-x: hidden; }    /* 禁止横向滚动 */
+  .cm-grid { display: flex; flex-direction: column; gap: 10px; width: 100%; }   /* 单列纵向堆叠, 只上下滚动 */
+  .cm-chain { width: 100%; box-sizing: border-box; border: 1px solid var(--border-color); border-radius: 9px; overflow: hidden; background: var(--bg-card); }
+  .cm-head { display: flex; align-items: baseline; gap: 8px; padding: 6px 10px;
+    background: linear-gradient(135deg, rgba(230,57,70,0.16), rgba(181,23,158,0.10)); border-bottom: 1px solid var(--border-color); }
+  .cm-body { padding: 6px 8px; }
+  .cm-tier { margin: 4px 0; }
+  .cm-tier-head { display: flex; align-items: center; gap: 6px; margin-bottom: 3px; }
+  .cm-tier-badge { font-size: 10px; font-weight: 800; padding: 1px 7px; border-radius: 9px; }
+  .cm-tier-badge.up { background: rgba(76,175,80,0.22); color: #66bb6a; }
+  .cm-tier-badge.mid { background: rgba(245,158,11,0.22); color: #f59e0b; }
+  .cm-tier-badge.down { background: rgba(37,99,235,0.28); color: #60a5fa; }
+  .cm-tier-sub { font-size: 9px; color: var(--text-muted); }
+  .cm-cons { display: flex; flex-wrap: wrap; gap: 5px; }
+  /* 概念 = 名称标签 + 按占比填色的分段条(金涨停/红涨>5/绿跌<-5/紫跌停) */
+  .cm-chip { display: inline-flex; align-items: stretch; height: 21px; border-radius: 5px; overflow: hidden;
+    border: 1px solid rgba(255,255,255,0.12); }
+  .cm-label { display: flex; align-items: center; padding: 0 6px; font-size: 11px; font-weight: 600;
+    color: #e6e6e6; background: rgba(255,255,255,0.05); white-space: nowrap; }
+  .cm-bar { display: flex; height: 100%; }
+  .cm-seg { display: flex; align-items: center; justify-content: center; font-size: 9px; font-weight: 800;
+    color: #fff; text-shadow: 0 0 2px rgba(0,0,0,.6); min-width: 3px; }
+  .cm-seg.gold { background: #d4a017; }   /* 涨停 */
+  .cm-seg.red { background: #e0483f; }     /* 涨>5% */
+  .cm-seg.green { background: #1f9e63; }   /* 跌<-5% */
+  .cm-seg.purple { background: #8b5cf6; }  /* 跌停 */
+  .cm-seg.empty { background: rgba(255,255,255,0.04); color: var(--text-muted); }
+  /* 大链头部占比条(与概念同款, 略大) */
+  .cm-chip-big { height: 26px; border: none; background: transparent; }
+  .cm-chip-big .cm-label { font-size: 13px; font-weight: 700; color: #fff; background: transparent; padding: 0 8px 0 2px; }
+  .cm-chip-big .cm-seg { font-size: 11px; }
+  /* ===== 起爆扫描 ===== */
+  .bk-day { font-size: 13px; font-weight: 700; color: #ffd166; margin: 14px 0 4px;
+    padding: 4px 8px; background: rgba(255,209,102,0.08); border-left: 3px solid #ffd166; border-radius: 0 4px 4px 0; }
+  .bk-tbl { width: 100%; border-collapse: collapse; font-size: 12px; }
+  .bk-tbl th { text-align: left; padding: 5px 10px; color: var(--text-muted); font-weight: 600;
+    border-bottom: 1px solid var(--border-color); font-size: 11px; }
+  .bk-tbl td { padding: 5px 10px; border-bottom: 1px solid var(--border-light); vertical-align: middle; }
+  .bk-tbl tr:hover td { background: rgba(255,255,255,0.03); }
+  .bk-tbl tr.bk-first td { background: rgba(255,209,102,0.06); }
+  .bk-star { margin-right: 3px; }
+  .bk-bar { display: inline-block; width: 60px; height: 8px; border-radius: 3px; margin-right: 6px;
+    background: rgba(255,255,255,0.08); vertical-align: middle; overflow: hidden; }
+  .bk-bar i { display: block; height: 100%; background: linear-gradient(90deg,#e0483f,#ff8a3d); }
+  .cm-legend { display: flex; gap: 12px; align-items: center; font-size: 12px; margin-bottom: 8px; flex-wrap: wrap; }
+  .cm-legend .sw { display: inline-block; width: 12px; height: 12px; border-radius: 2px; vertical-align: middle; margin-right: 3px; }
 </style>
 </head>
 <body>
   <div class="toolbar">
     <h1>🔥 热门股追踪</h1>
+    <!-- 起始/结束/排序/计算 等仅「湖南人涨停复盘」使用, 其它tab隐藏(元素保留, 值供ths/热力读取) -->
+    <span id="hnrControls" style="display:contents">
     <label>起始</label>
     <select id="start"><option value="">加载中…</option></select>
     <label>结束</label>
@@ -594,6 +657,7 @@
     <label><input type="checkbox" id="price" checked> 涨幅</label>
     <button id="go">计算</button>
     <button id="goToday">仅计算今日</button>
+    </span>
     <div class="console-panel">
       <button class="console-btn" onclick="toggleConsole()">
         <span>控制台</span>
@@ -641,6 +705,9 @@
     <span class="main-tab active" data-tab="hnr" onclick="switchTab('hnr')">湖南人涨停复盘</span>
     <span class="main-tab" data-tab="explosive" onclick="switchTab('explosive')">历史爆发股票汇总</span>
     <span class="main-tab" data-tab="ths" onclick="switchTab('ths')">同花顺概念追踪</span>
+    <span class="main-tab" data-tab="heat" onclick="switchTab('heat')">每日热力·在炒啥</span>
+    <span class="main-tab" data-tab="ladder" onclick="switchTab('ladder')">板块梯队·龙头健康</span>
+    <span class="main-tab" data-tab="breakout" onclick="switchTab('breakout')">🚀 起爆扫描</span>
   </div>
 
   <div class="meta" id="meta"></div>
@@ -685,6 +752,15 @@
 
   <!-- Tab 2: 同花顺概念追踪 -->
   <div id="view-ths" class="tab-view" style="display:none">
+    <div class="exp-toolbar">
+      <label>起始</label>
+      <select id="thsStart"><option value="">加载中…</option></select>
+      <label>结束</label>
+      <select id="thsEnd"><option value="">加载中…</option></select>
+      <button onclick="loadConceptTrack(false)">查看</button>
+      <button onclick="loadConceptTrack(true)" style="background:#6b7280;">强制刷新</button>
+      <span id="thsStatus" class="exp-status"></span>
+    </div>
     <div id="conceptDays">
       <div class="concept-loading">选择日期范围后点击「计算」查看概念涨停追踪</div>
     </div>
@@ -725,6 +801,76 @@
     <div class="exp-charts-head">股票K线（截止各自日期范围最后一日 · 展示近一年）</div>
     <div class="exp-charts" id="expCharts"><div class="empty">扫描后显示待选股票K线，每行一个</div></div>
   </div><!-- /view-explosive -->
+
+  <!-- Tab 4: 每日产业链地图(今天在炒啥) -->
+  <div class="tab-view" id="view-heat" style="display:none">
+    <div class="exp-toolbar" style="position:relative;flex-wrap:wrap;">
+      <label>起始</label>
+      <select id="heatStart" onchange="heatRangeChanged()"></select>
+      <label>结束</label>
+      <select id="heatEnd" onchange="heatRangeChanged()"></select>
+      <button onclick="toggleHeatPicker()" style="background:#374151;">自定义产业链 ▾</button>
+      <button id="heatBuildBtn" onclick="buildDaymapPrices()" style="background:#2563eb;" title="拉取全部概念成员日线, 用于统计当日>5%在涨、<-5%在杀(首次较慢, 之后缓存)">计算涨/杀</button>
+      <span id="heatStatus" class="exp-status"></span>
+      <div id="heatPicker" style="display:none;position:absolute;top:46px;left:0;z-index:50;background:var(--bg-card);border:1px solid var(--border-color);border-radius:8px;padding:10px 12px;max-height:340px;overflow:auto;box-shadow:0 6px 20px rgba(0,0,0,.4);min-width:260px;">
+        <div style="display:flex;gap:8px;margin-bottom:8px;">
+          <button onclick="heatPickDefault()" style="font-size:12px;padding:4px 10px;">恢复默认(前10)</button>
+          <button onclick="heatPickAll()" class="ghost" style="font-size:12px;padding:4px 10px;background:#6b7280;">全选</button>
+        </div>
+        <div id="heatPickerList"></div>
+      </div>
+      <!-- 日期滑块: 在所选区间内左右滑动逐日查看 -->
+      <div style="flex-basis:100%;display:flex;align-items:center;gap:10px;margin-top:8px;">
+        <button onclick="heatStep(-1)" style="padding:4px 12px;">◀ 前一日</button>
+        <input type="range" id="heatSlider" min="0" max="0" value="0" oninput="heatSlide(this.value)" style="flex:1;accent-color:#e63946;">
+        <button onclick="heatStep(1)" style="padding:4px 12px;">后一日 ▶</button>
+        <span id="heatDayLabel" style="min-width:150px;text-align:right;font-weight:700;color:#ffd166;"></span>
+      </div>
+    </div>
+    <div class="exp-charts-head">当日产业链地图 — 默认显示热度前10的大产业链，可点「自定义产业链」增减。每条链按 上游→中游→下游 排列，方块=当日该概念的涨停/入选个股数(如 锂矿 15、电池 2、汽车 3)，颜色越亮越热。</div>
+    <div id="heatToday" style="font-size:12px;color:var(--text-secondary);margin-bottom:10px;"></div>
+    <div class="heat-wrap">
+      <div id="heatDates" class="heat-datecol"></div>
+      <div id="heatMap"></div>
+    </div>
+  </div><!-- /view-heat -->
+
+  <!-- Tab 5: 板块梯队·龙头健康 -->
+  <div class="tab-view" id="view-ladder" style="display:none">
+    <div class="exp-toolbar" style="flex-wrap:wrap;">
+      <label>板块</label>
+      <select id="ldConcept" style="min-width:150px;"><option value="">加载中…</option></select>
+      <label>起始</label><select id="ldStart"></select>
+      <label>结束</label><select id="ldEnd"></select>
+      <div class="sort-tabs" id="ldMode" style="margin-left:6px;">
+        <span data-mode="emotion" class="active">情绪梯队(连板)</span>
+        <span data-mode="trend">趋势主升(新高/均线)</span>
+      </div>
+      <button onclick="loadLadder()">刷新</button>
+      <span id="ldStatus" class="exp-status"></span>
+    </div>
+    <div class="exp-charts-head" id="ldHead">情绪梯队:堆叠=当日 高位(≥3板)/中位(2板)/低位(首板) 涨停数；折线=龙头高度(最高连板)。高位带厚+龙头线上行=强；只剩低位+龙头线掉头=退。</div>
+    <div id="ldChart" style="width:100%;height:420px;"></div>
+    <div id="ldTags" style="display:flex;flex-wrap:wrap;gap:4px;margin-top:8px;"></div>
+  </div><!-- /view-ladder -->
+
+  <!-- Tab 6: 起爆扫描 -->
+  <div class="tab-view" id="view-breakout" style="display:none">
+    <div class="exp-toolbar" style="flex-wrap:wrap;">
+      <label>起始</label><select id="bkStart"></select>
+      <label>结束</label><select id="bkEnd"></select>
+      <label title="上涨家数占比阈值">上涨占比≥</label>
+      <select id="bkUp"><option value="0.8">80%</option><option value="0.85" selected>85%</option><option value="0.9">90%</option></select>
+      <label title="涨幅超5%的家数占比阈值">涨&gt;5%占比≥</label>
+      <select id="bkUp5"><option value="0.2">20%</option><option value="0.25" selected>25%</option><option value="0.3">30%</option><option value="0.4">40%</option></select>
+      <label title="当日板块内涨停家数下限">涨停数≥</label>
+      <select id="bkMinLu"><option value="3">3</option><option value="5" selected>5</option><option value="8">8</option><option value="10">10</option></select>
+      <button onclick="loadBreakout()">扫描</button>
+      <span id="bkStatus" class="exp-status"></span>
+    </div>
+    <div class="exp-charts-head">起爆扫描 — 在区间内逐日算每个产业链概念的广度，标出「起爆日」：全板块普涨(上涨占比高)且大面积涨超5%，代表资金整体扫货、板块开始走成主流。⭐=该板块区间内首次起爆(最值得关注的上车信号)。结果按日期时间线排列，同日按强度排序。</div>
+    <div id="bkResult"><div class="empty">选好区间点「扫描」。首次需先在「每日热力」点「计算涨/杀」构建成员日线缓存。</div></div>
+  </div><!-- /view-breakout -->
 
 <script src="https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"></script>
 <script>
@@ -1187,7 +1333,8 @@ function renderRow(day, order){
   const cards = order.map(blk => {
     const b = dayMap[blk];
     // 板块当天无活跃个股(未开始/已全部移除): 渲染空占位列保持对齐
-    if(!b || (b.active_count || 0) === 0){
+    // 注意: active_count 已不含移除当日票, 故需同时看 removed_today(当天有移除仍算非空)
+    if(!b || ((b.active_count || 0) === 0 && !(b.removed_today && b.removed_today.length))){
       return `
       <div class="block-card inactive" data-block="${blk}">
         <div class="block-head">
@@ -1274,7 +1421,7 @@ function renderRow(day, order){
       <div class="${blockClass}" data-block="${b.block}">
         <div class="block-head">
           <div class="bname">${b.block}</div>
-          <div class="bstat">跟踪 ${b.active_count || b.stocks.length} 票${b.new_count?` (+${b.new_count})`:''}${blockStatus}<br>累计${b.times_count}次 ${b.total_count}票</div>
+          <div class="bstat">跟踪 ${b.active_count} 票${b.new_count?` (+${b.new_count})`:''}${b.removed_today&&b.removed_today.length?` <span style="color:#9aa0a6;">(-${b.removed_today.length}移除)</span>`:''}${blockStatus}<br>累计${b.times_count}次 ${b.total_count}票</div>
           <button class="sync-btn" onclick="syncBlockStocks(this, '${day.date}', ${JSON.stringify(allCodes).replace(/"/g, '&quot;')})">同步</button>
         </div>
         <div class="stock-grid">${thumbs}</div>
@@ -1283,7 +1430,7 @@ function renderRow(day, order){
       </div>`;
   }).join('');
 
-  const activeBlocks = day.blocks.filter(b => (b.active_count || 0) > 0).length;
+  const activeBlocks = day.blocks.filter(b => (b.active_count || 0) > 0 || (b.removed_today && b.removed_today.length)).length;
 
   // 左侧列1: 涨跌数(极端行情标红)
   const sum = (DATA.date_summary && DATA.date_summary[day.date]) || {};
@@ -1461,25 +1608,33 @@ function linePath(points){
   return points.map((p,i)=>(i?'L':'M')+p.x.toFixed(1)+' '+p.y.toFixed(1)).join(' ');
 }
 
-function avgChart(dates, avg){
-  const W=440,H=160,padL=34,padR=12,padT=14,padB=22;
+function avgChart(dates, avg, big, yRange){
+  const W=big?900:440, H=big?360:160, padL=big?44:34, padR=12, padT=14, padB=22;
   const iw=W-padL-padR, ih=H-padT-padB;
-  const vals=dates.map(d=>avg[d]).filter(v=>typeof v==='number');
+  const pts0=dates.map((d,i)=>({i,d,v:avg[d]}));
+  const vals=pts0.filter(p=>typeof p.v==='number').map(p=>p.v);
   if(!vals.length) return '<div class="chart-empty">无涨幅数据</div>';
-  
-  // 计算数据范围
-  const minVal = Math.min(0, ...vals);
-  const maxVal = Math.max(0, ...vals);
-  const dataRange = maxVal - minVal;
-  
-  // 放大系数：让小波动更明显，最小放大3倍
-  const amplify = Math.max(3, 15 / (dataRange || 1));
-  const effectiveRange = dataRange * amplify;
-  
+
+  // Y轴: 传入yRange(全局统一)时用它做基准并适度放大保持陡峭; 否则用本板块min/max
+  let dmin, dmax;
+  if(yRange){
+    dmin=yRange.lo; dmax=yRange.hi;
+    if(dmin===dmax){ dmin-=1; dmax+=1; }
+    // 适度放大: 把范围向0收缩15%, 让波动更显眼; 超出区间的值截断到边界
+    const span0=dmax-dmin;
+    const shrink=span0*0.15;
+    dmin+=shrink; dmax-=shrink;
+  }else{
+    dmin=Math.min(...vals); dmax=Math.max(...vals);
+    if(dmin===dmax){ dmin-=1; dmax+=1; }
+  }
+  const pad=(dmax-dmin)*0.08;                      // 8%留白
+  const lo=dmin-pad, hi=dmax+pad;
+  const span=hi-lo;
+  const clamp=v=>Math.max(lo, Math.min(hi, v));    // 超出截断
   const x=i=>padL+(dates.length<=1?iw/2:iw*i/(dates.length-1));
-  // Y轴映射：根据数据范围动态调整
-  const y=v=>padT+ih/2-(v/effectiveRange)*(ih/2);
-  const pts=dates.map((d,i)=>({i,d,v:avg[d],x:x(i),y:typeof avg[d]==='number'?y(avg[d]):null}));
+  const y=v=>padT+ih-((clamp(v)-lo)/span)*ih;      // v越大越靠上
+  const pts=pts0.map(p=>({i:p.i, d:p.d, v:p.v, x:x(p.i), y:typeof p.v==='number'?y(p.v):null}));
   const valid=pts.filter(p=>p.y!==null);
   let segs='';
   for(let k=1;k<valid.length;k++){
@@ -1494,7 +1649,7 @@ function avgChart(dates, avg){
     } else {
       col = '#9aa0a6';
     }
-    segs+=`<path d="${linePath([a,b])}" stroke="${col}" stroke-width="2" fill="none"/>`;
+    segs+=`<path d="${linePath([a,b])}" stroke="${col}" stroke-width="${big?2.6:2}" fill="none"/>`;
   }
   const dots=valid.map(p=>{
     const mag=Math.abs(p.v);
@@ -1506,16 +1661,98 @@ function avgChart(dates, avg){
     } else {
       col = '#9aa0a6';
     }
-    return `<circle cx="${p.x}" cy="${p.y}" r="2.5" fill="${col}"/>
-            <text x="${p.x}" y="${p.y-6}" font-size="9" text-anchor="middle">${p.v.toFixed(1)}</text>`;
+    return `<circle cx="${p.x}" cy="${p.y}" r="${big?3.5:2.5}" fill="${col}"/>
+            <text x="${p.x}" y="${p.y-6}" font-size="${big?11:9}" text-anchor="middle">${p.v.toFixed(1)}</text>`;
   }).join('');
-  const zeroY=padT+ih/2;
-  const xlabels=dates.map((d,i)=>`<text x="${x(i)}" y="${H-6}" font-size="9" text-anchor="middle">${d.slice(4,6)}/${d.slice(6,8)}</text>`).join('');
+  // 0轴: 若0在[lo,hi]内则画虚线
+  let zeroLine='';
+  if(lo<0 && hi>0){
+    const zy=y(0);
+    zeroLine=`<line x1="${padL}" y1="${zy}" x2="${W-padR}" y2="${zy}" stroke="var(--border-color)" stroke-dasharray="3 3"/>
+              <text x="4" y="${zy-3}" font-size="9">0</text>`;
+  }
+  const xlabels=dates.map((d,i)=>`<text x="${x(i)}" y="${H-6}" font-size="${big?11:9}" text-anchor="middle">${d.slice(4,6)}/${d.slice(6,8)}</text>`).join('');
+  // Y轴刻度: 上/下边界值
+  const yTop=`<text x="4" y="${padT+4}" font-size="9">${hi.toFixed(1)}</text>`;
+  const yBot=`<text x="4" y="${H-padB}" font-size="9">${lo.toFixed(1)}</text>`;
   return `<svg width="100%" viewBox="0 0 ${W} ${H}">
-    <line x1="${padL}" y1="${zeroY}" x2="${W-padR}" y2="${zeroY}" stroke="var(--border-color)" stroke-dasharray="3 3"/>
-    <text x="4" y="${padT+4}" font-size="9">+${(effectiveRange/2).toFixed(1)}</text>
-    <text x="4" y="${H-padB}" font-size="9">-${(effectiveRange/2).toFixed(1)}</text>
-    ${segs}${dots}${xlabels}
+    ${yTop}${yBot}${zeroLine}${segs}${dots}${xlabels}
+  </svg>`;
+}
+
+// 每日存在于板块的活跃个股数(柱状图): counts={date:数量}
+// yMax: 可选, 跨板块统一Y轴上限(不传则用本板块最大值), 使不同板块柱高可比
+function countBarChart(dates, counts, big, yMax){
+  const W=big?900:440, H=big?300:140, padL=big?34:28, padR=12, padT=14, padB=22;
+  const iw=W-padL-padR, ih=H-padT-padB;
+  const vals=dates.map(d=>counts[d]).filter(v=>typeof v==='number');
+  if(!vals.length) return '<div class="chart-empty">无个股数据</div>';
+  const maxVal=Math.max(yMax||0, ...vals, 1);   // 统一上限优先, 否则用本板块最大
+  const n=dates.length;
+  // 柱宽: 按可用宽度均分, 留间隙, 高低差异一眼可辨
+  const gap=big?4:2;
+  const bw=n>1 ? Math.max(big?10:6, (iw-gap*(n-1))/n) : Math.min(iw, big?60:40);
+  const slot=n>1 ? (iw/n) : iw;
+  const x=i=>padL+slot/2+i*slot;          // 每根柱中心
+  const y=v=>padT+ih-(v/maxVal)*ih;
+
+  // Y轴刻度网格(0/中/顶), 让柱高有参照
+  let grid='';
+  const ticks=[0, Math.round(maxVal/2), maxVal];
+  [...new Set(ticks)].forEach(t=>{
+    const gy=y(t);
+    grid+=`<line x1="${padL}" y1="${gy}" x2="${W-padR}" y2="${gy}" stroke="var(--border-color)" stroke-width="0.5" opacity="0.5"/>`;
+    grid+=`<text x="4" y="${gy+3}" font-size="9">${t}</text>`;
+  });
+
+  let bars='';
+  dates.forEach((d,i)=>{
+    const c=counts[d];
+    if(typeof c!=='number'||c<=0) return;
+    const cx=x(i), by=y(c), bh=padT+ih-by;
+    const ratio=c/maxVal;
+    const col=ratio>=0.8?'#e63946':(ratio>=0.5?'#ff8a3d':'#4dd0e1');
+    bars+=`<rect x="${cx-bw/2}" y="${by}" width="${bw}" height="${Math.max(bh,1)}" rx="2" fill="${col}" opacity="0.9"/>`;
+    bars+=`<text x="${cx}" y="${by-3}" font-size="${big?11:8}" text-anchor="middle">${c}</text>`;
+  });
+  const xlabels=dates.map((d,i)=>`<text x="${x(i)}" y="${H-6}" font-size="${big?11:9}" text-anchor="middle">${d.slice(4,6)}/${d.slice(6,8)}</text>`).join('');
+  return `<svg width="100%" viewBox="0 0 ${W} ${H}">
+    ${grid}${bars}${xlabels}
+  </svg>`;
+}
+
+// 跌破后第三日收回率折线图: rate={date:百分比0-100或null}
+function recoverLineChart(dates, rate, big){
+  const W=big?900:440, H=big?300:140, padL=big?34:28, padR=12, padT=14, padB=22;
+  const iw=W-padL-padR, ih=H-padT-padB;
+  const vals=dates.map(d=>rate[d]).filter(v=>typeof v==='number');
+  if(!vals.length) return '<div class="chart-empty">无收回数据</div>';
+  const n=dates.length;
+  const x=i=>padL+(n<=1?iw/2:iw*i/(n-1));
+  const y=v=>padT+ih-(v/100)*ih;        // 0-100% 固定范围
+  const pts=dates.map((d,i)=>({i,d,v:rate[d],x:x(i),y:typeof rate[d]==='number'?y(rate[d]):null}));
+  const valid=pts.filter(p=>p.y!==null);
+  // 网格: 0/50/100 三条线
+  let grid='';
+  [0,50,100].forEach(t=>{
+    const gy=y(t);
+    grid+=`<line x1="${padL}" y1="${gy}" x2="${W-padR}" y2="${gy}" stroke="var(--border-color)" stroke-width="0.5" opacity="0.5"/>`;
+    grid+=`<text x="4" y="${gy+3}" font-size="9">${t}%</text>`;
+  });
+  // 折线(收回率越高越绿, 越低越红)
+  let segs='';
+  for(let k=1;k<valid.length;k++){
+    const a=valid[k-1],b=valid[k];
+    segs+=`<path d="${linePath([a,b])}" stroke="#52c41a" stroke-width="${big?2.6:2}" fill="none"/>`;
+  }
+  const dots=valid.map(p=>{
+    const col=p.v>=50?'#52c41a':(p.v>=20?'#ffd60a':'#ff4d4f');
+    return `<circle cx="${p.x}" cy="${p.y}" r="${big?3.5:2.5}" fill="${col}"/>
+            <text x="${p.x}" y="${p.y-6}" font-size="${big?11:8}" text-anchor="middle">${p.v}</text>`;
+  }).join('');
+  const xlabels=dates.map((d,i)=>`<text x="${x(i)}" y="${H-6}" font-size="${big?11:9}" text-anchor="middle">${d.slice(4,6)}/${d.slice(6,8)}</text>`).join('');
+  return `<svg width="100%" viewBox="0 0 ${W} ${H}">
+    ${grid}${segs}${dots}${xlabels}
   </svg>`;
 }
 
@@ -1599,17 +1836,52 @@ function renderCharts(){
   const order=globalBlockOrder();
   const dates=DATA.dates;
 
+  // 从逐日数据提取每个板块每日的活跃个股数 {block: {date: count}}
+  const dayCounts={};
+  let globalMaxCount=0;   // 跨板块统一Y轴上限, 使不同板块柱高可比
+  DATA.by_date.forEach(day=>{
+    day.blocks.forEach(b=>{
+      if(!dayCounts[b.block]) dayCounts[b.block]={};
+      const c=b.active_count||0;
+      dayCounts[b.block][day.date]=c;
+      if(c>globalMaxCount) globalMaxCount=c;
+    });
+  });
+  // 全局平均涨幅范围(统一Y轴, 跨板块可比)
+  let gAvgLo=1e9, gAvgHi=-1e9;
+  DATA.blocks_summary.forEach(b=>{
+    Object.values(b.avg_pct||{}).forEach(v=>{
+      if(typeof v==='number'){ if(v<gAvgLo)gAvgLo=v; if(v>gAvgHi)gAvgHi=v; }
+    });
+  });
+  const gAvgRange=(gAvgLo<1e9)?{lo:gAvgLo,hi:gAvgHi}:null;
+  // 全局跌破数最大值(图3统一Y轴)
+  let globalMaxWarn=0;
+  DATA.blocks_summary.forEach(b=>{
+    Object.values(b.warn_count||{}).forEach(v=>{
+      if(typeof v==='number'&&v>globalMaxWarn) globalMaxWarn=v;
+    });
+  });
+
   const cards = order.map(blk=>{
     const b=summary[blk];
     if(!b){ return `<div class="chart-card placeholder"><h4>${blk}</h4></div>`; }
+    const counts=dayCounts[blk]||{};
+    const avg=b.avg_pct;
+    const warn=b.warn_count||{};
+    const recover=b.recover_rate||{};
     return `
       <div class="chart-card">
         <h4>${b.block}</h4>
         <div class="csub">累计次数 ${b.times_count} · 累计票 ${b.total_count}</div>
-        <h5>① 平均涨幅</h5>
-        ${avgChart(dates, b.avg_pct)}
-        <h5>② 累计入选票增减</h5>
-        <div class="chart-empty">暂无减少数据，待后续开发</div>
+        <h5>① 平均涨幅 <span class="zoom-hint">🔍点击放大</span></h5>
+        <div class="chart-zoom" onclick="zoomChart('avg','${blk}')">${avgChart(dates, avg, false, gAvgRange)}</div>
+        <h5>② 每日活跃个股数 <span class="zoom-hint">🔍点击放大</span></h5>
+        <div class="chart-zoom" onclick="zoomChart('count','${blk}')">${countBarChart(dates, counts, false, globalMaxCount)}</div>
+        <h5>③ 每日跌破10日线警告 <span class="zoom-hint">🔍点击放大</span></h5>
+        <div class="chart-zoom" onclick="zoomChart('warn','${blk}')">${countBarChart(dates, warn, false, globalMaxWarn)}</div>
+        <h5>④ 跌破后第三日收回率 <span class="zoom-hint">🔍点击放大</span></h5>
+        <div class="chart-zoom" onclick="zoomChart('recover','${blk}')">${recoverLineChart(dates, recover)}</div>
       </div>`;
   }).join('');
 
@@ -1627,6 +1899,43 @@ function renderCharts(){
     }
   }
   syncScroll();
+}
+
+// 点击放大单板块单图: 弹出大图modal
+function zoomChart(kind, blk){
+  let modal=document.getElementById('chartZoomModal');
+  if(!modal){
+    modal=document.createElement('div');
+    modal.id='chartZoomModal';
+    modal.className='compute-modal';
+    modal.innerHTML=`<div class="compute-box" style="width:min(960px,94vw);max-height:92vh;overflow:auto;">
+      <div class="compute-head"><span id="chartZoomTitle"></span><button class="compute-close" onclick="document.getElementById('chartZoomModal').classList.remove('show')" style="display:inline-block;">关闭</button></div>
+      <div id="chartZoomBody" style="padding:8px 4px;"></div>
+    </div>`;
+    document.body.appendChild(modal);
+  }
+  const summary={}; (DATA.blocks_summary||[]).forEach(b=>summary[b.block]=b);
+  const b=summary[blk]; if(!b) return;
+  const dates=DATA.dates;
+  const dayCounts={};
+  let gmax=0;
+  (DATA.by_date||[]).forEach(day=>{ day.blocks.forEach(x=>{ if(!dayCounts[x.block])dayCounts[x.block]={}; const c=x.active_count||0; dayCounts[x.block][day.date]=c; if(c>gmax)gmax=c; }); });
+  const counts=dayCounts[blk]||{};
+  // 全局平均涨幅范围(与缩略图一致)
+  let gLo=1e9,gHi=-1e9;
+  (DATA.blocks_summary||[]).forEach(x=>{ Object.values(x.avg_pct||{}).forEach(v=>{ if(typeof v==='number'){ if(v<gLo)gLo=v; if(v>gHi)gHi=v; } }); });
+  const gRange=(gLo<1e9)?{lo:gLo,hi:gHi}:null;
+  // 全局跌破数最大值(图3统一Y轴)
+  let gWarnMax=0;
+  (DATA.blocks_summary||[]).forEach(x=>{ Object.values(x.warn_count||{}).forEach(v=>{ if(typeof v==='number'&&v>gWarnMax)gWarnMax=v; }); });
+  let title, body;
+  if(kind==='avg'){ title=`${blk} · 平均涨幅`; body=avgChart(dates, b.avg_pct, true, gRange); }
+  else if(kind==='count'){ title=`${blk} · 每日活跃个股数`; body=countBarChart(dates, counts, true, gmax); }
+  else if(kind==='warn'){ title=`${blk} · 每日跌破10日线警告`; body=countBarChart(dates, b.warn_count||{}, true, gWarnMax); }
+  else if(kind==='recover'){ title=`${blk} · 跌破后第三日收回率`; body=recoverLineChart(dates, b.recover_rate||{}, true); }
+  document.getElementById('chartZoomTitle').textContent=title;
+  document.getElementById('chartZoomBody').innerHTML=body;
+  modal.classList.add('show');
 }
 
 function syncScroll(){
@@ -1761,6 +2070,13 @@ async function populateDates(){
     endSel.innerHTML = opts;
     startSel.value = dates[0];
     endSel.value = dates[dates.length-1];
+    // 同花顺概念追踪的独立日期下拉(默认近~10个交易日, 减少首次计算量)
+    const thsS = document.getElementById('thsStart'), thsE = document.getElementById('thsEnd');
+    if (thsS && thsE) {
+      thsS.innerHTML = opts; thsE.innerHTML = opts;
+      thsS.value = dates[Math.max(0, dates.length - 10)];
+      thsE.value = dates[dates.length - 1];
+    }
     // 恢复保存的选择(仅当仍在可选范围内)
     try{
       const saved = JSON.parse(localStorage.getItem('hotTrackConfig')||'{}');
@@ -2095,9 +2411,15 @@ function switchTab(tab) {
   document.querySelectorAll('.main-tab').forEach(el => {
     el.classList.toggle('active', el.dataset.tab === tab);
   });
+  // 起始/结束/排序/计算 等控件只在「湖南人涨停复盘」显示
+  const _hnrCtl = document.getElementById('hnrControls');
+  if (_hnrCtl) _hnrCtl.style.display = tab === 'hnr' ? 'contents' : 'none';
   document.getElementById('view-hnr').style.display = tab === 'hnr' ? '' : 'none';
   document.getElementById('view-ths').style.display = tab === 'ths' ? '' : 'none';
   document.getElementById('view-explosive').style.display = tab === 'explosive' ? '' : 'none';
+  document.getElementById('view-heat').style.display = tab === 'heat' ? '' : 'none';
+  document.getElementById('view-ladder').style.display = tab === 'ladder' ? '' : 'none';
+  document.getElementById('view-breakout').style.display = tab === 'breakout' ? '' : 'none';
   try { localStorage.setItem('hot_view', tab); } catch(e) {}
   if (tab === 'ths') {
     if (_conceptTrackData) {
@@ -2105,8 +2427,8 @@ function switchTab(tab) {
       _conceptCharts.forEach(c => { try { c.resize(); } catch(e){} });
     } else {
       // 首次切换到 THS, 自动加载当前日期范围
-      const start = document.getElementById('start').value;
-      const end = document.getElementById('end').value;
+      const start = document.getElementById('thsStart').value;
+      const end = document.getElementById('thsEnd').value;
       if (start && end) {
         loadConceptTrack(false);
       }
@@ -2132,7 +2454,386 @@ function switchTab(tab) {
       }
     }
     setTimeout(() => { Object.values(expCharts).forEach(c => c && c.resize()); Object.values(expMinCharts).forEach(c => c && c.resize()); }, 50);
+  } else if (tab === 'heat') {
+    if (!_heatLoaded) { _heatLoaded = true; initHeat(); }
+  } else if (tab === 'ladder') {
+    if (!_ldLoaded) { _ldLoaded = true; initLadder(); }
+    else setTimeout(() => { if (_ldChart) _ldChart.resize(); }, 50);
+  } else if (tab === 'breakout') {
+    if (!_bkLoaded) { _bkLoaded = true; initBreakout(); }
   }
+}
+
+// ===== 板块梯队·龙头健康 =====
+let _ldLoaded = false, _ldChart = null, _ldMode = 'emotion', _ldDates = [];
+async function initLadder() {
+  // 模式切换
+  document.querySelectorAll('#ldMode span').forEach(s => s.onclick = () => {
+    document.querySelectorAll('#ldMode span').forEach(x => x.classList.remove('active'));
+    s.classList.add('active'); _ldMode = s.dataset.mode; renderLadder();
+  });
+  try {
+    // 概念下拉
+    const cj = await (await fetch('/api/hot/ladder-concepts')).json();
+    const csel = document.getElementById('ldConcept');
+    if (cj.success && cj.concepts.length) {
+      csel.innerHTML = cj.concepts.map(c => `<option value="${c.concept}">${c.concept} · ${c.chain.replace(/链$/,'')} (${c.total})</option>`).join('');
+    }
+    // 日期下拉
+    const dj = await (await fetch('/api/hot/dates')).json();
+    _ldDates = dj.dates || [];
+    const fmt = s => `${s.slice(0,4)}-${s.slice(4,6)}-${s.slice(6,8)}`;
+    const opts = _ldDates.map(d => `<option value="${d}">${fmt(d)}</option>`).join('');
+    document.getElementById('ldStart').innerHTML = opts;
+    document.getElementById('ldEnd').innerHTML = opts;
+    document.getElementById('ldStart').value = _ldDates[Math.max(0, _ldDates.length - 30)];
+    document.getElementById('ldEnd').value = _ldDates[_ldDates.length - 1];
+    loadLadder();
+  } catch (e) { document.getElementById('ldStatus').textContent = '初始化失败: ' + e.message; }
+}
+let _ldData = null;
+async function loadLadder() {
+  const concept = document.getElementById('ldConcept').value;
+  const start = document.getElementById('ldStart').value, end = document.getElementById('ldEnd').value;
+  if (!concept) return;
+  const status = document.getElementById('ldStatus');
+  status.textContent = '加载中…';
+  try {
+    const resp = await fetch(`/api/hot/sector-ladder?concept=${encodeURIComponent(concept)}&start=${start}&end=${end}`);
+    if (!resp.ok) { status.textContent = '接口 ' + resp.status + '(需重启api_server)'; return; }
+    const d = await resp.json();
+    if (!d.success) { status.textContent = '失败: ' + (d.error || ''); return; }
+    _ldData = d;
+    status.textContent = `${concept} · 成员${d.members} · ${d.dates.length}天` + (d.trend_ready ? '' : ' · 趋势口径需先在「每日热力」点计算涨/杀');
+    renderLadder();
+  } catch (e) { status.textContent = '异常: ' + e.message; }
+}
+function renderLadder() {
+  const d = _ldData; if (!d) return;
+  const box = document.getElementById('ldChart');
+  if (!_ldChart) _ldChart = echarts.init(box, 'dark');
+  const x = d.dates.map(s => `${s.slice(4,6)}/${s.slice(6,8)}`);
+  document.getElementById('ldHead').textContent = _ldMode === 'emotion'
+    ? '情绪梯队:堆叠=当日 高位(≥3板)/中位(2板)/低位(首板) 涨停数；折线=龙头高度(最高连板)。高位带厚+龙头线上行=强；只剩低位+龙头线掉头=退。'
+    : '趋势主升:堆叠=沿均线主升(收盘>MA20且MA5>MA20)/MA20上方其余；折线=创60日新高股数。新高增多+龙头创新高=主升延续；新高归零=滞涨见顶。';
+  let series, tags;
+  if (_ldMode === 'emotion') {
+    const hi = d.emotion.map(e => e.hi), mid = d.emotion.map(e => e.mid), lo = d.emotion.map(e => e.lo), top = d.emotion.map(e => e.top);
+    series = [
+      { name: '高位≥3板', type: 'bar', stack: 'a', data: hi, itemStyle: { color: '#c0392b' } },
+      { name: '中位2板', type: 'bar', stack: 'a', data: mid, itemStyle: { color: '#e67e22' } },
+      { name: '低位首板', type: 'bar', stack: 'a', data: lo, itemStyle: { color: '#7f8c8d' } },
+      { name: '龙头高度', type: 'line', yAxisIndex: 1, data: top, symbol: 'circle', symbolSize: 5, lineStyle: { color: '#ffd60a', width: 2 }, itemStyle: { color: '#ffd60a' } },
+    ];
+    tags = d.emotion;
+  } else {
+    if (!d.trend_ready) { box.innerHTML = ''; _ldChart.clear(); document.getElementById('ldTags').innerHTML = '<span style="color:#f59e0b">趋势口径需要成员日线缓存:请到「每日热力·在炒啥」点一次「计算涨/杀」构建后再看。</span>'; return; }
+    const rising = d.trend.map(e => e.rising), aboveRest = d.trend.map(e => Math.max(0, e.above - e.rising)), nh = d.trend.map(e => e.newhigh);
+    series = [
+      { name: '沿均线主升', type: 'bar', stack: 'a', data: rising, itemStyle: { color: '#c0392b' } },
+      { name: 'MA20上方其余', type: 'bar', stack: 'a', data: aboveRest, itemStyle: { color: '#7f8c8d' } },
+      { name: '创60日新高', type: 'line', yAxisIndex: 1, data: nh, symbol: 'circle', symbolSize: 5, lineStyle: { color: '#ffd60a', width: 2 }, itemStyle: { color: '#ffd60a' } },
+    ];
+    tags = d.trend;
+  }
+  _ldChart.setOption({
+    backgroundColor: 'transparent', animation: false,
+    tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' } },
+    legend: { textStyle: { color: '#9aa0a6' }, top: 0 },
+    grid: { left: 40, right: 40, top: 30, bottom: 50 },
+    xAxis: { type: 'category', data: x, axisLabel: { color: '#9aa0a6', fontSize: 9, rotate: 90 } },
+    yAxis: [
+      { type: 'value', name: '只数', axisLabel: { color: '#9aa0a6' }, splitLine: { lineStyle: { color: '#252a33' } } },
+      { type: 'value', name: _ldMode === 'emotion' ? '龙头板' : '新高数', axisLabel: { color: '#ffd60a' }, splitLine: { show: false } },
+    ],
+    series,
+  }, true);
+  // 结构标签行
+  const tagColor = t => t.startsWith('强') || t.startsWith('转强') ? '#ff6b6b' : (t.startsWith('弱') || t.startsWith('退') ? '#4dd07a' : '#6b7280');
+  document.getElementById('ldTags').innerHTML = tags.filter(t => t.tag).map(t =>
+    `<span style="font-size:11px;padding:2px 7px;border-radius:4px;border:1px solid ${tagColor(t.tag)};color:${tagColor(t.tag)};">${t.date.slice(4,6)}/${t.date.slice(6,8)} ${t.tag}</span>`).join('');
+}
+
+// ===== 起爆扫描 =====
+let _bkLoaded = false, _bkData = null;
+async function initBreakout() {
+  try {
+    const dj = await (await fetch('/api/hot/dates')).json();
+    const dates = dj.dates || [];
+    if (!dates.length) { document.getElementById('bkResult').innerHTML = '<div class="empty">无已入库交易日</div>'; return; }
+    const fmt = s => `${s.slice(0,4)}-${s.slice(4,6)}-${s.slice(6,8)}`;
+    const opts = dates.map(d => `<option value="${d}">${fmt(d)}</option>`).join('');
+    document.getElementById('bkStart').innerHTML = opts;
+    document.getElementById('bkEnd').innerHTML = opts;
+    document.getElementById('bkStart').value = dates[0];
+    document.getElementById('bkEnd').value = dates[dates.length - 1];
+    loadBreakout();
+  } catch (e) { document.getElementById('bkResult').innerHTML = `<div class="empty">初始化失败: ${e.message}</div>`; }
+}
+async function loadBreakout() {
+  const s = document.getElementById('bkStart').value, e = document.getElementById('bkEnd').value;
+  const up = document.getElementById('bkUp').value, up5 = document.getElementById('bkUp5').value;
+  const minlu = document.getElementById('bkMinLu').value;
+  const status = document.getElementById('bkStatus'), box = document.getElementById('bkResult');
+  status.textContent = '扫描中…'; box.innerHTML = '<div class="empty">扫描中，请稍候…</div>';
+  try {
+    const r = await fetch(`/api/hot/breadth-scan?start=${s}&end=${e}&up=${up}&up5=${up5}&minlu=${minlu}`);
+    const d = await r.json();
+    if (!d.success) {
+      if (d.needs_build) { box.innerHTML = '<div class="empty" style="color:#f59e0b">需先构建成员日线缓存：请到「每日热力·在炒啥」点一次「计算涨/杀」，完成后再来扫描。</div>'; status.textContent = '需构建'; return; }
+      box.innerHTML = `<div class="empty">扫描失败: ${d.error || ''}</div>`; status.textContent = '失败'; return;
+    }
+    _bkData = d; renderBreakout(d);
+    status.textContent = `${d.count} 个起爆信号`;
+  } catch (err) { box.innerHTML = `<div class="empty">异常: ${err.message}</div>`; status.textContent = '异常'; }
+}
+function renderBreakout(d) {
+  const box = document.getElementById('bkResult');
+  if (!d.events.length) { box.innerHTML = '<div class="empty">该区间/阈值下没有检测到起爆信号，可放宽阈值再试。</div>'; return; }
+  const byDate = {};
+  d.events.forEach(ev => { (byDate[ev.date] = byDate[ev.date] || []).push(ev); });
+  const fmt = s => `${+s.slice(4,6)}月${+s.slice(6,8)}日`;
+  const wk = ['日', '一', '二', '三', '四', '五', '六'];
+  let html = '';
+  Object.keys(byDate).sort().forEach(dt => {
+    const evs = byDate[dt].sort((a, b) => b.score - a.score);
+    const w = wk[new Date(+dt.slice(0, 4), +dt.slice(4, 6) - 1, +dt.slice(6, 8)).getDay()];
+    const nFirst = evs.filter(e => e.first).length;
+    html += `<div class="bk-day">${fmt(dt)} 周${w} · ${evs.length}个板块起爆${nFirst ? ` · <span style="color:#ffd166">${nFirst}个首爆⭐</span>` : ''}</div>`;
+    html += '<table class="bk-tbl"><thead><tr><th>板块</th><th>产业链</th><th>上涨占比</th><th>涨&gt;5%</th><th>涨停</th><th>平均涨幅</th><th>有效</th></tr></thead><tbody>';
+    evs.forEach(ev => {
+      html += `<tr${ev.first ? ' class="bk-first"' : ''}>
+        <td>${ev.first ? '<span class="bk-star">⭐</span>' : ''}<b>${ev.concept}</b></td>
+        <td style="color:var(--text-muted)">${(ev.chain || '').replace(/链$/, '')}</td>
+        <td><span class="bk-bar"><i style="width:${ev.up_ratio}%"></i></span>${ev.up_ratio}%</td>
+        <td>${ev.up5}只 (${ev.up5_ratio}%)</td>
+        <td style="color:#ffd166;font-weight:700">${ev.lu}</td>
+        <td style="color:${ev.avg >= 0 ? '#ff6b6b' : '#4dd07a'}">${ev.avg > 0 ? '+' : ''}${ev.avg}%</td>
+        <td style="color:var(--text-muted)">${ev.quoted}</td></tr>`;
+    });
+    html += '</tbody></table>';
+  });
+  box.innerHTML = html;
+}
+
+// ===== 每日产业链地图(今天在炒啥) =====
+let _heatLoaded = false;
+let _heatData = null;              // 最近一次接口返回
+let _heatSel = null;               // 自定义选中的链id数组; null=默认(前10)
+const _HEAT_TOP_DEFAULT = 10;
+try { const s = localStorage.getItem('heatChainSel'); if (s) _heatSel = JSON.parse(s); } catch(e) {}
+
+function toggleHeatPicker() {
+  const p = document.getElementById('heatPicker');
+  p.style.display = p.style.display === 'none' ? 'block' : 'none';
+}
+// 当前应显示的链id集合
+function _heatShownIds() {
+  if (!_heatData) return [];
+  if (_heatSel && _heatSel.length) return _heatSel;
+  return _heatData.chains.slice(0, _HEAT_TOP_DEFAULT).map(c => c.id);  // 默认前10(活跃)
+}
+function buildHeatPicker(d) {
+  const list = document.getElementById('heatPickerList');
+  const shown = new Set(_heatShownIds());
+  const activeSet = new Set(d.chains.map(c => c.id));  // 当日有热度的链
+  list.innerHTML = (d.all_chains || []).map(c => {
+    const hot = activeSet.has(c.id);
+    return `<label style="display:flex;align-items:center;gap:6px;padding:3px 0;font-size:12px;color:${hot?'var(--text-primary)':'var(--text-muted)'};cursor:pointer;">
+      <input type="checkbox" value="${c.id}" ${shown.has(c.id)?'checked':''} onchange="onHeatPickChange()">
+      ${c.name}${hot?'':' <span style="font-size:10px">(今日无)</span>'}</label>`;
+  }).join('');
+}
+function onHeatPickChange() {
+  const ids = Array.from(document.querySelectorAll('#heatPickerList input:checked')).map(i => i.value);
+  _heatSel = ids;
+  try { localStorage.setItem('heatChainSel', JSON.stringify(ids)); } catch(e) {}
+  renderDaymap();
+}
+function heatPickDefault() {
+  _heatSel = null;
+  try { localStorage.removeItem('heatChainSel'); } catch(e) {}
+  if (_heatData) buildHeatPicker(_heatData);
+  renderDaymap();
+}
+function heatPickAll() {
+  if (!_heatData) return;
+  _heatSel = (_heatData.all_chains || []).map(c => c.id);
+  try { localStorage.setItem('heatChainSel', JSON.stringify(_heatSel)); } catch(e) {}
+  buildHeatPicker(_heatData);
+  renderDaymap();
+}
+
+// ===== 日期区间 + 滑块 =====
+let _heatAllDates = [], _heatRange = [], _heatIdx = 0;
+const _heatCache = {};   // {date: daymapData}
+async function initHeat() {
+  const box = document.getElementById('heatMap');
+  try {
+    const j = await (await fetch('/api/hot/dates')).json();
+    _heatAllDates = j.dates || [];
+    if (!_heatAllDates.length) { box.innerHTML = '<div class="empty">数据库暂无已入库交易日</div>'; return; }
+    const fmt = s => `${s.slice(0,4)}-${s.slice(4,6)}-${s.slice(6,8)}`;
+    const opts = _heatAllDates.map(d => `<option value="${d}">${fmt(d)}</option>`).join('');
+    const ss = document.getElementById('heatStart'), es = document.getElementById('heatEnd');
+    ss.innerHTML = opts; es.innerHTML = opts;
+    ss.value = _heatAllDates[Math.max(0, _heatAllDates.length - 15)];  // 默认近~15个交易日
+    es.value = _heatAllDates[_heatAllDates.length - 1];
+    heatRangeChanged();
+  } catch (e) { box.innerHTML = `<div class="empty">加载日期失败: ${e.message}</div>`; }
+}
+function heatRangeChanged() {
+  let s = document.getElementById('heatStart').value, e = document.getElementById('heatEnd').value;
+  if (s && e && s > e) { const t = s; s = e; e = t;
+    document.getElementById('heatStart').value = s; document.getElementById('heatEnd').value = e; }
+  _heatRange = _heatAllDates.filter(d => d >= s && d <= e);
+  if (!_heatRange.length) _heatRange = [e || _heatAllDates[_heatAllDates.length - 1]];
+  const sl = document.getElementById('heatSlider');
+  sl.min = 0; sl.max = _heatRange.length - 1;
+  _heatIdx = _heatRange.length - 1;   // 默认停在区间最后一天
+  sl.value = _heatIdx;
+  renderHeatDates();
+  loadDay();
+}
+// 左侧日期列: 每个交易日一格(4月1日 周X), 点击跳转
+const _WK = ['日', '一', '二', '三', '四', '五', '六'];
+function renderHeatDates() {
+  const col = document.getElementById('heatDates');
+  if (!col) return;
+  if (!_heatRange.length) { col.innerHTML = ''; return; }
+  col.innerHTML = _heatRange.map((d, i) => {
+    const mm = +d.slice(4, 6), dd = +d.slice(6, 8);
+    const w = _WK[new Date(+d.slice(0, 4), mm - 1, dd).getDay()];
+    return `<div class="dchip${i === _heatIdx ? ' active' : ''}" data-i="${i}" title="${d}"
+      onclick="jumpHeatDay(${i})">${mm}月${dd}日<span class="dw">周${w}</span></div>`;
+  }).join('');
+}
+function jumpHeatDay(i) {
+  _heatIdx = i;
+  const sl = document.getElementById('heatSlider'); if (sl) sl.value = i;
+  loadDay();
+}
+function _heatDateActive() {
+  const col = document.getElementById('heatDates'); if (!col) return;
+  col.querySelectorAll('.dchip').forEach(c => c.classList.toggle('active', +c.dataset.i === _heatIdx));
+  const a = col.querySelector('.dchip.active'); if (a) a.scrollIntoView({ block: 'nearest' });
+}
+function heatStep(delta) {
+  if (!_heatRange.length) return;
+  _heatIdx = Math.max(0, Math.min(_heatRange.length - 1, _heatIdx + delta));
+  document.getElementById('heatSlider').value = _heatIdx;
+  loadDay();
+}
+function heatSlide(v) { _heatIdx = +v; loadDay(); }
+async function loadDay() {
+  const box = document.getElementById('heatMap'), status = document.getElementById('heatStatus');
+  const date = _heatRange[_heatIdx];
+  if (!date) return;
+  const f = s => `${s.slice(4,6)}/${s.slice(6,8)}`;
+  document.getElementById('heatDayLabel').textContent = `${f(date)} · 第 ${_heatIdx + 1}/${_heatRange.length} 日`;
+  _heatDateActive();
+  if (_heatCache[date]) { _heatData = _heatCache[date]; buildHeatPicker(_heatData); renderDaymap(); return; }
+  status.textContent = '加载中…';
+  try {
+    const resp = await fetch('/api/hot/concept-daymap?date=' + date);
+    if (!resp.ok) { box.innerHTML = `<div class="empty">接口未就绪 (HTTP ${resp.status})。请重启 api_server 后再刷新。</div>`; status.textContent = '接口 ' + resp.status; return; }
+    const d = await resp.json();
+    if (!d.success) { box.innerHTML = `<div class="empty">加载失败: ${d.error||'未知'}</div>`; status.textContent = '失败'; return; }
+    _heatCache[date] = d; _heatData = d; buildHeatPicker(d); renderDaymap();
+  } catch (e) {
+    box.innerHTML = `<div class="empty">请求异常: ${e.message}。请重启 api_server 后再刷新。</div>`;
+    status.textContent = '异常';
+  }
+}
+
+function renderDaymap() {
+  const d = _heatData;
+  const box = document.getElementById('heatMap');
+  const fmt = s => s ? `${s.slice(0,4)}-${s.slice(4,6)}-${s.slice(6,8)}` : '';
+  const status = document.getElementById('heatStatus');
+  if (!d || !d.chains || !d.chains.length) {
+    box.innerHTML = '<div class="empty">该日无产业链概念数据(可能未入库, 或概念成员未同步)。</div>';
+    document.getElementById('heatToday').innerHTML = '';
+    status.textContent = `${fmt(d && d.date)} · 无数据`; return;
+  }
+  // 按选择过滤(默认前10)
+  const shown = new Set(_heatShownIds());
+  const list = d.chains.filter(c => shown.has(c.id));
+  const readyTip = d.price_ready ? '' :
+    ' <span style="color:#f59e0b">(涨/杀未计算, 点「计算涨/杀」构建成员日线缓存)</span>';
+  status.textContent = `${fmt(d.date)} · 显示 ${list.length}/${d.chains.length} 条链`;
+  const legend = `<div class="cm-legend">
+    <span><i class="sw" style="background:#d4a017"></i>涨停</span>
+    <span><i class="sw" style="background:#e0483f"></i>涨&gt;5%</span>
+    <span><i class="sw" style="background:#1f9e63"></i>跌&lt;-5%</span>
+    <span><i class="sw" style="background:#8b5cf6"></i>跌停</span>
+    <span style="color:var(--text-muted)">条越长=异动越多，颜色占比=构成</span>${readyTip}</div>`;
+  document.getElementById('heatToday').innerHTML = legend;
+  const posCls = { '上游': 'up', '中游': 'mid', '下游': 'down' };
+  const seg = (n, cls) => n > 0 ? `<div class="cm-seg ${cls}" style="flex:${n}">${n}</div>` : '';
+  // 统一的占比色条: 名称 + 金涨停/红涨>5/绿跌<-5/紫跌停 分段(带数字), 条宽随异动体量。
+  // 大链和上下游概念共用同一渲染, 保证展示方式一致。
+  const barChip = (label, o, big) => {
+    let segs, tot;
+    if (d.price_ready) {
+      segs = seg(o.lu, 'gold') + seg(o.up5, 'red') + seg(o.dn5, 'green') + seg(o.ld, 'purple');
+      tot = (o.lu || 0) + (o.up5 || 0) + (o.dn5 || 0) + (o.ld || 0);
+    } else {
+      segs = seg(o.zt, 'gold'); tot = o.zt || 0;
+    }
+    if (!segs) segs = '<div class="cm-seg empty" style="flex:1">·</div>';
+    const barW = Math.round((big ? 40 : 26) + Math.min(tot, 80) * (big ? 3.4 : 2.4));
+    const tip = `${label} 涨停${o.lu||0} 涨>5%${o.up5||0} 跌<-5%${o.dn5||0} 跌停${o.ld||0}`;
+    return `<span class="cm-chip${big ? ' cm-chip-big' : ''}" title="${tip}">
+      <span class="cm-label">${big ? label : '【' + label + '】'}</span>
+      <span class="cm-bar" style="width:${barW}px">${segs}</span></span>`;
+  };
+  let html = '<div class="cm-grid">';
+  for (const ch of list) {
+    let body = '';
+    ch.tiers.forEach(t => {
+      const chips = t.concepts.map(c => barChip(c.concept, c, false)).join('');
+      body += `<div class="cm-tier">
+        <div class="cm-tier-head"><span class="cm-tier-badge ${posCls[t.pos]||'mid'}">${t.pos}</span>
+          <span class="cm-tier-sub">${t.tier}</span></div>
+        <div class="cm-cons">${chips}</div></div>`;
+    });
+    // 净方向底色(涨主导=红, 杀主导=绿), 头部用与概念一致的大号占比条(去重口径)
+    const upN = (ch.lu || 0) + (ch.up5 || 0), dnN = (ch.dn5 || 0) + (ch.ld || 0);
+    const tint = upN > dnN ? 'rgba(224,72,63,0.18)' : (dnN > upN ? 'rgba(31,158,99,0.18)' : 'rgba(255,255,255,0.04)');
+    html += `<div class="cm-chain">
+      <div class="cm-head" style="background:${tint}">${barChip(ch.name, ch, true)}</div>
+      <div class="cm-body">${body}</div></div>`;
+  }
+  html += '</div>';
+  box.innerHTML = html;
+}
+
+// 构建成员日线收盘缓存(用于当日涨/杀统计, 首次较慢)
+let _daymapBuildTimer = null;
+async function buildDaymapPrices() {
+  const btn = document.getElementById('heatBuildBtn');
+  const status = document.getElementById('heatStatus');
+  btn.disabled = true;
+  try {
+    const r = await (await fetch('/api/hot/daymap/build', { method: 'POST' })).json();
+    if (!r.success) { status.textContent = '构建失败: ' + (r.error || ''); btn.disabled = false; return; }
+    const tid = r.task_id;
+    if (_daymapBuildTimer) clearInterval(_daymapBuildTimer);
+    _daymapBuildTimer = setInterval(async () => {
+      try {
+        const s = await (await fetch('/api/hot/daymap/build/status/' + tid)).json();
+        if (!s.success) { clearInterval(_daymapBuildTimer); btn.disabled = false; return; }
+        status.textContent = `计算涨/杀数据… ${s.done}/${s.total} (${s.progress}%)`;
+        if (s.status === 'completed' || s.status === 'failed' || s.status === 'cancelled') {
+          clearInterval(_daymapBuildTimer); btn.disabled = false;
+          if (s.status === 'failed') { status.textContent = '构建失败: ' + (s.error || ''); return; }
+          for (const k in _heatCache) delete _heatCache[k];  // 清缓存, 重新带涨/杀
+          loadDay();
+        }
+      } catch (e) { clearInterval(_daymapBuildTimer); btn.disabled = false; }
+    }, 1500);
+  } catch (e) { status.textContent = '请求异常: ' + e.message; btn.disabled = false; }
 }
 
 function candKey(c) { return `${c.range_start}_${c.range_end}_${c.code}`; }
@@ -2583,8 +3284,8 @@ if (_curTab !== 'explosive') loadExpScanResult();
 
 // ===== 同花顺概念追踪 =====
 function loadConceptTrack(forceRefresh) {
-  const start = document.getElementById('start').value;
-  const end = document.getElementById('end').value;
+  const start = document.getElementById('thsStart').value;
+  const end = document.getElementById('thsEnd').value;
   if (!start || !end) {
     document.getElementById('conceptDays').innerHTML = '<div class="concept-loading">请先选择日期范围</div>';
     return;
@@ -2634,8 +3335,8 @@ function loadConceptTrack(forceRefresh) {
     </div>
   `;
 
-  // 启动异步任务
-  fetch(`/api/hot/concept-track?start=${start}&end=${end}`)
+  // 启动异步任务 (强制刷新时带 force=1, 后端忽略按天缓存重算)
+  fetch(`/api/hot/concept-track?start=${start}&end=${end}${forceRefresh ? '&force=1' : ''}`)
     .then(r => r.json())
     .then(d => {
       if (!d.success) {

@@ -944,11 +944,54 @@ def apply_removal_rules(data, progress=None, manual_remove_codes=None):
                 if remove_date is None or d < remove_date:
                     active.append(st)
                 elif remove_date == d:
+                    # 移除当日: 仍放进 stocks 供表格灰色展示, 但不计入 active_count
                     active.append(st)
                     removed_today.append(st['code'])
             b['stocks'] = active
-            b['active_count'] = len(active)
+            # active_count = 真正活跃的票数(移除当日的不算, 当天就扣掉)
+            b['active_count'] = len(active) - len(removed_today)
             b['removed_today'] = removed_today
+
+    # 重算 blocks_summary 的图3/图4序列(跌破10日线警告 + 第三日收回率)
+    # 此时 block_cum 已含完整 track + remove_date(刚由本函数设上)
+    # track_hot_stocks 在 apply_removal=False 时未算这两个序列, 这里补上;
+    # apply_removal=True 时 track_hot_stocks 已算过, 这里覆盖更新(以最新 remove_date 为准)
+    summary_map = {b['block']: b for b in data.get('blocks_summary', [])}
+    for blk, stocks_map in block_cum.items():
+        bs = summary_map.get(blk)
+        if not bs:
+            continue
+        warn_series = {}
+        recover_series = {}
+        for idx_d, d in enumerate(dates):
+            active_sts = [st for st in stocks_map.values()
+                          if st.get('first_date', '') <= d
+                          and (not st.get('remove_date') or st.get('remove_date') > d)]
+            broken_codes = []
+            for st in active_sts:
+                tr = st.get('track', {}).get(d)
+                if tr and tr.get('below_ma10') is True:
+                    broken_codes.append(st['code'])
+            warn_series[d] = len(broken_codes)
+            if not broken_codes:
+                recover_series[d] = None
+                continue
+            j = idx_d + 2
+            if j >= len(dates):
+                recover_series[d] = None
+                continue
+            d3 = dates[j]
+            recover_cnt = 0
+            for code in broken_codes:
+                st = stocks_map.get(code)
+                if not st:
+                    continue
+                tr3 = st.get('track', {}).get(d3)
+                if tr3 and tr3.get('below_ma10') is False:
+                    recover_cnt += 1
+            recover_series[d] = round(recover_cnt / len(broken_codes) * 100, 1)
+        bs['warn_count'] = warn_series
+        bs['recover_rate'] = recover_series
 
     return data
 
@@ -1312,6 +1355,40 @@ def track_hot_stocks(start, end, sort='stock_count', with_price=True,
             'first_date': st['first_date'],
             'pct': {d: st['track'][d].get('pct') for d in dates},
         } for st in roster]
+        # 图3/图4: 每日跌破10日线警告数 + 跌破后第三日收回率
+        # roster 此时有完整 track(所有日期 below_ma10) + remove_date(若 apply_removal)
+        warn_series = {}        # 图3: 每日跌破10日线的活跃票数
+        recover_series = {}     # 图4: 每日跌破票在第三日的收回率%
+        for idx_d, d in enumerate(dates):
+            active_sts = [st for st in roster
+                          if st.get('first_date', '') <= d
+                          and (not st.get('remove_date') or st.get('remove_date') > d)]
+            below_cnt = 0
+            broken_codes = []
+            for st in active_sts:
+                tr = st.get('track', {}).get(d)
+                if tr and tr.get('below_ma10') is True:
+                    below_cnt += 1
+                    broken_codes.append(st['code'])
+            warn_series[d] = below_cnt
+            if not broken_codes:
+                recover_series[d] = None
+                continue
+            j = idx_d + 2  # 第三日(预警日为第1日, +2为第3日)
+            if j >= len(dates):
+                recover_series[d] = None  # 无第三日数据
+                continue
+            d3 = dates[j]
+            st_map = {st['code']: st for st in roster}
+            recover_cnt = 0
+            for code in broken_codes:
+                st = st_map.get(code)
+                if not st:
+                    continue
+                tr3 = st.get('track', {}).get(d3)
+                if tr3 and tr3.get('below_ma10') is False:
+                    recover_cnt += 1
+            recover_series[d] = round(recover_cnt / len(broken_codes) * 100, 1)
         blocks_summary.append({
             'block': blk,
             'times_count': block_times[blk],
@@ -1319,6 +1396,8 @@ def track_hot_stocks(start, end, sort='stock_count', with_price=True,
             'avg_pct': cum_avg_series,   # 改为累计平均涨幅
             'daily_avg_pct': avg_series, # 单日平均涨幅（保留）
             'cum_count': cum_series,
+            'warn_count': warn_series,       # 图3: 每日跌破10日线警告数
+            'recover_rate': recover_series,  # 图4: 跌破后第三日收回率%
             'stocks': stocks_series,
         })
 

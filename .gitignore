@@ -39,6 +39,22 @@ env/
 
 # Data files (large)
 dataresource/
+excelDataSource/
+output/
+systemOriginalData/
+
+# 同花顺同步产出(CSV)
+ths_concept_members_long.csv
+ths_concept_status.csv
+ths_stock_concept.csv
+
+# 截图/探针图
+*.png
+
+# 杂项文档(非代码)
+复盘文档.xlsx
+涨停复盘数据提取模版.xlsx
+图片转Exceldoubao Prompt/
 
 # Config with sensitive data
 config.yml
@@ -51,9 +67,14 @@ logs/
 .price_cache.json
 .hot_last_result.json
 .watchlist.json
+.glmocr.json
 *.glmocr.json
 *.sectors.json
 _tqcenter_init.py
+.concept_day_cache.json
+.exp_picks.json
+.exp_scan.json
+.member_closes.json
 
 # 测试脚本
 _test_*.py
@@ -63,3 +84,6 @@ _test_*.py
 Thumbs.db
 _codes_cyb.json
 _codes_kcb.json
+
+# 误创建的乱码文件
+ersADMINDesktopAI*
