@@ -325,6 +325,26 @@ _tdx_client = None
 _tdx_lock = None
 _tdx_local_ok = None  # 本地通达信可用性缓存(None=未检测)
 _tdx_server_idx = 0   # 当前使用的远程服务器索引
+_mootdx_down_until = 0.0  # 熔断: 远程mootdx全不可达时, 该时间戳前直接快速失败, 不再阻塞尝试
+
+
+def _pick_reachable_server(timeout=1.2):
+    """快速 socket 预检备用服务器, 返回第一个可达的 (host, port) 或 None。
+    避免 mootdx 在死服务器上做长时间 TCP 连接阻塞(持全局锁 -> UI 卡死)。"""
+    import socket as _socket
+    global _tdx_server_idx
+    n = len(_REMOTE_TDX_SERVERS)
+    for off in range(n):
+        idx = (_tdx_server_idx + off) % n
+        host, port = _REMOTE_TDX_SERVERS[idx]
+        try:
+            sk = _socket.create_connection((host, port), timeout=timeout)
+            sk.close()
+            _tdx_server_idx = idx
+            return (host, port)
+        except Exception:
+            continue
+    return None
 
 
 def _get_tdx_local_port():
@@ -370,7 +390,7 @@ def _get_tdx_client():
       - local_port=0 (默认): 直接走远程服务器, 不浪费 1 秒 socket 预检
       - local_port>0: 先连本地 127.0.0.1:port, 不可用再走远程
     远程首次用 bestip 自动测速(有 8s 超时保护), 失败回退备用服务器列表。"""
-    global _tdx_client, _tdx_local_ok, _tdx_server_idx, _bestip_done
+    global _tdx_client, _tdx_local_ok, _tdx_server_idx, _bestip_done, _mootdx_down_until
     # 连接已断开: 重连
     if _tdx_client is not None and getattr(_tdx_client, 'closed', False):
         _ht_logger.warning('TDX连接已断开, 尝试重连')
@@ -402,38 +422,18 @@ def _get_tdx_client():
             # 不尝试本地, 直接远程
             _tdx_local_ok = False
         if not _tdx_local_ok:
-            # 首次: 用bestip自动测速选最快服务器(有超时保护, 避免无限阻塞)
-            if not _bestip_done:
-                _bestip_done = True
-                try:
-                    from mootdx.bestip import BestIP
-                    _bestip = BestIP()
-                    # bestip.run() 可能长时间阻塞, 用线程+超时包裹
-                    import threading
-                    _bestip_result = [False]
-                    def _run_bestip():
-                        try:
-                            _bestip.run()
-                            _bestip_result[0] = True
-                        except Exception as e:
-                            _ht_logger.warning(f'bestip测速异常: {e}')
-                    _bt = threading.Thread(target=_run_bestip, daemon=True)
-                    _bt.start()
-                    _bt.join(timeout=8)
-                    if _bt.is_alive():
-                        _ht_logger.warning('bestip测速超时(8s), 直接回退备用服务器列表')
-                    # bestip会把最快服务器写入 ~/.mootdx/config.json (若成功)
-                    if _bestip_result[0]:
-                        _tdx_client = Quotes.factory(market='std', timeout=10, heartbeat=True)
-                        _df = _tdx_client.bars(symbol='000001', frequency=9, offset=1)
-                        if _df is not None and len(_df) > 0:
-                            _ht_logger.info('bestip自动选服务器成功')
-                            return _tdx_client
-                except Exception as e:
-                    _ht_logger.warning(f'bestip测速失败, 回退备用列表: {e}')
-            # 回退: 用备用服务器列表
-            srv = _REMOTE_TDX_SERVERS[_tdx_server_idx]
-            _tdx_client = Quotes.factory(market='std', server=srv, timeout=10, heartbeat=True)
+            # 熔断: 近期已确认远程全不可达, 直接快速失败, 不再阻塞尝试连接
+            import time as _time
+            if _mootdx_down_until and _time.time() < _mootdx_down_until:
+                raise RuntimeError('远程行情服务器暂不可达(熔断中), 请稍后重试或开启本地通达信(config.yml tdx.local_port)')
+            # 先快速 socket 预检, 选一个真正可达的服务器, 避免在死服务器上长时间阻塞
+            srv = _pick_reachable_server(timeout=1.2)
+            if srv is None:
+                # 全部不可达: 打开熔断(60秒), 快速失败
+                _mootdx_down_until = _time.time() + 60
+                raise RuntimeError('所有远程行情服务器均不可达; 已进入熔断(60s)。建议开启本地通达信并在 config.yml 配置 tdx.local_port')
+            _mootdx_down_until = 0.0  # 有可达服务器, 解除熔断
+            _tdx_client = Quotes.factory(market='std', server=srv, timeout=6, heartbeat=True)
             _ht_logger.info(f'远程TDX服务器: {srv[0]}:{srv[1]} (heartbeat)')
     return _tdx_client
 
@@ -978,7 +978,7 @@ def apply_removal_rules(data, progress=None, manual_remove_codes=None):
                 continue
             j = idx_d + 2
             if j >= len(dates):
-                recover_series[d] = None
+                recover_series[d] = {'broke': len(broken_codes), 'recovered': None}
                 continue
             d3 = dates[j]
             recover_cnt = 0
@@ -989,7 +989,8 @@ def apply_removal_rules(data, progress=None, manual_remove_codes=None):
                 tr3 = st.get('track', {}).get(d3)
                 if tr3 and tr3.get('below_ma10') is False:
                     recover_cnt += 1
-            recover_series[d] = round(recover_cnt / len(broken_codes) * 100, 1)
+            # 图4: 跌破个数 vs 第三日收回个数(不再用概率)
+            recover_series[d] = {'broke': len(broken_codes), 'recovered': recover_cnt}
         bs['warn_count'] = warn_series
         bs['recover_rate'] = recover_series
 
@@ -1358,7 +1359,8 @@ def track_hot_stocks(start, end, sort='stock_count', with_price=True,
         # 图3/图4: 每日跌破10日线警告数 + 跌破后第三日收回率
         # roster 此时有完整 track(所有日期 below_ma10) + remove_date(若 apply_removal)
         warn_series = {}        # 图3: 每日跌破10日线的活跃票数
-        recover_series = {}     # 图4: 每日跌破票在第三日的收回率%
+        recover_series = {}     # 图4: 每日 {broke:跌破数, recovered:第三日收回数}
+        st_map = {st['code']: st for st in roster}
         for idx_d, d in enumerate(dates):
             active_sts = [st for st in roster
                           if st.get('first_date', '') <= d
@@ -1374,12 +1376,12 @@ def track_hot_stocks(start, end, sort='stock_count', with_price=True,
             if not broken_codes:
                 recover_series[d] = None
                 continue
-            j = idx_d + 2  # 第三日(预警日为第1日, +2为第3日)
+            j = idx_d + 2  # 第三日(跌破日为第1日, +2为第3日)
             if j >= len(dates):
-                recover_series[d] = None  # 无第三日数据
+                # 无第三日数据: 收回数未知, 仍记录跌破数
+                recover_series[d] = {'broke': len(broken_codes), 'recovered': None}
                 continue
             d3 = dates[j]
-            st_map = {st['code']: st for st in roster}
             recover_cnt = 0
             for code in broken_codes:
                 st = st_map.get(code)
@@ -1388,7 +1390,8 @@ def track_hot_stocks(start, end, sort='stock_count', with_price=True,
                 tr3 = st.get('track', {}).get(d3)
                 if tr3 and tr3.get('below_ma10') is False:
                     recover_cnt += 1
-            recover_series[d] = round(recover_cnt / len(broken_codes) * 100, 1)
+            # 图4: 跌破个数 vs 第三日收回个数(不再用概率)
+            recover_series[d] = {'broke': len(broken_codes), 'recovered': recover_cnt}
         blocks_summary.append({
             'block': blk,
             'times_count': block_times[blk],
@@ -1397,7 +1400,7 @@ def track_hot_stocks(start, end, sort='stock_count', with_price=True,
             'daily_avg_pct': avg_series, # 单日平均涨幅（保留）
             'cum_count': cum_series,
             'warn_count': warn_series,       # 图3: 每日跌破10日线警告数
-            'recover_rate': recover_series,  # 图4: 跌破后第三日收回率%
+            'recover_rate': recover_series,  # 图4: 每日 {broke,recovered} 个数
             'stocks': stocks_series,
         })
 

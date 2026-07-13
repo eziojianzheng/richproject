@@ -88,19 +88,35 @@ def _save_tdx_install_dir(install_dir):
         _logger.warning(f'回写 config.yml 失败(不影响运行): {e}')
 
 
+def _is_valid_tdx_dir(p):
+    """有效的通达信量化版目录需同时含 PYPlugins 和 tqcenter 模块。"""
+    if not p or not os.path.isdir(p):
+        return False
+    if not os.path.isdir(os.path.join(p, 'PYPlugins')):
+        return False
+    # tqcenter 模块存在(sys 或 user 目录), 确认是量化版而非普通版
+    for sub in ('sys', 'user'):
+        if os.path.exists(os.path.join(p, 'PYPlugins', sub, 'tqcenter.py')):
+            return True
+    # 宽松: 只要有 PYPlugins 也接受(部分版本 tqcenter 名称不同)
+    return True
+
+
 def _auto_detect_tdx_install_dir():
     """自动探测通达信量化版安装目录(不读 config/环境变量)。返回路径字符串或 None。"""
     # 1. 常见安装路径(按命中概率排序)
     candidates = [
-        r'D:\game\tdx',          # 本机实际安装位置
+        r'C:\new_tdx_mock',      # 本机实际安装位置
         r'C:\new_tdx',
+        r'C:\new_jyplug',
+        r'D:\game\tdx',
         r'D:\new_tdx',
         r'C:\通达信',
         r'D:\通达信',
         r'E:\new_tdx',
     ]
     for p in candidates:
-        if os.path.isdir(os.path.join(p, 'PYPlugins')):
+        if _is_valid_tdx_dir(p):
             return p
     # 2. 注册表探测(通达信量化版写入的卸载项)
     try:
@@ -117,11 +133,27 @@ def _auto_detect_tdx_install_dir():
                                 name, _ = winreg.QueryValueEx(k, 'DisplayName')
                                 if name and ('通达信' in name or 'TDX' in name.upper()):
                                     loc, _ = winreg.QueryValueEx(k, 'InstallLocation')
-                                    if loc and os.path.isdir(os.path.join(loc, 'PYPlugins')):
+                                    if _is_valid_tdx_dir(loc):
                                         return loc
                         except OSError:
                             break
             except OSError:
+                continue
+    except Exception:
+        pass
+    # 3. 扫描各固定磁盘根目录下的直接子目录(仅一层, 快速)
+    try:
+        import string
+        for drive in string.ascii_uppercase:
+            root = f'{drive}:\\'
+            if not os.path.isdir(root):
+                continue
+            try:
+                for name in os.listdir(root):
+                    p = os.path.join(root, name)
+                    if _is_valid_tdx_dir(p):
+                        return p
+            except (PermissionError, OSError):
                 continue
     except Exception:
         pass
@@ -133,13 +165,13 @@ def _resolve_tdx_install_dir():
     返回 (install_dir, source) where source in {'config','env','auto','default'}。"""
     # 1. config.yml 显式配置
     cfg_dir, _ = _load_tdx_config()
-    if cfg_dir and os.path.isdir(os.path.join(cfg_dir, 'PYPlugins')):
+    if cfg_dir and _is_valid_tdx_dir(cfg_dir):
         return cfg_dir, 'config'
     if cfg_dir:
         _logger.warning(f'config.yml 中 tdx.install_dir="{cfg_dir}" 无效(找不到 PYPlugins), 尝试自动探测')
     # 2. 环境变量
     env = os.environ.get('TDX_INSTALL_DIR', '').strip()
-    if env and os.path.isdir(os.path.join(env, 'PYPlugins')):
+    if env and _is_valid_tdx_dir(env):
         return env, 'env'
     # 3. 自动探测
     detected = _auto_detect_tdx_install_dir()

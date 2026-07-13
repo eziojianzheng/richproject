@@ -1721,38 +1721,70 @@ function countBarChart(dates, counts, big, yMax){
   </svg>`;
 }
 
-// 跌破后第三日收回率折线图: rate={date:百分比0-100或null}
-function recoverLineChart(dates, rate, big){
-  const W=big?900:440, H=big?300:140, padL=big?34:28, padR=12, padT=14, padB=22;
+// 跌破10日线 vs 第三日收回 双柱图: data={date:{broke,recovered}|null}
+// 每个交易日一组: 左柱=跌破个数(红), 右柱=收回个数(绿)
+// data=recover_rate: 新格式{date:{broke,recovered}} 或 旧格式{date:百分比}
+// warn=warn_count: {date:跌破数} 作为"跌破"的可靠来源(兼容旧缓存)
+function recoverLineChart(dates, data, big, warn){
+  const W=big?900:440, H=big?300:140, padL=big?34:28, padR=12, padT=16, padB=22;
   const iw=W-padL-padR, ih=H-padT-padB;
-  const vals=dates.map(d=>rate[d]).filter(v=>typeof v==='number');
-  if(!vals.length) return '<div class="chart-empty">无收回数据</div>';
+  warn = warn || {};
+  // 收集每日: 跌破数取 warn_count(始终存在), 收回数取后端精确个数 recovered
+  const entries=dates.map(d=>{
+    const v=data[d];
+    let broke=(typeof warn[d]==='number')?warn[d]:0;
+    let recovered=null;
+    if(v && typeof v==='object'){
+      if(typeof v.broke==='number') broke=v.broke;
+      recovered=(typeof v.recovered==='number')?v.recovered:null;
+    }
+    return (broke>0 || recovered!==null) ? {d, broke, recovered} : null;
+  });
+  const hasAny=entries.some(e=>e && e.broke>0);
+  if(!hasAny) return '<div class="chart-empty">无跌破数据</div>';
   const n=dates.length;
-  const x=i=>padL+(n<=1?iw/2:iw*i/(n-1));
-  const y=v=>padT+ih-(v/100)*ih;        // 0-100% 固定范围
-  const pts=dates.map((d,i)=>({i,d,v:rate[d],x:x(i),y:typeof rate[d]==='number'?y(rate[d]):null}));
-  const valid=pts.filter(p=>p.y!==null);
-  // 网格: 0/50/100 三条线
+  let maxVal=1;
+  entries.forEach(e=>{ if(e){ maxVal=Math.max(maxVal, e.broke, e.recovered||0); } });
+  const slot=n>1 ? (iw/n) : iw;
+  const groupCenter=i=>padL+slot/2+i*slot;
+  // 组内双柱: 宽度按 slot 分配
+  const bw=Math.max(big?7:4, Math.min(big?24:14, slot/2.6));
+  const y=v=>padT+ih-(v/maxVal)*ih;
+
+  // Y轴网格: 0/中/顶
   let grid='';
-  [0,50,100].forEach(t=>{
+  [...new Set([0, Math.round(maxVal/2), maxVal])].forEach(t=>{
     const gy=y(t);
     grid+=`<line x1="${padL}" y1="${gy}" x2="${W-padR}" y2="${gy}" stroke="var(--border-color)" stroke-width="0.5" opacity="0.5"/>`;
-    grid+=`<text x="4" y="${gy+3}" font-size="9">${t}%</text>`;
+    grid+=`<text x="4" y="${gy+3}" font-size="9">${t}</text>`;
   });
-  // 折线(收回率越高越绿, 越低越红)
-  let segs='';
-  for(let k=1;k<valid.length;k++){
-    const a=valid[k-1],b=valid[k];
-    segs+=`<path d="${linePath([a,b])}" stroke="#52c41a" stroke-width="${big?2.6:2}" fill="none"/>`;
-  }
-  const dots=valid.map(p=>{
-    const col=p.v>=50?'#52c41a':(p.v>=20?'#ffd60a':'#ff4d4f');
-    return `<circle cx="${p.x}" cy="${p.y}" r="${big?3.5:2.5}" fill="${col}"/>
-            <text x="${p.x}" y="${p.y-6}" font-size="${big?11:8}" text-anchor="middle">${p.v}</text>`;
-  }).join('');
-  const xlabels=dates.map((d,i)=>`<text x="${x(i)}" y="${H-6}" font-size="${big?11:9}" text-anchor="middle">${d.slice(4,6)}/${d.slice(6,8)}</text>`).join('');
+
+  let bars='';
+  entries.forEach((e,i)=>{
+    if(!e || e.broke<=0) return;
+    const cx=groupCenter(i);
+    // 左柱: 跌破(红)
+    const lx=cx-bw-1, lby=y(e.broke), lbh=padT+ih-lby;
+    bars+=`<rect x="${lx}" y="${lby}" width="${bw}" height="${Math.max(lbh,1)}" rx="2" fill="#ff4d4f" opacity="0.9"/>`;
+    bars+=`<text x="${lx+bw/2}" y="${lby-3}" font-size="${big?11:8}" text-anchor="middle" fill="#ff6b6b">${e.broke}</text>`;
+    // 右柱: 收回(绿); recovered=null 表示无第三日数据, 用灰色占位标记
+    const rx=cx+1;
+    if(e.recovered===null){
+      bars+=`<text x="${rx+bw/2}" y="${padT+ih-2}" font-size="${big?10:8}" text-anchor="middle" fill="var(--text-muted)">—</text>`;
+    } else {
+      const rby=y(e.recovered), rbh=padT+ih-rby;
+      bars+=`<rect x="${rx}" y="${rby}" width="${bw}" height="${Math.max(rbh,1)}" rx="2" fill="#52c41a" opacity="0.9"/>`;
+      bars+=`<text x="${rx+bw/2}" y="${rby-3}" font-size="${big?11:8}" text-anchor="middle" fill="#4dd07a">${e.recovered}</text>`;
+    }
+  });
+  const xlabels=dates.map((d,i)=>`<text x="${groupCenter(i)}" y="${H-6}" font-size="${big?11:9}" text-anchor="middle">${d.slice(4,6)}/${d.slice(6,8)}</text>`).join('');
+  // 图例
+  const legend=`<g>
+    <rect x="${padL}" y="2" width="9" height="9" rx="2" fill="#ff4d4f"/><text x="${padL+13}" y="10" font-size="9">跌破</text>
+    <rect x="${padL+52}" y="2" width="9" height="9" rx="2" fill="#52c41a"/><text x="${padL+65}" y="10" font-size="9">收回</text>
+  </g>`;
   return `<svg width="100%" viewBox="0 0 ${W} ${H}">
-    ${grid}${segs}${dots}${xlabels}
+    ${grid}${bars}${xlabels}${legend}
   </svg>`;
 }
 
@@ -1880,8 +1912,8 @@ function renderCharts(){
         <div class="chart-zoom" onclick="zoomChart('count','${blk}')">${countBarChart(dates, counts, false, globalMaxCount)}</div>
         <h5>③ 每日跌破10日线警告 <span class="zoom-hint">🔍点击放大</span></h5>
         <div class="chart-zoom" onclick="zoomChart('warn','${blk}')">${countBarChart(dates, warn, false, globalMaxWarn)}</div>
-        <h5>④ 跌破后第三日收回率 <span class="zoom-hint">🔍点击放大</span></h5>
-        <div class="chart-zoom" onclick="zoomChart('recover','${blk}')">${recoverLineChart(dates, recover)}</div>
+        <h5>④ 跌破10日线 / 第三日收回(个数) <span class="zoom-hint">🔍点击放大</span></h5>
+        <div class="chart-zoom" onclick="zoomChart('recover','${blk}')">${recoverLineChart(dates, recover, false, warn)}</div>
       </div>`;
   }).join('');
 
@@ -1932,7 +1964,7 @@ function zoomChart(kind, blk){
   if(kind==='avg'){ title=`${blk} · 平均涨幅`; body=avgChart(dates, b.avg_pct, true, gRange); }
   else if(kind==='count'){ title=`${blk} · 每日活跃个股数`; body=countBarChart(dates, counts, true, gmax); }
   else if(kind==='warn'){ title=`${blk} · 每日跌破10日线警告`; body=countBarChart(dates, b.warn_count||{}, true, gWarnMax); }
-  else if(kind==='recover'){ title=`${blk} · 跌破后第三日收回率`; body=recoverLineChart(dates, b.recover_rate||{}, true); }
+  else if(kind==='recover'){ title=`${blk} · 跌破10日线 / 第三日收回(个数)`; body=recoverLineChart(dates, b.recover_rate||{}, true, b.warn_count||{}); }
   document.getElementById('chartZoomTitle').textContent=title;
   document.getElementById('chartZoomBody').innerHTML=body;
   modal.classList.add('show');

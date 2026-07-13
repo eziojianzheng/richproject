@@ -5707,6 +5707,29 @@ if __name__ == '__main__':
     print('  curl -X POST http://127.0.0.1:5000/api/download -H "Content-Type: application/json" -d \'{"start_date":"2026-05-14","end_date":"2026-05-20"}\'')
     print('  curl "http://127.0.0.1:5000/api/hot/track?start=20260601&end=20260605"')
     print("=" * 60)
-    
+
+    # ---------- 启动环境自检: 通达信量化版 ----------
+    print("\n[环境自检] 通达信量化版(tqcenter)…")
+    try:
+        import tdx_source as _ts
+        info = _ts.get_tdx_info()
+        src_label = {'config': 'config.yml', 'env': '环境变量', 'auto': '自动探测', 'default': '默认兜底(未探测到!)'}
+        print(f"  安装目录 : {info['install_dir']}  (来源: {src_label.get(info['install_source'], info['install_source'])})")
+        print(f"  PYPlugins: {'✓ 存在' if info['pyplugins_exists'] else '✗ 缺失'}")
+        print(f"  Vipdoc   : {'✓ 存在' if info['vipdoc_exists'] else '✗ 缺失'}"
+              f"  (sh/lday {'✓' if info['sh_lday_exists'] else '✗'} · sz/lday {'✓' if info['sz_lday_exists'] else '✗'})")
+        if info.get('tqcenter_available'):
+            print("  连接状态 : ✓ tqcenter 可用(量化版客户端已连接)")
+        else:
+            print("  连接状态 : ✗ tqcenter 不可用")
+            print("  ⚠ 请确认: 1)通达信量化版客户端已开启并登录  2)安装目录正确")
+            if info['install_source'] == 'default':
+                print("  ⚠ 未能自动探测到安装目录！请在 config.yml 增加配置:")
+                print("       tdx:")
+                print("         install_dir: 'X:\\\\你的通达信量化版目录'")
+    except Exception as _e:
+        print(f"  ✗ 自检异常: {type(_e).__name__}: {_e}")
+    print("=" * 60)
+
     start_ws_push()
     socketio.run(app, host='0.0.0.0', port=5000, debug=True, allow_unsafe_werkzeug=True)
