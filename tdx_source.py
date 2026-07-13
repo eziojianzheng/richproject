@@ -501,6 +501,71 @@ def index_kline(index_code='000001.SH', count=120, period='1d'):
     return kline(index_code, count=count, period=period, dividend_type='none')
 
 
+# ============== 本地 .day 日线直读(不复权, 盘后数据, 无需客户端) ==============
+import struct as _struct
+
+def _day_file_path(code):
+    """6位代码 -> 本地 .day 文件绝对路径(Vipdoc/{sh|sz|bj}/lday/{sh|sz|bj}######.day)。"""
+    tq = _to_tq_code(code)
+    if not tq:
+        return None
+    plain, _, suf = tq.partition('.')
+    mkt = {'SH': 'sh', 'SZ': 'sz', 'BJ': 'bj'}.get(suf)
+    if not mkt:
+        return None
+    return os.path.join(TDX_INSTALL_DIR, 'Vipdoc', mkt, 'lday', f'{mkt}{plain}.day')
+
+
+def read_day_file(code, count=250):
+    """直接解析本地通达信 .day 文件(标准32字节/记录), 返回最近 count 根不复权日线。
+    记录格式: date(u32 YYYYMMDD), open,high,low,close(u32, 单位=分), amount(f32,元), vol(u32,股), 保留(u32)。
+    读不到(文件不存在/格式异常)返回 None, 由调用方回退 tqcenter。"""
+    path = _day_file_path(code)
+    if not path or not os.path.isfile(path):
+        return None
+    try:
+        rec = 32
+        size = os.path.getsize(path)
+        n = size // rec
+        if n <= 0:
+            return None
+        take = min(count, n)
+        with open(path, 'rb') as f:
+            if take < n:
+                f.seek((n - take) * rec)
+            buf = f.read(take * rec)
+        bars = []
+        for i in range(len(buf) // rec):
+            date_i, o, h, l, c, amt, vol, _r = _struct.unpack_from('<IIIIIfII', buf, i * rec)
+            d8 = str(date_i)
+            if len(d8) != 8:
+                continue
+            bars.append({
+                'date': f'{d8[:4]}-{d8[4:6]}-{d8[6:8]}',
+                'open': round(o / 100.0, 3),
+                'high': round(h / 100.0, 3),
+                'low': round(l / 100.0, 3),
+                'close': round(c / 100.0, 3),
+                'vol': float(vol),
+                'amount': float(amt),
+            })
+        return bars or None
+    except Exception as e:
+        _logger.debug(f'read_day_file {code} 异常: {e}')
+        return None
+
+
+def kline_daily(code, count=250, prefer_local=True):
+    """不复权日线, 优先本地 .day 直读(快), 失败回退 tqcenter。
+    返回 (bars, source) — source in {'local_day','tqcenter', None}。"""
+    if prefer_local:
+        bars = read_day_file(code, count=count)
+        if bars:
+            return bars, 'local_day'
+    bars = kline(code, count=count, period='1d', dividend_type='none')
+    return (bars, 'tqcenter') if bars else (None, None)
+
+
 # ============== 股票列表 ==============
 
 def stock_list(market='5', with_name=True):

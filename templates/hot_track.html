@@ -628,6 +628,84 @@
   .bk-bar i { display: block; height: 100%; background: linear-gradient(90deg,#e0483f,#ff8a3d); }
   .cm-legend { display: flex; gap: 12px; align-items: center; font-size: 12px; margin-bottom: 8px; flex-wrap: wrap; }
   .cm-legend .sw { display: inline-block; width: 12px; height: 12px; border-radius: 2px; vertical-align: middle; margin-right: 3px; }
+
+  /* ===== 招财猫复盘 ===== */
+  .czm-layout { display: grid; grid-template-columns: 1.4fr 1fr; gap: 14px; align-items: start; }
+  .czm-col { background: var(--bg-card); border: 1px solid var(--border-color); border-radius: 10px; padding: 12px 14px; }
+  .czm-daybar { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 12px; }
+  .czm-day-btn { padding: 5px 12px; font-size: 12px; border-radius: 6px; cursor: pointer;
+    border: 1px solid var(--border-color); color: var(--text-secondary); background: var(--bg-input); }
+  .czm-day-btn.active { background: #e63946; color: #fff; border-color: #e63946; }
+  .czm-sec { margin-bottom: 16px; }
+  .czm-sec-title { font-size: 13px; font-weight: 700; margin-bottom: 8px; padding: 4px 8px; border-radius: 0 4px 4px 0; }
+  .czm-sec-title.rise { color: #ff9a9a; background: rgba(255,107,107,0.1); border-left: 3px solid #ff6b6b; }
+  .czm-sec-title.fall { color: #9be3a0; background: rgba(77,208,122,0.1); border-left: 3px solid #4dd07a; }
+  .czm-sub { font-size: 11px; color: var(--text-muted); margin: 8px 0 4px; }
+  .czm-concepts { display: flex; gap: 6px; flex-wrap: wrap; }
+  .czm-concept { padding: 5px 10px; font-size: 12px; border-radius: 6px; cursor: pointer;
+    border: 1px solid var(--border-light); background: var(--bg-input); color: var(--text-primary); }
+  .czm-concept:hover { border-color: var(--accent); }
+  .czm-concept.active { background: #2563eb; color: #fff; border-color: #2563eb; }
+  .czm-concept .cc-n { font-weight: 700; }
+  .czm-concept.rise .cc-n { color: #ff6b6b; }
+  .czm-concept.fall .cc-n { color: #4dd07a; }
+  .czm-concept.active .cc-n { color: #fff; }
+  .czm-concept .lockbtn { cursor: pointer; margin-right: 4px; font-size: 11px; opacity: .7; }
+  .czm-concept .lockbtn:hover { opacity: 1; }
+  .czm-concept.locked { opacity: .55; border-style: dashed; border-color: #eab308; }
+  .czm-concept.locked.active { opacity: 1; }
+  .czm-stocks { margin-top: 12px; border-top: 1px solid var(--border-light); padding-top: 10px; }
+  .czm-stk-tbl { width: 100%; border-collapse: collapse; font-size: 13px; }
+  .czm-stk-tbl th { text-align: left; padding: 6px 10px; color: var(--text-muted); font-size: 11px; border-bottom: 1px solid var(--border-color); }
+  .czm-stk-tbl td { padding: 6px 10px; border-bottom: 1px solid var(--border-light); }
+  .czm-stk-tbl tr:hover td { background: rgba(255,255,255,0.03); }
+  .czm-stk .s-code { color: var(--text-muted); font-size: 12px; }
+  .czm-stk .s-pct { font-weight: 700; text-align: right; white-space: nowrap; }
+  .czm-stk .s-pct.up { color: #ff6b6b; } .czm-stk .s-pct.down { color: #4dd07a; }
+  .czm-badge { font-size: 9px; padding: 1px 6px; border-radius: 3px; margin-left: 4px; }
+  .czm-badge.lu { background: rgba(255,214,10,.3); color: #ffd60a; }
+  .czm-badge.u5 { background: rgba(255,107,53,.25); color: #ff8a3d; }
+  .czm-badge.ld { background: rgba(168,85,247,.3); color: #c084fc; }
+  .czm-badge.d5 { background: rgba(77,208,122,.2); color: #9be3a0; }
+  .czm-lab { font-size: 10px; color: #ffd166; margin-left: 4px; }
+  .czm-pos { font-size: 9px; padding: 1px 6px; border-radius: 3px; margin-left: 4px; font-weight: 700; }
+  .czm-pos.lo { background: rgba(77,208,122,.2); color: #7ee6a0; }   /* 低位=绿(便宜) */
+  .czm-pos.mid { background: rgba(148,163,184,.2); color: #cbd5e1; } /* 中位=灰 */
+  .czm-pos.hi { background: rgba(239,83,80,.22); color: #ff8a87; }   /* 高位=红(贵) */
+  .czm-mini-btn { padding: 2px 8px; font-size: 11px; border-radius: 4px; border: 1px solid var(--border-color);
+    background: var(--bg-input); color: var(--text-primary); cursor: pointer; }
+  .czm-mini-btn:hover { background: var(--accent); color: #fff; border-color: var(--accent); }
+  /* 概念内个股K线列表 */
+  .czm-kline-list { display: flex; flex-direction: column; gap: 10px; margin-top: 8px; }
+  .czm-kline-card { border: 1px solid var(--border-light); border-radius: 9px; background: var(--chart-bg);
+    padding: 8px 10px; cursor: grab; }
+  .czm-kline-card:active { cursor: grabbing; }
+  .czm-kline-info { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 4px; }
+  .czm-kline-info .ki-name { font-size: 14px; font-weight: 700; color: var(--text-primary); }
+  .czm-kline-info .s-code { font-size: 11px; color: var(--text-muted); }
+  .czm-kline-info .s-pct { font-weight: 700; }
+  .czm-kline-info .s-pct.up { color: #ff6b6b; } .czm-kline-info .s-pct.down { color: #4dd07a; }
+  .czm-kline-info .ki-hint { margin-left: auto; font-size: 10px; color: var(--text-muted); }
+  .czm-kline-chart { height: 240px; width: 100%; }
+  .czm-cats-hd { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; font-size: 14px; font-weight: 600; }
+  .cat-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .cat-box { border: 1px solid var(--border-light); border-radius: 8px; overflow: hidden; min-height: 64px; }
+  .cat-box.dragover { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(230,57,70,.3); }
+  .cat-hd { padding: 6px 9px; font-size: 11px; font-weight: 600; background: var(--bg-input);
+    display: flex; align-items: center; justify-content: space-between; }
+  .cat-hd .cat-n { font-size: 10px; color: var(--text-muted); }
+  .cat-items { padding: 5px 7px; display: flex; flex-direction: column; gap: 4px; min-height: 26px; }
+  .cat-chip { display: flex; align-items: center; gap: 5px; font-size: 12px; padding: 3px 6px;
+    background: var(--bg-input); border: 1px solid var(--border-light); border-radius: 5px; }
+  .cat-chip .cp { font-weight: 700; }
+  .cat-chip .rm { margin-left: auto; cursor: pointer; color: var(--text-muted); font-weight: 700; }
+  .cat-chip .rm:hover { color: var(--accent); }
+  .modal { position: fixed; inset: 0; background: rgba(0,0,0,.6); align-items: center; justify-content: center; z-index: 300; }
+  .modal.show { display: flex !important; }
+  .modal-box { background: var(--bg-card); border: 1px solid var(--border-color); border-radius: 12px; padding: 16px 18px; }
+  .modal-hd { display: flex; align-items: center; justify-content: space-between; font-size: 15px; font-weight: 600; margin-bottom: 12px; }
+  .modal-x { background: var(--border-color); color: var(--text-primary); border: none; padding: 5px 12px; border-radius: 6px; cursor: pointer; }
+  .modal-x:hover { background: var(--accent); color: #fff; }
 </style>
 </head>
 <body>
@@ -708,6 +786,7 @@
     <span class="main-tab" data-tab="heat" onclick="switchTab('heat')">每日热力·在炒啥</span>
     <span class="main-tab" data-tab="ladder" onclick="switchTab('ladder')">板块梯队·龙头健康</span>
     <span class="main-tab" data-tab="breakout" onclick="switchTab('breakout')">🚀 起爆扫描</span>
+    <span class="main-tab" data-tab="caizhaomao" onclick="switchTab('caizhaomao')">🐱 招财猫复盘</span>
   </div>
 
   <div class="meta" id="meta"></div>
@@ -871,6 +950,44 @@
     <div class="exp-charts-head">起爆扫描 — 在区间内逐日算每个产业链概念的广度，标出「起爆日」：全板块普涨(上涨占比高)且大面积涨超5%，代表资金整体扫货、板块开始走成主流。⭐=该板块区间内首次起爆(最值得关注的上车信号)。结果按日期时间线排列，同日按强度排序。</div>
     <div id="bkResult"><div class="empty">选好区间点「扫描」。首次需先在「每日热力」点「计算涨/杀」构建成员日线缓存。</div></div>
   </div><!-- /view-breakout -->
+
+  <!-- Tab 7: 招财猫复盘 -->
+  <div class="tab-view" id="view-caizhaomao" style="display:none">
+    <div class="exp-toolbar" style="flex-wrap:wrap;">
+      <label>开始</label><input type="date" id="czmStart">
+      <label>结束</label><input type="date" id="czmEnd">
+      <button id="czmScan" onclick="startCzm()">开始</button>
+      <button id="czmCancel" onclick="cancelCzm()" style="display:none;background:#6b7280;">中断</button>
+      <span id="czmStatus" class="exp-status"></span>
+      <span class="czm-ma-cfg" id="czmMaCfg" style="margin-left:auto;display:flex;gap:8px;align-items:center;font-size:12px;">
+        <span style="color:var(--text-muted);">均线</span>
+        <label style="color:#facc15;"><input type="checkbox" data-ma="5" checked onchange="czmOnMaToggle()">5</label>
+        <label style="color:#60a5fa;"><input type="checkbox" data-ma="10" checked onchange="czmOnMaToggle()">10</label>
+        <label style="color:#a855f7;"><input type="checkbox" data-ma="20" checked onchange="czmOnMaToggle()">20</label>
+        <label style="color:#4dd07a;"><input type="checkbox" data-ma="60" onchange="czmOnMaToggle()">60</label>
+        <label style="color:#f472b6;"><input type="checkbox" data-ma="120" onchange="czmOnMaToggle()">120</label>
+      </span>
+    </div>
+    <div class="exp-progress-wrap" id="czmProgressWrap" style="display:none;">
+      <div class="exp-progress-bar"><div class="exp-progress-fill" id="czmProgressFill"></div></div>
+    </div>
+    <div class="exp-charts-head">按每个历史交易日筛选：涨停/涨幅≥5% 概念(在涨什么) 与 跌停/跌幅≤-5% 概念(在跌什么)。点概念看成员个股与K线(K线只到当天)。右侧把个股按行为分类归档(按概念区分)。</div>
+    <div class="czm-layout">
+      <!-- 左: 按天 -> 概念 -->
+      <div class="czm-col">
+        <div class="czm-daybar" id="czmDayBar"></div>
+        <div id="czmDayContent"><div class="empty">选择日期范围后点击「开始」扫描</div></div>
+      </div>
+      <!-- 右: 行为分类 -->
+      <div class="czm-col czm-cats">
+        <div class="czm-cats-hd">
+          <span>行为分类</span>
+          <span class="exp-status" id="czmCatConcept">选择左侧概念后, 拖拽个股到分类</span>
+        </div>
+        <div class="cat-grid" id="czmCatGrid"></div>
+      </div>
+    </div>
+  </div><!-- /view-caizhaomao -->
 
 <script src="https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"></script>
 <script>
@@ -2452,7 +2569,9 @@ function switchTab(tab) {
   document.getElementById('view-heat').style.display = tab === 'heat' ? '' : 'none';
   document.getElementById('view-ladder').style.display = tab === 'ladder' ? '' : 'none';
   document.getElementById('view-breakout').style.display = tab === 'breakout' ? '' : 'none';
+  document.getElementById('view-caizhaomao').style.display = tab === 'caizhaomao' ? '' : 'none';
   try { localStorage.setItem('hot_view', tab); } catch(e) {}
+  if (tab === 'caizhaomao') { initCzm(); }
   if (tab === 'ths') {
     if (_conceptTrackData) {
       // 已有数据, resize 图表
@@ -3604,10 +3723,380 @@ function renderConceptLine(idx, day) {
 // 窗口 resize 时刷新概念图表
 window.addEventListener('resize', () => {
   _conceptCharts.forEach(c => { try { c.resize(); } catch(e){} });
+  Object.values(czmStockCharts).forEach(c => { try { c.resize(); } catch(e){} });
 });
 
 // 初始化: 载入可选日期(不自动计算)
 populateDates();
+
+// ============== 招财猫复盘 ==============
+const CZM_LABELS = [
+  '右上角回调后起涨','右上角回调后续涨','右上角不回调式起涨','右上角不回调式续涨',
+  '右下角回调后起涨','右下角回调后续涨','右下角不回调式起涨','右下角不回调式续涨'
+];
+let czmTaskId = null, czmPollTimer = null;
+let czmResult = null;            // {days, by_day:[...], event_count}
+let czmLabelMap = {};            // "code_date_concept" -> {label,...}
+let czmLockMap = {};             // "date_concept" -> {date,concept,ts} 已锁定(操作过)的板块
+let czmCurDay = null;            // 当前选中的交易日 YYYYMMDD
+let czmCurConcept = null;        // 当前选中的概念 {concept, side, stocks}
+let czmInited = false;
+let czmDrag = null;
+const CZM_RESULT_KEY = 'czm_result_cache';   // 扫描结果持久化(切页面/刷新不丢)
+function czmLockKey(date,concept){ return `${date}_${concept}`; }
+function czmIsLocked(date,concept){ return !!czmLockMap[czmLockKey(date,concept)]; }
+// 保存扫描结果到 localStorage(含当前选中日), 使切 tab / 刷新后仍在
+function czmPersistResult(){
+  try{
+    localStorage.setItem(CZM_RESULT_KEY, JSON.stringify({
+      result: czmResult, curDay: czmCurDay, ts: Date.now()
+    }));
+  }catch(e){ /* 数据过大时忽略 */ }
+}
+function czmRestoreResult(){
+  try{
+    const raw=localStorage.getItem(CZM_RESULT_KEY);
+    if(!raw) return false;
+    const o=JSON.parse(raw);
+    if(o && o.result && o.result.days && o.result.days.length){
+      czmResult=o.result; czmCurDay=o.curDay || o.result.days[o.result.days.length-1];
+      return true;
+    }
+  }catch(e){}
+  return false;
+}
+// 从服务端拉取已保存的标签+锁定标记(持久化数据)
+async function czmLoadPersisted(){
+  try{
+    const [lb,lk]=await Promise.all([
+      fetch('/api/hot/caizhaomao/labels').then(r=>r.json()).catch(()=>null),
+      fetch('/api/hot/caizhaomao/locks').then(r=>r.json()).catch(()=>null),
+    ]);
+    if(lb && lb.success && Array.isArray(lb.items)){
+      czmLabelMap={};
+      lb.items.forEach(it=>{ czmLabelMap[czmKey(it.code,it.date,it.concept)]=it; });
+    }
+    if(lk && lk.success && lk.locks){ czmLockMap=lk.locks; }
+  }catch(e){}
+}
+const czmStockCharts = {};       // domId -> echarts 实例 (个股K线)
+const CZM_MA_COLORS = {5:'#facc15',10:'#60a5fa',20:'#a855f7',60:'#4dd07a',120:'#f472b6'};
+let czmMaPeriods = [5,10,20];    // 当前启用的均线周期(可配置, 记忆)
+// 恢复上次均线配置
+try{
+  const saved = JSON.parse(localStorage.getItem('czm_ma') || 'null');
+  if(Array.isArray(saved) && saved.length) czmMaPeriods = saved.map(Number);
+}catch(_){}
+function czmApplyMaCfgToUI(){
+  document.querySelectorAll('#czmMaCfg input[data-ma]').forEach(cb=>{
+    cb.checked = czmMaPeriods.includes(Number(cb.dataset.ma));
+  });
+}
+function czmOnMaToggle(){
+  const on=[];
+  document.querySelectorAll('#czmMaCfg input[data-ma]').forEach(cb=>{ if(cb.checked) on.push(Number(cb.dataset.ma)); });
+  czmMaPeriods = on;
+  try{ localStorage.setItem('czm_ma', JSON.stringify(on)); }catch(_){}
+  // 重画已渲染的图表(不重新拉数据)
+  Object.entries(czmStockCharts).forEach(([domId,ch])=>{
+    if(ch && ch.__czmBars && ch.__czmStock){ czmRenderKline(document.getElementById(domId), domId, ch.__czmBars, ch.__czmStock, ch.__czmSrc, ch.__czmFq); }
+  });
+}
+
+function initCzm(){
+  if(czmInited) return;
+  czmInited = true;
+  czmApplyMaCfgToUI();
+  const end=new Date(), start=new Date(); start.setDate(start.getDate()-7);
+  const f=d=>{const p=n=>String(n).padStart(2,'0');return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}`;};
+  try{
+    document.getElementById('czmStart').value = localStorage.getItem('czm_start') || f(start);
+    document.getElementById('czmEnd').value = localStorage.getItem('czm_end') || f(end);
+  }catch(_){ document.getElementById('czmStart').value=f(start); document.getElementById('czmEnd').value=f(end); }
+  // 恢复持久化: 先拉服务端标签/锁定, 再恢复上次扫描结果, 重绘页面(切 tab / 刷新不丢)
+  czmLoadPersisted().then(()=>{
+    if(czmRestoreResult()){
+      renderCzmDayBar();
+      renderCzmDay();
+    }
+    renderCzmCats();
+  });
+}
+function czmKey(code,date,concept){ return `${code}_${date}_${concept}`; }
+function czmSetBusy(busy){
+  document.getElementById('czmScan').disabled = busy;
+  const c=document.getElementById('czmCancel');
+  c.style.display = busy ? '' : 'none';
+  if(busy){ c.disabled=false; c.textContent='中断'; }
+}
+function czmSetProgress(pct,text){
+  document.getElementById('czmProgressFill').style.width = pct+'%';
+  document.getElementById('czmStatus').textContent = text;
+}
+async function startCzm(){
+  const start=document.getElementById('czmStart').value, end=document.getElementById('czmEnd').value;
+  if(!start||!end){ alert('请选择开始和结束日期'); return; }
+  try{ localStorage.setItem('czm_start',start); localStorage.setItem('czm_end',end); }catch(_){}
+  czmSetBusy(true);
+  document.getElementById('czmProgressWrap').style.display='block';
+  czmSetProgress(0,'正在创建扫描任务…');
+  document.getElementById('czmDayContent').innerHTML='<div class="empty">扫描中…</div>';
+  try{
+    const r=await (await fetch('/api/hot/caizhaomao/scan',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({start,end})})).json();
+    if(!r.success){ czmSetProgress(0,'失败: '+(r.error||'未知错误')); czmSetBusy(false); return; }
+    czmTaskId=r.task_id; pollCzm();
+  }catch(e){ czmSetProgress(0,'请求异常: '+e.message); czmSetBusy(false); }
+}
+function pollCzm(){
+  if(czmPollTimer) clearInterval(czmPollTimer);
+  czmPollTimer=setInterval(async()=>{
+    try{
+      const s=await (await fetch('/api/hot/caizhaomao/status/'+czmTaskId)).json();
+      if(!s.success){ clearInterval(czmPollTimer); czmSetProgress(0,'任务丢失(服务可能已重启), 请重试'); czmSetBusy(false); return; }
+      czmSetProgress(s.progress, `扫描中 · ${s.processed}/${s.total} · 已收集 ${(s.result&&s.result.event_count)||'…'}`);
+      if(s.status==='completed'||s.status==='cancelled'||s.status==='failed'){
+        clearInterval(czmPollTimer); czmSetBusy(false);
+        if(s.status==='failed'){ czmSetProgress(0,'失败: '+(s.error||'未知错误')); return; }
+        czmResult=s.result; czmLabelMap=s.labels||{}; czmLockMap=s.locks||czmLockMap||{};
+        const prefix=s.status==='cancelled'?'已中断':'完成';
+        czmSetProgress(100, `${prefix} · 收集 ${(czmResult&&czmResult.event_count)||0} 条大涨/大跌记录`);
+        czmPersistResult();   // 持久化, 切 tab / 刷新不丢
+        renderCzmDayBar();
+        // 默认选最后一天
+        if(czmResult && czmResult.days && czmResult.days.length){ selectCzmDay(czmResult.days[czmResult.days.length-1]); }
+        renderCzmCats();
+      }
+    }catch(e){ clearInterval(czmPollTimer); czmSetProgress(0,'查询状态失败(网络异常)'); czmSetBusy(false); }
+  },1000);
+}
+async function cancelCzm(){
+  if(!czmTaskId) return;
+  const b=document.getElementById('czmCancel'); b.disabled=true; b.textContent='中断中…';
+  try{ await fetch('/api/hot/caizhaomao/cancel/'+czmTaskId,{method:'POST'}); }catch(_){}
+}
+
+function fmtDay(d){ return `${d.slice(4,6)}/${d.slice(6,8)}`; }
+
+function renderCzmDayBar(){
+  const bar=document.getElementById('czmDayBar');
+  if(!czmResult || !czmResult.days || !czmResult.days.length){ bar.innerHTML=''; return; }
+  bar.innerHTML = czmResult.days.map(d=>
+    `<span class="czm-day-btn ${d===czmCurDay?'active':''}" onclick="selectCzmDay('${d}')">${d.slice(0,4)}-${fmtDay(d)}</span>`
+  ).join('');
+}
+function selectCzmDay(d){
+  czmCurDay=d; czmCurConcept=null;
+  czmPersistResult();
+  renderCzmDayBar();
+  renderCzmDay();
+}
+function czmDayData(){
+  if(!czmResult||!czmResult.by_day) return null;
+  return czmResult.by_day.find(x=>x.date===czmCurDay) || null;
+}
+function renderCzmDay(){
+  const box=document.getElementById('czmDayContent');
+  const day=czmDayData();
+  if(!day){ box.innerHTML='<div class="empty">该日无数据</div>'; return; }
+  const conceptChips=(list, side, bucket)=> (list && list.length)
+    ? `<div class="czm-concepts">` + list.map(c=>{
+        const locked=czmIsLocked(day.date, c.concept);
+        const arg=JSON.stringify({concept:c.concept,side,bucket}).replace(/'/g,"&#39;");
+        const cArg=c.concept.replace(/'/g,"\\'");
+        return `<span class="czm-concept ${side} ${locked?'locked':''}" onclick='selectCzmConcept(${arg})'>`
+          + `<span class="lockbtn" title="${locked?'已操作(点击解锁)':'标记为已操作'}" onclick="event.stopPropagation();czmToggleLock('${day.date}','${cArg}')">${locked?'🔒':'🔓'}</span>`
+          + `${escapeHtmlHT(c.concept)} <span class="cc-n">${c.count}</span></span>`;
+      }).join('') + `</div>`
+    : `<div class="czm-sub">无</div>`;
+  box.innerHTML = `
+    <div class="czm-sec">
+      <div class="czm-sec-title rise">📈 在涨什么 · ${day.date.slice(0,4)}-${fmtDay(day.date)}</div>
+      <div class="czm-sub">涨停数 Top10</div>${conceptChips(day.rising.by_limitup,'rise','by_limitup')}
+      <div class="czm-sub">涨幅≥5% 数 Top10</div>${conceptChips(day.rising.by_up5,'rise','by_up5')}
+    </div>
+    <div class="czm-sec">
+      <div class="czm-sec-title fall">📉 在跌什么 · ${day.date.slice(0,4)}-${fmtDay(day.date)}</div>
+      <div class="czm-sub">跌停数 Top10</div>${conceptChips(day.falling.by_limitdown,'fall','by_limitdown')}
+      <div class="czm-sub">跌幅≤-5% 数 Top10</div>${conceptChips(day.falling.by_down5,'fall','by_down5')}
+    </div>
+    <div id="czmStockPanel"></div>`;
+  // 重新渲染已选概念的股票(如果有)
+  if(czmCurConcept){ renderCzmStocks(); }
+}
+async function czmToggleLock(date, concept){
+  const key=czmLockKey(date,concept);
+  const willLock=!czmLockMap[key];
+  // 乐观更新 + 立即重绘
+  if(willLock) czmLockMap[key]={date,concept,ts:Date.now()};
+  else delete czmLockMap[key];
+  renderCzmDay();
+  try{
+    await fetch('/api/hot/caizhaomao/lock',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({date,concept,locked:willLock})});
+  }catch(e){ /* 网络失败保持乐观状态 */ }
+}
+function findCzmConcept(concept, side, bucket){
+  const day=czmDayData(); if(!day) return null;
+  const grp = side==='rise' ? day.rising : day.falling;
+  // 优先精确命中点击的榜单桶(涨停榜/≥5%榜互不串), 兼容旧数据回退遍历
+  if(bucket && grp[bucket]){
+    const c=(grp[bucket]||[]).find(x=>x.concept===concept);
+    if(c) return c;
+  }
+  for(const key in grp){
+    const c=(grp[key]||[]).find(x=>x.concept===concept);
+    if(c) return c;
+  }
+  return null;
+}
+function selectCzmConcept(info){
+  const c=findCzmConcept(info.concept, info.side, info.bucket);
+  if(!c) return;
+  czmCurConcept={concept:c.concept, side:info.side, bucket:info.bucket, stocks:c.stocks};
+  document.querySelectorAll('.czm-concept').forEach(el=>el.classList.remove('active'));
+  event.currentTarget.classList.add('active');
+  document.getElementById('czmCatConcept').textContent = `当前概念: ${c.concept} (${czmCurDay.slice(0,4)}-${fmtDay(czmCurDay)}) — 拖拽个股到分类`;
+  renderCzmStocks();
+  renderCzmCats();
+}
+function renderCzmStocks(){
+  const panel=document.getElementById('czmStockPanel');
+  if(!panel) return;
+  // 清理旧图表实例
+  Object.values(czmStockCharts).forEach(c=>{ try{c.dispose();}catch(_){} });
+  for(const k in czmStockCharts) delete czmStockCharts[k];
+  const c=czmCurConcept;
+  if(!c){ panel.innerHTML=''; return; }
+  const cards=c.stocks.map((s,i)=>{
+    const k=czmKey(s.code,s.date,c.concept);
+    const lab=czmLabelMap[k];
+    const pctCls=s.pct>=0?'up':'down';
+    const badge=({limitup:'<span class="czm-badge lu">涨停</span>',up5:'<span class="czm-badge u5">≥5%</span>',
+                  limitdown:'<span class="czm-badge ld">跌停</span>',down5:'<span class="czm-badge d5">≤-5%</span>'})[s.type]||'';
+    const posHtml=(s.pos!=null)?`<span class="czm-pos ${s.poslevel==='低位'?'lo':(s.poslevel==='高位'?'hi':'mid')}">${s.poslevel} ${s.pos}%</span>`:'';
+    const labHtml=lab?`<span class="czm-lab">▸${escapeHtmlHT(lab.label)}</span>`:'';
+    const sj=JSON.stringify(s).replace(/'/g,"&#39;");
+    const domId=`czmk_${s.code}_${s.date}`;
+    return `<div class="czm-kline-card" draggable="true" ondragstart='czmOnDrag(${sj})'>
+      <div class="czm-kline-info">
+        <span class="ki-name">${escapeHtmlHT(s.name)}</span>
+        <span class="s-code">${s.code}</span>
+        <span class="s-pct ${pctCls}">${s.pct>=0?'+':''}${s.pct}%</span>
+        ${badge}${posHtml}${labHtml}
+        <span class="ki-hint">拖到右侧分类 ▸</span>
+      </div>
+      <div class="czm-kline-chart" id="${domId}"></div>
+    </div>`;
+  }).join('');
+  panel.innerHTML = `<div class="czm-stocks">
+    <div class="czm-sub">「${escapeHtmlHT(c.concept)}」符合条件个股 · K线截止 ${czmCurDay.slice(0,4)}-${fmtDay(czmCurDay)}（近一年 · 带量）</div>
+    <div class="czm-kline-list">${cards}</div></div>`;
+  // 懒渲染每只个股的K线
+  c.stocks.forEach(s=>czmLoadKline(s));
+}
+
+async function czmLoadKline(s){
+  const domId=`czmk_${s.code}_${s.date}`;
+  const dom=document.getElementById(domId);
+  if(!dom) return;
+  try{
+    // 多取 max(均线)-1 根做前置数据, 使 MA120 等长均线在近一年窗口内也有值
+    const maxMa=Math.max(20,...(czmMaPeriods.length?czmMaPeriods:[20]));
+    const cnt=Math.min(500, 250 + maxMa);
+    // 默认前复权(fq=front), 与主流看盘软件一致, K线形态连续
+    const data=await (await fetch(`/api/hot/explosive/kline?code=${s.code}&end=${s.date}&count=${cnt}&fq=front`)).json();
+    if(!data.success||!data.bars||!data.bars.length){ dom.innerHTML=`<div class="chart-empty">K线加载失败: ${escapeHtmlHT(data.error||'无数据')}</div>`; return; }
+    czmRenderKline(dom, domId, data.bars, s, data.source, data.fq);
+  }catch(e){ dom.innerHTML=`<div class="chart-empty">请求异常: ${escapeHtmlHT(e.message)}</div>`; }
+}
+
+const CZM_SRC_LABEL={local_day:'通达信本地.day',tqcenter:'通达信tq接口'};
+const CZM_FQ_LABEL={front:'前复权',back:'后复权',none:'不复权'};
+function czmRenderKline(dom, domId, bars, s, source, fq){
+  let chart=czmStockCharts[domId];
+  if(chart){ try{chart.dispose();}catch(_){} }
+  chart=echarts.init(dom,'dark'); czmStockCharts[domId]=chart;
+  chart.__czmBars=bars; chart.__czmStock=s; chart.__czmSrc=source; chart.__czmFq=fq;   // 存下, 供切换均线时重画
+  const srcTxt='数据源: '+((CZM_SRC_LABEL[source])||source||'未知')+' · '+((CZM_FQ_LABEL[fq])||'前复权');
+  const dates=bars.map(b=>b.date), ohlc=bars.map(b=>[b.open,b.close,b.low,b.high]);
+  const vols=bars.map(b=>({value:b.vol, itemStyle:{color: b.close>=b.open ? 'rgba(239,83,80,0.6)':'rgba(38,166,154,0.6)'}}));
+  // 均线: 数据不足 n 根时该点为 '-'(自动留空), 适合任何个股(次新/老股均可)
+  const ma=n=>{const r=[];for(let i=0;i<bars.length;i++){if(i<n-1){r.push('-');continue;}let x=0;for(let j=i-n+1;j<=i;j++)x+=bars[j].close;r.push(+(x/n).toFixed(2));}return r;};
+  const endDash=`${s.date.slice(0,4)}-${s.date.slice(4,6)}-${s.date.slice(6,8)}`;
+  const maSeries=(czmMaPeriods||[]).slice().sort((a,b)=>a-b).map(n=>({
+    name:'MA'+n, type:'line', data:ma(n), symbol:'none', smooth:true,
+    lineStyle:{color:CZM_MA_COLORS[n]||'#cbd5e1', width:1},
+  }));
+  chart.setOption({
+    backgroundColor:'transparent', animation:false,
+    title:{text:srcTxt,left:8,top:2,textStyle:{color:'#6b7280',fontSize:9,fontWeight:'normal'}},
+    tooltip:{trigger:'axis',axisPointer:{type:'cross'}},
+    legend:{show:true,top:0,right:8,itemWidth:14,itemHeight:8,textStyle:{color:'#9aa0a6',fontSize:9},
+      data:['日K'].concat(maSeries.map(x=>x.name))},
+    axisPointer:{link:[{xAxisIndex:'all'}]},
+    grid:[{left:48,right:12,top:18,height:'60%'},{left:48,right:12,top:'76%',height:'16%'}],
+    xAxis:[
+      {type:'category',data:dates,boundaryGap:true,axisLabel:{color:'#9aa0a6',fontSize:9}},
+      {type:'category',gridIndex:1,data:dates,axisLabel:{show:false}},
+    ],
+    yAxis:[
+      {scale:true,splitLine:{lineStyle:{color:'#252a33'}},axisLabel:{color:'#9aa0a6',fontSize:9}},
+      {gridIndex:1,splitNumber:2,axisLabel:{show:false},splitLine:{show:false}},
+    ],
+    dataZoom:[{type:'inside',xAxisIndex:[0,1],start:0,end:100},{type:'slider',xAxisIndex:[0,1],bottom:2,height:12,start:0,end:100}],
+    series:[
+      {name:'日K',type:'candlestick',data:ohlc,itemStyle:{color:'#ef5350',color0:'#26a69a',borderColor:'#ef5350',borderColor0:'#26a69a'},
+        markLine:{symbol:'none',silent:true,data:[{xAxis:endDash,lineStyle:{color:'#ffd166',type:'dashed',width:1},label:{formatter:'当天',color:'#ffd166',fontSize:9}}]}},
+    ].concat(maSeries).concat([
+      {name:'成交量',type:'bar',xAxisIndex:1,yAxisIndex:1,data:vols},
+    ]),
+  },true);
+  chart.resize();
+}
+
+// ---- 右侧行为分类(按当前概念) ----
+function renderCzmCats(){
+  const grid=document.getElementById('czmCatGrid');
+  if(!grid) return;
+  const concept = czmCurConcept ? czmCurConcept.concept : null;
+  grid.innerHTML = CZM_LABELS.map(lb=>{
+    // 只显示当前概念下的分类项
+    const items = Object.values(czmLabelMap).filter(x=>x.label===lb && (!concept || x.concept===concept))
+      .sort((a,b)=>(a.date||'').localeCompare(b.date||''));
+    const chips = items.map(it=>{
+      const pctCls=(it.pct>=0)?'up':'down';
+      return `<div class="cat-chip">
+        <span class="cp s-pct ${pctCls}">${escapeHtmlHT(it.name||it.code)}</span>
+        <span class="s-code">${it.code}·${fmtDay(it.date||'')}</span>
+        <span class="rm" title="移除" onclick="czmRemoveLabel('${it.code}','${it.date}','${escapeHtmlHT(it.concept)}')">✕</span>
+      </div>`;
+    }).join('') || '<span class="s-code" style="padding:3px;">—</span>';
+    return `<div class="cat-box" data-label="${escapeHtmlHT(lb)}"
+        ondragover="event.preventDefault();this.classList.add('dragover');"
+        ondragleave="this.classList.remove('dragover');"
+        ondrop="czmOnDrop(event,'${escapeHtmlHT(lb)}')">
+      <div class="cat-hd"><span>${escapeHtmlHT(lb)}</span><span class="cat-n">${items.length}</span></div>
+      <div class="cat-items">${chips}</div>
+    </div>`;
+  }).join('');
+}
+function czmOnDrag(s){ czmDrag=s; }
+function czmOnDrop(ev,label){
+  ev.preventDefault(); ev.currentTarget.classList.remove('dragover');
+  if(!czmDrag || !czmCurConcept){ czmDrag=null; return; }
+  czmSaveLabel(czmDrag, czmCurConcept.concept, label);
+  czmDrag=null;
+}
+async function czmSaveLabel(s, concept, label){
+  const k=czmKey(s.code,s.date,concept);
+  if(label) czmLabelMap[k]={code:s.code,date:s.date,concept,label,name:s.name||'',type:s.type||'',pct:s.pct};
+  else delete czmLabelMap[k];
+  renderCzmStocks(); renderCzmCats();
+  try{ await fetch('/api/hot/caizhaomao/label',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({code:s.code,date:s.date,concept,label,name:s.name||'',type:s.type||'',pct:s.pct})}); }
+  catch(e){}
+}
+function czmRemoveLabel(code,date,concept){ czmSaveLabel({code,date}, concept, ''); }
 </script>
 </body>
 </html>

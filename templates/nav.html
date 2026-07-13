@@ -85,8 +85,14 @@
 
   // 根据 hash 设置 iframe src 并高亮对应导航项
   function applyHash() {
-    const hash = location.hash || '#/update';
+    // 无 hash 时(全新打开/刷新)优先恢复上次访问的页面
+    let hash = location.hash;
+    if (!hash) {
+      try { hash = localStorage.getItem('nav_page') || '#/update'; } catch(e) { hash = '#/update'; }
+      if (location.hash !== hash) { location.hash = hash; return; } // 会再次触发 applyHash
+    }
     const src = TAB_MAP[hash] || DEFAULT_SRC;
+    try { localStorage.setItem('nav_page', hash); } catch(e) {}
     const frame = document.getElementById('frame');
     // src 未变时不重设, 避免 iframe 无谓重载丢失页面状态
     if (frame.getAttribute('src') !== src) {

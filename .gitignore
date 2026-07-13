@@ -75,6 +75,8 @@ _tqcenter_init.py
 .exp_picks.json
 .exp_scan.json
 .member_closes.json
+.caizhaomao_labels.json
+.caizhaomao_locks.json
 
 # 测试脚本
 _test_*.py
