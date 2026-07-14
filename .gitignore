@@ -91,5 +91,13 @@ _codes_kcb.json
 artifacts/debug/
 .playwright-profile/
 
+# 探针临时产物 (每次抓取自动重新生成)
+_debug_browser.json
+_debug_browser.png
+_debug_server.log
+_session_cmd.json
+_session_result.json
+_session_alive.flag
+
 # 误创建的乱码文件
 ersADMINDesktopAI*

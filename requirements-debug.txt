@@ -1,2 +1,0 @@
-# Debug-only browser automation; not installed by production bootstrap.
-playwright==1.59.0
