@@ -87,5 +87,9 @@ Thumbs.db
 _codes_cyb.json
 _codes_kcb.json
 
+# Playwright 调试产物/临时浏览器资料
+artifacts/debug/
+.playwright-profile/
+
 # 误创建的乱码文件
 ersADMINDesktopAI*

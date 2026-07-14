@@ -60,3 +60,13 @@ database:
   user: "postgres"
   password: "mysecretpassword"
   dbname: "postgres"
+
+# 开发诊断配置（生产环境保持 enabled: false）
+debug:
+  enabled: false
+  playwright:
+    base_url: "http://127.0.0.1:5000"
+    headless: false
+    timeout_ms: 30000
+    watch_seconds: 60
+    output_dir: "artifacts/debug"

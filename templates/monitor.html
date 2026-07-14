@@ -82,6 +82,15 @@
     .chart-row .chart-card { flex: 1 1 100%; }
   }
   .chart-container { width: 100%; height: 100%; }
+  /* 盯盘分区 tab 条 */
+  .monitor-tabs { display: flex; gap: 6px; padding: 8px 12px 0; flex-wrap: wrap; }
+  .mon-tab { padding: 7px 16px; font-size: 13px; font-weight: 600; cursor: pointer;
+    border-radius: 8px 8px 0 0; color: var(--text-secondary); background: var(--bg-card);
+    border: 1px solid var(--border-color); border-bottom: none; transition: background .15s, color .15s; }
+  .mon-tab:hover:not(.active) { color: var(--text-primary); background: var(--bg-active, #1f232c); }
+  .mon-tab.active { color: var(--up-color, #ef5350); background: var(--bg-active, #1f232c);
+    box-shadow: inset 0 -2px 0 var(--up-color, #ef5350); }
+  .mon-view { padding-top: 4px; }
   /* gridstack 面板: 卡片填满 item-content */
   .grid-stack-item-content { padding: 0; }
   .grid-stack-item-content > .chart-card,
@@ -95,6 +104,11 @@
   #dailyChart, #minuteChart, #histMinuteChart { height: 100%; }
   #stockDailyChart, #stockMinute5Chart, #stockHistChart { height: 100%; }
   #conceptZtChart, #conceptDistChart { height: 100%; }
+  .ever-concept-card { border-bottom: 1px solid #2b3038; padding: 4px 0 8px; }
+  .ever-concept-card.current-top { background: rgba(239,83,80,.035); }
+  .ever-row { display: flex; gap: 6px; padding: 4px; }
+  .ever-row-head { display: flex; align-items: center; gap: 8px; padding: 5px 8px 2px; font-size: 12px; color: #ccc; }
+  .ever-chart-box { flex: 1; min-width: 0; height: 120px; }
   /* 图表标题栏内的切换按钮 */
   .chart-toggle { float: right; font-size: 11px; color: var(--text-muted); cursor: pointer; font-weight: 400; }
   .chart-toggle:hover { color: var(--up-color); }
@@ -270,8 +284,17 @@
     </div>
   </div>
 
+  <!-- 盯盘分区 tab -->
+  <div class="monitor-tabs">
+    <span class="mon-tab active" data-mtab="board" onclick="switchMonitorTab('board')">👁️ 盯盘</span>
+    <span class="mon-tab" data-mtab="dist" onclick="switchMonitorTab('dist')">🔥 涨停涨幅分布盯盘</span>
+    <span class="mon-tab" data-mtab="chain" onclick="switchMonitorTab('chain')">🏭 产业链盯盘</span>
+  </div>
+
+  <!-- Tab 1: 盯盘(K线/分时/个股列表) -->
+  <div class="mon-view" id="mon-view-board">
   <!-- 自由拖拽布局: 每个面板可拖动位置 + 调整大小 -->
-  <div class="grid-stack">
+  <div class="grid-stack" data-grid="board">
     <!-- 日K线 -->
     <div class="grid-stack-item" gs-id="item-daily" gs-x="0" gs-y="0" gs-w="6" gs-h="10" id="item-daily">
       <div class="grid-stack-item-content">
@@ -437,8 +460,14 @@
       </div>
     </div>
 
+  </div><!-- /grid-stack board -->
+  </div><!-- /mon-view-board -->
+
+  <!-- Tab 2: 涨停涨幅分布盯盘 -->
+  <div class="mon-view" id="mon-view-dist" style="display:none">
+  <div class="grid-stack" data-grid="dist">
     <!-- 概念涨停数 Top10 (柱状/折线切换) -->
-    <div class="grid-stack-item" gs-id="item-czt" gs-x="0" gs-y="30" gs-w="6" gs-h="10" id="item-czt">
+    <div class="grid-stack-item" gs-id="item-czt" gs-x="0" gs-y="0" gs-w="6" gs-h="10" id="item-czt">
       <div class="grid-stack-item-content">
         <div class="chart-card">
           <div class="chart-title">
@@ -454,7 +483,7 @@
     </div>
 
     <!-- 概念涨跌幅分布 Top10 -->
-    <div class="grid-stack-item" gs-id="item-cdist" gs-x="6" gs-y="30" gs-w="6" gs-h="10" id="item-cdist">
+    <div class="grid-stack-item" gs-id="item-cdist" gs-x="6" gs-y="0" gs-w="6" gs-h="10" id="item-cdist">
       <div class="grid-stack-item-content">
         <div class="chart-card">
           <div class="chart-title">
@@ -469,8 +498,28 @@
       </div>
     </div>
 
+    <!-- 曾进Top10概念: 排名图 + 涨跌分布分时图(每个概念一行) -->
+    <div class="grid-stack-item" gs-id="item-everlist" gs-x="0" gs-y="10" gs-w="12" gs-h="24" id="item-everlist">
+      <div class="grid-stack-item-content">
+        <div class="chart-card">
+          <div class="chart-title">
+            📈 曾进Top10概念 · 排名与涨跌分布分时
+            <span style="float:right;font-size:10px;color:var(--text-muted);font-weight:400">左:排名(1在上,出榜断灰) 右:涨跌分布(金涨停/红5-7%/粉3-5% | 浅绿3-5%/绿5-7%/深绿跌停)</span>
+          </div>
+          <div id="everListContainer" style="overflow-y:auto;flex:1;min-height:0;"></div>
+          <div class="hint-bar" id="everListHint">等待数据…</div>
+        </div>
+      </div>
+    </div>
+
+  </div><!-- /grid-stack dist -->
+  </div><!-- /mon-view-dist -->
+
+  <!-- Tab 3: 产业链盯盘 -->
+  <div class="mon-view" id="mon-view-chain" style="display:none">
+  <div class="grid-stack" data-grid="chain">
     <!-- 产业链盯盘 -->
-    <div class="grid-stack-item" gs-id="item-chainboard" gs-x="0" gs-y="40" gs-w="12" gs-h="16" id="item-chainboard">
+    <div class="grid-stack-item" gs-id="item-chainboard" gs-x="0" gs-y="0" gs-w="12" gs-h="16" id="item-chainboard">
       <div class="grid-stack-item-content">
         <div class="chart-card" style="display:flex;flex-direction:column;">
           <div class="chart-title">
@@ -484,12 +533,17 @@
       </div>
     </div>
 
-  </div>
+  </div><!-- /grid-stack chain -->
+  </div><!-- /mon-view-chain -->
 
 <script src="/static/libs/echarts.min.js" onerror="this.onerror=null;this.src='https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js'"></script>
 <script src="/static/libs/gridstack-all.min.js" onerror="this.onerror=null;this.src='https://cdn.jsdelivr.net/npm/gridstack@11/dist/gridstack-all.min.js'"></script>
 <script src="/static/libs/socket.io.min.js" onerror="this.onerror=null;this.src='https://cdn.jsdelivr.net/npm/socket.io-client@4/dist/socket.io.min.js'"></script>
 <script>
+window.__MONITOR_DEBUG__ = {
+  enabled: {{ 'true' if debug_mode else 'false' }},
+  serverInstance: {{ server_instance_id|tojson }}
+};
 window._errlog = [];
 window.addEventListener('error', function(e) { window._errlog.push((e.message||'')+(e.filename?(' @'+e.filename.split('/').pop()+':'+e.lineno):'')); });
 window.addEventListener('unhandledrejection', function(e) { window._errlog.push('REJ: '+(e.reason&&e.reason.message?e.reason.message:e.reason)); });
@@ -498,6 +552,7 @@ let dailyChart = null, minuteChart = null, histMinuteChart = null;
 let dailyData = [];   // 缓存日K数据
 let stockDailyChart = null, stockMinute5Chart = null, stockHistChart = null;
 let conceptZtChart = null, conceptDistChart = null;
+let _everListCharts = [];            // 曾进top10概念的动态echarts实例(排名图+涨幅图)
 let _cztChartMode = 'bar';  // 'bar' | 'line'
 let _conceptZtData = null;  // 缓存最近一次接口数据
 let _conceptRefreshTimer = null;
@@ -1139,6 +1194,7 @@ function resizeAllCharts() {
   [dailyChart, minuteChart, histMinuteChart,
    stockDailyChart, stockMinute5Chart, stockHistChart,
    conceptZtChart, conceptDistChart].forEach(c => c && c.resize());
+  _everListCharts.forEach(c => c && c.resize());
 }
 // 图表错误显示(不破坏 echarts 实例: 用临时 overlay)
 // persistent=true: 不自动消失(超时/卡死类严重错误), 点击可关闭
@@ -1170,60 +1226,55 @@ window.addEventListener('resize', function() {
   }, 500);
 });
 
-// ===== gridstack 自由拖拽布局 =====
-let grid = null;
-function initGridStack() {
-  grid = GridStack.init({
+// ===== gridstack 自由拖拽布局(3个分区 tab 各一个独立 grid) =====
+let grid = null;                 // 兼容旧引用: 指向"盯盘"主分区 grid
+const monGrids = {};             // {board, dist, chain} -> GridStack 实例
+function _initOneGrid(gridEl) {
+  const gridName = gridEl.getAttribute('data-grid') || 'board';
+  const layoutKey = 'monitor_gs_layout_' + gridName;
+  const g = GridStack.init({
     column: 12,
-    cellHeight: 30,      // 固定单元格高度, 便于精确缩放
+    cellHeight: 30,
     margin: 6,
-    float: true,         // 自由位置, 不自动上浮
+    float: true,
     disableOneColumnMode: true,
     resizable: { handles: 'all' },
-    draggable: { handle: '.chart-title, .list-head' },  // 仅标题栏可拖动
+    draggable: { handle: '.chart-title, .list-head' },
     animate: false,
-  });
-  // 恢复保存的布局
-  const saved = localStorage.getItem('monitor_gs_layout');
+  }, gridEl);
+  // 恢复该分区的布局(按分区独立存储; 兼容旧的全局 key 作为 board 的回退)
+  let saved = localStorage.getItem(layoutKey);
+  if (!saved && gridName === 'board') saved = localStorage.getItem('monitor_gs_layout');
   if (saved) {
     try {
       const layout = JSON.parse(saved);
       if (Array.isArray(layout) && layout.length) {
-        // 逐个更新面板位置/尺寸, 而非用 grid.load() (load 会删除 layout 里没有的面板)
-        const allEls = Array.from(document.querySelectorAll('.grid-stack-item'));
+        const els = Array.from(gridEl.querySelectorAll('.grid-stack-item'));
         const layoutMap = {};
         layout.forEach(n => { if (n.id) layoutMap[n.id] = n; });
         const hasIds = Object.keys(layoutMap).length > 0;
-        allEls.forEach((el, i) => {
-          let n = null;
-          if (hasIds) {
-            // 新版: 用 gs-id 匹配
-            n = layoutMap[el.getAttribute('gs-id') || el.id];
-          } else if (i < layout.length) {
-            // 旧版兼容: layout 无 id 时按 DOM 顺序匹配
-            n = layout[i];
-          }
+        els.forEach((el, i) => {
+          let n = hasIds ? layoutMap[el.getAttribute('gs-id') || el.id] : (i < layout.length ? layout[i] : null);
           if (n) {
             const opts = {};
             if (n.x != null) opts.x = n.x;
             if (n.y != null) opts.y = n.y;
             if (n.w != null) opts.w = n.w;
             if (n.h != null) opts.h = n.h;
-            if (Object.keys(opts).length) grid.update(el, opts);
+            if (Object.keys(opts).length) g.update(el, opts);
           }
         });
       }
     } catch(e) {}
   }
-  // 给每个面板标题栏注入锁按钮
-  document.querySelectorAll('.grid-stack-item').forEach(el => {
+  // 每个面板标题栏注入锁按钮
+  gridEl.querySelectorAll('.grid-stack-item').forEach(el => {
     const title = el.querySelector('.chart-title, .list-head');
     if (!title || title.querySelector('.lock-btn')) return;
     const btn = document.createElement('span');
     btn.className = 'lock-btn';
     btn.title = '点击锁定/解锁(锁定后不可拖动缩放)';
     btn.textContent = '🔓';
-    // 已是 locked 态(从 localStorage 恢复)则显示锁
     const locked = localStorage.getItem('monitor_lock_' + el.id) === '1';
     if (locked) { el.classList.add('gs-locked'); btn.textContent = '🔒'; btn.classList.add('locked'); }
     btn.addEventListener('click', function(e) {
@@ -1231,24 +1282,45 @@ function initGridStack() {
       const isLocked = el.classList.toggle('gs-locked');
       btn.textContent = isLocked ? '🔒' : '🔓';
       btn.classList.toggle('locked', isLocked);
-      // 锁定: 禁用该面板拖动+缩放; 解锁: 恢复
-      grid.movable(el, !isLocked);
-      grid.resizable(el, !isLocked);
+      g.movable(el, !isLocked);
+      g.resizable(el, !isLocked);
       try { localStorage.setItem('monitor_lock_' + el.id, isLocked ? '1' : '0'); } catch(e) {}
     });
     title.appendChild(btn);
-    // 若初始为锁定态, 同步禁用拖动缩放
-    if (locked) { grid.movable(el, false); grid.resizable(el, false); }
+    if (locked) { g.movable(el, false); g.resizable(el, false); }
   });
-  // 拖拽/缩放过程中实时 resize echarts
-  grid.on('change', () => resizeAllCharts());
-  // 拖拽/缩放结束: 保存布局 + resize
-  grid.on('dragstop resizestop', () => {
-    try { localStorage.setItem('monitor_gs_layout', JSON.stringify(grid.save(false))); } catch(e) {}
+  g.on('change', () => resizeAllCharts());
+  g.on('dragstop resizestop', () => {
+    try { localStorage.setItem(layoutKey, JSON.stringify(g.save(false))); } catch(e) {}
     resizeAllCharts();
   });
+  monGrids[gridName] = g;
+  return g;
+}
+function initGridStack() {
+  document.querySelectorAll('.grid-stack[data-grid]').forEach(_initOneGrid);
+  grid = monGrids.board || null;
 }
 try { initGridStack(); } catch(e) { console.error('[initGridStack] 异常:', e); window._errlog.push('[initGridStack] ' + e.message); }
+
+// ===== 盯盘分区 tab 切换 =====
+function switchMonitorTab(tab) {
+  document.querySelectorAll('.mon-tab').forEach(el => el.classList.toggle('active', el.dataset.mtab === tab));
+  document.getElementById('mon-view-board').style.display = tab === 'board' ? '' : 'none';
+  document.getElementById('mon-view-dist').style.display = tab === 'dist' ? '' : 'none';
+  document.getElementById('mon-view-chain').style.display = tab === 'chain' ? '' : 'none';
+  try { localStorage.setItem('monitor_tab', tab); } catch(e) {}
+  // 切到该分区后 resize 其中图表(隐藏时 echarts 尺寸为0, 需重算)
+  setTimeout(() => {
+    resizeAllCharts();
+    if (tab === 'chain') loadChainBoard(false);
+  }, 60);
+}
+// 恢复上次分区
+try {
+  const _mt = localStorage.getItem('monitor_tab');
+  if (_mt && _mt !== 'board') switchMonitorTab(_mt);
+} catch(e) {}
 
 // 指标 checkbox 控制: 用 dispatchAction 显隐 series, 按 data-target 路由到对应图表
 document.querySelectorAll('.indicator-toggle input[type="checkbox"]').forEach(function(cb) {
@@ -2156,7 +2228,7 @@ async function loadConceptZtStats() {
   const hint = document.getElementById('conceptZtHint');
   const hint2 = document.getElementById('conceptDistHint');
   try {
-    const resp = await fetchWithTimeout('/api/monitor/concept/zt-stats', 12000);
+    const resp = await fetchWithTimeout('/api/monitor/concept/zt-stats', 20000);
     const data = await resp.json();
     if (!data.success || !data.concepts) {
       hint.textContent = '⚠ ' + (data.error || '无数据');
@@ -2167,9 +2239,10 @@ async function loadConceptZtStats() {
     setSrcTag('#item-czt', data.source);
     renderConceptZtChart(data);
     renderConceptDistChart(data);
+    renderEverList(data);
     const top3 = data.concepts.slice(0, 3).map(c => `${c.concept}(${c.zt_count})`).join(' ');
     hint.textContent = `${data.ts} · 涨停概念${data.concepts.length}个 · ${top3}`;
-    hint2.textContent = `${data.ts} · ${data.concepts.length}个概念 · 共${data.concepts.reduce((s,c)=>s+c.total_members,0)}只主板成分股`;
+    hint2.textContent = `${data.ts} · ${data.concepts.length}个概念 · 当前Top概念有效成员合计${data.concepts.reduce((s,c)=>s+c.total_members,0)}（股票跨概念会重复）`;
   } catch(e) {
     hint.textContent = '⚠ 请求异常: ' + e.message;
     hint2.textContent = '';
@@ -2349,11 +2422,230 @@ function renderConceptDistChart(data) {
   conceptDistChart.resize();
 }
 
+// ===== 曾进Top10概念: 排名图 + 涨跌分布分时图 =====
+// trade_min -> HH:MM (9:25=0, 11:30=125, 13:00=126, 15:00=246)
+function tradeMinToTimeLabel(m) {
+  let h, mi;
+  if (m <= 125) { h = 9; mi = 25 + m; }
+  else { h = 13; mi = (m - 126); }
+  h += Math.floor(mi / 60); mi = mi % 60;
+  return h + ':' + String(mi).padStart(2, '0');
+}
+
+// 6档配置(涨侧正向, 跌侧负向, 形成以0为轴上下对称面积)
+const _DIST6_SERIES = [
+  { key: 'zt_up',  name: '涨停',   color: '#ffd700', side: 1 },
+  { key: 'g5_7',   name: '涨5-7%', color: '#e0483f', side: 1 },
+  { key: 'g3_5',   name: '涨3-5%', color: '#ff69b4', side: 1 },
+  { key: 'zt_down',name: '跌停',   color: '#0d5c2e', side: -1 },
+  { key: 'd5_7',   name: '跌5-7%', color: '#1f9e63', side: -1 },
+  { key: 'd3_5',   name: '跌3-5%', color: '#8fd9b6', side: -1 },
+];
+
+function monitorEscapeHtml(value) {
+  return String(value == null ? '' : value).replace(/[&<>"']/g, ch => ({
+    '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;'
+  })[ch]);
+}
+
+function renderEverList(data) {
+  const container = document.getElementById('everListContainer');
+  const hint = document.getElementById('everListHint');
+  const everList = data.top10_ever || [];
+  const ranksTl = data.ranks_timeline || [];
+  const dist6Tl = data.dist6_timeline || [];
+  const conceptsMap = {};
+  // concepts 只返回当前前15; ever_current 补齐所有曾入榜概念当前的真实数量/成员数。
+  (data.concepts || []).forEach(c => { conceptsMap[c.concept] = c; });
+  Object.entries(data.ever_current || {}).forEach(([name, info]) => { conceptsMap[name] = info; });
+
+  if (!everList.length) {
+    container.innerHTML = '<div style="text-align:center;color:#666;padding:20px;">暂无曾进Top10的概念（9:25后开始统计）</div>';
+    hint.textContent = '等待数据…';
+    return;
+  }
+
+  // 销毁旧实例
+  _everListCharts.forEach(c => { try { c.dispose(); } catch(e){} });
+  _everListCharts = [];
+
+  // 构建每概念的当前信息(涨停数/成员数/当前排名)
+  let html = '';
+  everList.forEach((concept, idx) => {
+    const info = conceptsMap[concept] || {};
+    const ztCount = info.zt_count || 0;
+    const members = info.total_members || 0;
+    // 当前排名: 取ranks_timeline最后一点
+    let curRank = '-';
+    if (ranksTl.length) {
+      const r = ranksTl[ranksTl.length - 1].ranks[concept];
+      curRank = r ? '#' + r : '出榜';
+    }
+    const rankColor = curRank === '出榜' ? '#666' : '#ffd54f';
+    const safeConcept = monitorEscapeHtml(concept);
+    html += `<div class="ever-concept-card ${curRank==='#1'?'current-top':''}" data-concept="${safeConcept}">`
+      + `<div class="ever-row-head"><span style="color:#fff;font-weight:600">${safeConcept}</span>`
+      + `<span style="color:${rankColor}">当前${curRank}</span>`
+      + `<span style="color:#e0483f">涨停${ztCount}</span>`
+      + `<span style="color:#888">成员${members}只</span></div>`
+      + `<div class="ever-row" id="everRow_${idx}">`
+      + `<div class="ever-chart-box"><div id="rankChart_${idx}" style="height:100%"></div></div>`
+      + `<div class="ever-chart-box"><div id="distChart_${idx}" style="height:100%"></div></div>`
+      + `</div></div>`;
+  });
+  container.innerHTML = html;
+
+  // 逐概念渲染
+  everList.forEach((concept, idx) => {
+    const rankEl = document.getElementById('rankChart_' + idx);
+    const distEl = document.getElementById('distChart_' + idx);
+    if (rankEl) {
+      const ch = echarts.init(rankEl, 'dark');
+      _everListCharts.push(ch);
+      renderRankChart(ch, concept, ranksTl);
+    }
+    if (distEl) {
+      const ch = echarts.init(distEl, 'dark');
+      _everListCharts.push(ch);
+      renderDistChart6(ch, concept, dist6Tl);
+    }
+  });
+
+  hint.textContent = `${data.ts} · 曾进Top10概念${everList.length}个 · 排名点${ranksTl.length} · 分时点${dist6Tl.length}`;
+}
+
+// 排名图: 倒轴(1在上), 出榜(rank=null)断线变灰
+// X轴用连续索引(去除午休间隙), formatter显示时间
+function renderRankChart(chart, concept, ranksTl) {
+  if (!ranksTl.length) {
+    chart.setOption({ backgroundColor:'transparent', title:{text:'暂无排名数据',left:'center',top:'center',textStyle:{color:'#666',fontSize:11}} }, true);
+    return;
+  }
+  // X轴: 用连续索引, 标签显示对应时间
+  const xData = ranksTl.map((_, i) => i);
+  const tmArr = ranksTl.map(t => t.trade_min);
+  const rankData = ranksTl.map(t => {
+    const r = t.ranks[concept];
+    return r ? r : null;  // null 断线
+  });
+  // 标签: 按固定间隔显示(约每整点一个), 用trade_min就近匹配
+  const labelTargets = [0, 60, 120, 125, 126, 186, 246];  // 9:25 10:25 11:25 11:30 13:00 14:00 15:00
+  const labelIdx = new Set();
+  labelTargets.forEach(target => {
+    // 找最接近target的数据点索引
+    let best = -1, bestDiff = 999;
+    tmArr.forEach((tm, i) => {
+      const diff = Math.abs(tm - target);
+      if (diff < bestDiff) { bestDiff = diff; best = i; }
+    });
+    if (best >= 0 && bestDiff <= 5) labelIdx.add(best);  // 容差5分钟
+  });
+  const currentRank = [...rankData].reverse().find(v => v != null);
+  chart.setOption({
+    backgroundColor: 'transparent', animation: false,
+    title: {
+      text: '排名', left: 4, top: 2, textStyle: { color: '#9aa0a6', fontSize: 10 },
+      subtext: currentRank ? `当前 #${currentRank}` : '当前出榜',
+      subtextStyle: { color: currentRank === 1 ? '#ffd54f' : '#42a5f5', fontSize: 10, fontWeight: 'bold' }
+    },
+    tooltip: { trigger: 'axis', formatter: p => {
+      const v = p[0].data;
+      return tradeMinToTimeLabel(tmArr[p[0].dataIndex]) + (v ? ' 第' + v + '名' : ' 出榜');
+    }},
+    grid: { left: 32, right: 34, top: 18, bottom: 18 },
+    xAxis: { type: 'category', data: xData, boundaryGap: false,
+      axisLabel: { color:'#9aa0a6', fontSize:8,
+        formatter: i => tradeMinToTimeLabel(tmArr[Number(i)] || 0),
+        interval: (i) => labelIdx.has(i) },
+      axisLine: { lineStyle:{ color:'#444' } } },
+    yAxis: { type: 'value', inverse: true, min: 0.5, max: 10.5,
+      interval: 1, axisLabel: { color:'#9aa0a6', fontSize:9, formatter: v => v<=10 ? v : '' },
+      splitLine: { lineStyle:{ color:'#333' } } },
+    series: [
+      { type: 'line', data: rankData, smooth: false, step: 'end', symbol: 'circle', symbolSize: (value, params) => params.dataIndex === rankData.length - 1 ? 7 : 3,
+        connectNulls: false,
+        lineStyle: { width: 1.5, color: '#42a5f5' },
+        itemStyle: { color: params => params.dataIndex === rankData.length - 1 ? '#ffd54f' : '#42a5f5' },
+        endLabel: { show: true, formatter: () => currentRank ? `#${currentRank}` : '', color: currentRank === 1 ? '#ffd54f' : '#42a5f5', fontSize: 11, fontWeight: 'bold' },
+        areaStyle: { opacity: 0.08 } },
+      { type: 'line', data: ranksTl.map(() => 5), symbol: 'none',
+        lineStyle: { type: 'dashed', color: '#e0483f', width: 1 },
+        silent: true, tooltip: { show: false } },
+    ],
+  }, true);
+}
+
+// 涨跌分布分时图: 6档折线(涨侧正向/跌侧负向, 各自独立不堆叠)
+// X轴连续索引(去午休间隙), Y轴上下对称用该概念最大值统一
+function renderDistChart6(chart, concept, dist6Tl) {
+  if (!dist6Tl.length) {
+    chart.setOption({ backgroundColor:'transparent', title:{text:'暂无分时数据',left:'center',top:'center',textStyle:{color:'#666',fontSize:11}} }, true);
+    return;
+  }
+  const xData = dist6Tl.map((_, i) => i);
+  const tmArr = dist6Tl.map(t => t.trade_min);
+  const series = _DIST6_SERIES.map(s => ({
+    name: s.name, type: 'line',
+    data: dist6Tl.map(t => {
+      const b = t.buckets[concept] || {};
+      return (b[s.key] || 0) * s.side;
+    }),
+    smooth: true, symbol: 'none',
+    lineStyle: { width: 1.5 },
+    itemStyle: { color: s.color },
+    emphasis: { focus: 'series' },
+  }));
+  // Y轴: 算该概念所有时间点6档的最大绝对值, 上下对称统一
+  let maxAbs = 0;
+  dist6Tl.forEach(t => {
+    const b = t.buckets[concept] || {};
+    _DIST6_SERIES.forEach(s => {
+      const v = b[s.key] || 0;
+      if (v > maxAbs) maxAbs = v;
+    });
+  });
+  const yMax = Math.max(maxAbs * 1.15, 5);  // 留15%余量, 最小5
+  // 标签: 按固定间隔显示(约每整点一个), 用trade_min就近匹配
+  const labelTargets = [0, 60, 120, 125, 126, 186, 246];
+  const labelIdx = new Set();
+  labelTargets.forEach(target => {
+    let best = -1, bestDiff = 999;
+    dist6Tl.forEach((t, i) => {
+      const diff = Math.abs(t.trade_min - target);
+      if (diff < bestDiff) { bestDiff = diff; best = i; }
+    });
+    if (best >= 0 && bestDiff <= 5) labelIdx.add(best);
+  });
+  chart.setOption({
+    backgroundColor: 'transparent', animation: false,
+    title: { text: '涨跌分布', left: 4, top: 2, textStyle: { color: '#9aa0a6', fontSize: 10 } },
+    tooltip: { trigger: 'axis', formatter: p => {
+      let html = '<b>' + tradeMinToTimeLabel(tmArr[p[0].dataIndex]) + '</b><br>';
+      const up = p.filter(x => x.value > 0).sort((a,b)=>b.value-a.value);
+      const dn = p.filter(x => x.value < 0).sort((a,b)=>a.value-b.value);
+      up.forEach(x => html += x.marker + x.seriesName + ': ' + x.value + '<br>');
+      dn.forEach(x => html += x.marker + x.seriesName + ': ' + (-x.value) + '<br>');
+      return html;
+    }},
+    legend: { show: false },
+    grid: { left: 32, right: 10, top: 18, bottom: 18 },
+    xAxis: { type: 'category', data: xData, boundaryGap: false,
+      axisLabel: { color:'#9aa0a6', fontSize:8,
+        formatter: i => tradeMinToTimeLabel(tmArr[Number(i)] || 0),
+        interval: (i) => labelIdx.has(i) },
+      axisLine: { lineStyle:{ color:'#444' } } },
+    yAxis: { type: 'value', min: -yMax, max: yMax,
+      axisLabel: { color:'#9aa0a6', fontSize:9, formatter: v => Math.abs(v) },
+      splitLine: { lineStyle:{ color:'#333' } } },
+    series: series,
+  }, true);
+}
+
 function startConceptRefresh() {
   if (_conceptRefreshTimer) clearInterval(_conceptRefreshTimer);
   _conceptRefreshTimer = setInterval(() => {
     if (isTradeTime()) loadConceptZtStats();
-  }, 5000);
+  }, 10000);
 }
 
 // ===== 自动刷新 =====

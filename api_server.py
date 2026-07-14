@@ -5,9 +5,28 @@
 提供按日期范围下载湖南人涨停复盘图片的接口
 """
 
-# ============== 调试日志 ==============
-# 正式使用时设为 False，_dlog 变成空函数，零性能开销
-DEBUG_MODE = True
+# ============== 调试配置/日志 ==============
+# debug.enabled 只控制开发诊断能力；默认关闭，config.yml 或 AI_KANPAN_DEBUG=1 可开启。
+import os as _os
+import time as _startup_time
+import uuid as _uuid
+
+
+def _load_debug_config():
+    try:
+        import yaml as _yaml
+        with open('config.yml', 'r', encoding='utf-8') as _f:
+            cfg = (_yaml.safe_load(_f) or {}).get('debug') or {}
+            return cfg if isinstance(cfg, dict) else {}
+    except Exception:
+        return {}
+
+
+_DEBUG_CONFIG = _load_debug_config()
+_debug_env = _os.environ.get('AI_KANPAN_DEBUG')
+DEBUG_MODE = (_debug_env == '1') if _debug_env is not None else bool(_DEBUG_CONFIG.get('enabled', False))
+SERVER_STARTED_AT = _startup_time.strftime('%Y-%m-%d %H:%M:%S')
+SERVER_INSTANCE_ID = f'{_os.getpid()}-{_uuid.uuid4().hex[:8]}'
 
 import logging as _logging
 _dbg_logger = _logging.getLogger('ai_kanpan')
@@ -51,6 +70,17 @@ import threading
 app = Flask(__name__)
 from flask_socketio import SocketIO
 socketio = SocketIO(app, async_mode='threading', cors_allowed_origins='*')
+
+
+@app.after_request
+def _debug_no_cache(response):
+    """Debug 模式禁用页面/API的浏览器HTTP缓存，并标记实际服务进程实例。"""
+    if DEBUG_MODE and (request.path.startswith('/api/') or response.mimetype == 'text/html'):
+        response.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, max-age=0'
+        response.headers['Pragma'] = 'no-cache'
+        response.headers['Expires'] = '0'
+        response.headers['X-AI-Kanpan-Instance'] = SERVER_INSTANCE_ID
+    return response
 
 # 导入热门股追踪模块
 import hot_track as ht
@@ -1745,7 +1775,37 @@ def ocr_recognize():
 @app.route('/monitor', methods=['GET'])
 def monitor_page():
     """盯盘页面: 上证指数日K + 分时图"""
-    return render_template('monitor.html')
+    return render_template(
+        'monitor.html',
+        debug_mode=DEBUG_MODE,
+        server_instance_id=SERVER_INSTANCE_ID if DEBUG_MODE else '',
+    )
+
+
+@app.route('/api/debug/runtime', methods=['GET'])
+def debug_runtime():
+    """仅 Debug 模式开放：浏览器诊断器用于识别旧 Flask 进程/旧模板。"""
+    if not DEBUG_MODE:
+        return jsonify({'success': False, 'error': 'debug mode disabled'}), 404
+
+    def file_info(path):
+        try:
+            stat = os.stat(path)
+            return {'path': path, 'mtime': stat.st_mtime, 'size': stat.st_size}
+        except OSError:
+            return {'path': path, 'missing': True}
+
+    return jsonify({
+        'success': True,
+        'debug': True,
+        'pid': os.getpid(),
+        'instance_id': SERVER_INSTANCE_ID,
+        'started_at': SERVER_STARTED_AT,
+        'files': {
+            'api_server': file_info('api_server.py'),
+            'monitor_template': file_info(os.path.join('templates', 'monitor.html')),
+        },
+    })
 
 
 @app.route('/api/monitor/health', methods=['GET'])
@@ -2830,6 +2890,10 @@ _concept_members_ts = 0
 _concept_zt_cache = None         # {'data':..., 'ts':...}, 5秒缓存
 _concept_zt_timeline = []        # [{ts, '概念':count, ...}, ...], 最多200个点
 _concept_zt_top10_ever = set()   # 曾进过top10的概念名(折线图用)
+_concept_dist_timelines = {}     # {concept: [{ts, trade_min, buckets:{...}}]}, 每概念最多200点
+_concept_dist_cache = {}         # {concept: {'data':..., 'ts':...}}, 5秒缓存
+_concept_dist6_timeline = []     # [{ts, trade_min, buckets:{concept:{g3_5,g5_7,zt_up,d3_5,d5_7,zt_down}}}], 最多200点
+_concept_zt_session_date = None  # 当前排名时间线所属交易日, 跨日自动清空
 
 # 排除的宽泛概念(成分股过多, 无实际板块意义)
 _EXCLUDED_CONCEPTS = {'国企改革', '深股通', '沪股通', '融资融券', '市场连板股', 'ST板块'}
@@ -3099,10 +3163,19 @@ def monitor_concept_zt_stats():
     timeline: [{ts, concepts:{概念:涨停数}}]  供折线图用
     """
     import time as _time
-    global _concept_zt_cache, _concept_zt_timeline, _concept_zt_top10_ever
+    global _concept_zt_cache, _concept_zt_timeline, _concept_zt_top10_ever, _concept_dist6_timeline, _concept_zt_session_date
 
-    # 5秒缓存
-    if _concept_zt_cache and (_time.time() - _concept_zt_cache['ts'] < 5):
+    # 排名/分时数据只属于当天, 服务跨日运行时必须清空, 避免把昨日曾入榜概念混进今天。
+    session_date = _time.strftime('%Y%m%d')
+    if _concept_zt_session_date != session_date:
+        _concept_zt_session_date = session_date
+        _concept_zt_cache = None
+        _concept_zt_timeline = []
+        _concept_zt_top10_ever = set()
+        _concept_dist6_timeline = []
+
+    # 10秒缓存
+    if _concept_zt_cache and (_time.time() - _concept_zt_cache['ts'] < 10):
         return jsonify(_concept_zt_cache['data'])
 
     try:
@@ -3120,33 +3193,63 @@ def monitor_concept_zt_stats():
         if not all_codes:
             return jsonify({'success': False, 'error': '无主板成分股'}), 404
 
-        # mootdx 批量拉报价(80只/批)
-        with ht._get_tdx_lock():
-            client = ht._get_tdx_client()
-            frames = []
-            for i in range(0, len(all_codes), 80):
-                batch = all_codes[i:i + 80]
-                df = ht._tdx_call_with_timeout(client, 'quotes', timeout=8, symbol=batch)
-                if df is not None and not df.empty:
-                    frames.append(df)
-        if not frames:
-            return jsonify({'success': False, 'error': '无报价数据(可能非交易时段)'}), 404
+        # 优先 tqcenter batch_pricevol (走DLL, 1秒取全部, 不封IP), 回退 mootdx 批量 quotes
+        quote_map = {}
+        used_tq = False
+        try:
+            import tdx_source as ts
+            if ts.is_available():
+                # TQ批量报价不返回名称，先取股票名排除ST/退市，与mootdx分支口径一致。
+                try:
+                    stock_rows = ts.stock_list('5', with_name=True) or []
+                    excluded_codes = {
+                        str(row.get('code', '')).zfill(6)
+                        for row in stock_rows
+                        if 'ST' in str(row.get('name', '')).upper() or '退' in str(row.get('name', ''))
+                    }
+                    if excluded_codes:
+                        all_codes = [code for code in all_codes if code not in excluded_codes]
+                except Exception as e:
+                    print(f'[TQ] zt-stats 股票名称/ST过滤异常: {e}')
+                pv = ts.batch_pricevol(all_codes)
+                if pv:
+                    for code, info in pv.items():
+                        if info.get('last_close', 0) > 0:
+                            quote_map[code] = {
+                                'pct': info['pct'],
+                                'price': info['price'],
+                                'name': '',
+                            }
+                    used_tq = True
+        except Exception as e:
+            print(f'[TQ] zt-stats 批量报价异常: {e}')
 
-        all_q = pd.concat(frames, ignore_index=True)
-        for col in ('last_close', 'price', 'amount', 'vol'):
-            if col in all_q.columns:
-                all_q[col] = pd.to_numeric(all_q[col], errors='coerce')
-        # 排除ST(quotes返回的name列)
-        if 'name' in all_q.columns:
-            all_q = all_q[~all_q['name'].astype(str).str.contains('ST', case=False, na=False)]
-        valid = all_q[(all_q['last_close'] > 0) & (all_q['price'] > 0)].copy()
-        if valid.empty:
-            return jsonify({'success': False, 'error': '无有效报价'}), 404
-        valid['pct'] = (valid['price'] - valid['last_close']) / valid['last_close'] * 100
-        valid['code'] = valid['code'].astype(str).str.zfill(6)
+        if not used_tq:
+            # 回退 mootdx 批量拉报价(80只/批)
+            with ht._get_tdx_lock():
+                client = ht._get_tdx_client()
+                frames = []
+                for i in range(0, len(all_codes), 80):
+                    batch = all_codes[i:i + 80]
+                    df = ht._tdx_call_with_timeout(client, 'quotes', timeout=8, symbol=batch)
+                    if df is not None and not df.empty:
+                        frames.append(df)
+            if not frames:
+                return jsonify({'success': False, 'error': '无报价数据(可能非交易时段)'}), 404
 
-        # 构建 code -> {pct} 映射
-        quote_map = {r['code']: r for _, r in valid.iterrows()}
+            all_q = pd.concat(frames, ignore_index=True)
+            for col in ('last_close', 'price', 'amount', 'vol'):
+                if col in all_q.columns:
+                    all_q[col] = pd.to_numeric(all_q[col], errors='coerce')
+            # 排除ST(quotes返回的name列)
+            if 'name' in all_q.columns:
+                all_q = all_q[~all_q['name'].astype(str).str.contains('ST', case=False, na=False)]
+            valid = all_q[(all_q['last_close'] > 0) & (all_q['price'] > 0)].copy()
+            if valid.empty:
+                return jsonify({'success': False, 'error': '无有效报价'}), 404
+            valid['pct'] = (valid['price'] - valid['last_close']) / valid['last_close'] * 100
+            valid['code'] = valid['code'].astype(str).str.zfill(6)
+            quote_map = {r['code']: r for _, r in valid.iterrows()}
 
         # 按概念分组统计
         now_ts = _time.time()
@@ -3166,11 +3269,13 @@ def monitor_concept_zt_stats():
             _trade_min = 246
         concepts_result = []
         timeline_entry = {'ts': now_str, 'trade_min': _trade_min, 'concepts': {}}
+        dist6_entry = {'ts': now_str, 'trade_min': _trade_min, 'buckets': {}}
         realtime_zt_codes = set()  # 收集所有实时涨停股代码(传给历史回放, 保证数量一致)
 
         for concept, codes in concept_map.items():
             zt_stocks = []
             dist = {'lt3': 0, 'g3_5': 0, 'g5_7': 0}
+            dist6 = {'g3_5': 0, 'g5_7': 0, 'zt_up': 0, 'd3_5': 0, 'd5_7': 0, 'zt_down': 0}
             total = 0
             for code in codes:
                 q = quote_map.get(code)
@@ -3179,15 +3284,30 @@ def monitor_concept_zt_stats():
                 total += 1
                 pct = float(q['pct'])
                 apct = abs(pct)
-                # 涨跌幅分布
+                # 涨跌幅分布(abs口径, 旧)
                 if apct < 3:
                     dist['lt3'] += 1
                 elif apct < 5:
                     dist['g3_5'] += 1
                 elif apct < 7:
                     dist['g5_7'] += 1
-                # 涨停判定(主板10%, 留容差9.8%)
-                if pct >= 9.8:
+                # 6档正负分桶(新, 涨停阈值按板块区分)
+                thresh = 19.8 if code.startswith(('30', '68')) else 9.8
+                if pct >= thresh:
+                    dist6['zt_up'] += 1
+                elif pct >= 5:
+                    dist6['g5_7'] += 1
+                elif pct >= 3:
+                    dist6['g3_5'] += 1
+                elif pct <= -thresh:
+                    dist6['zt_down'] += 1
+                elif pct <= -5:
+                    dist6['d5_7'] += 1
+                elif pct <= -3:
+                    dist6['d3_5'] += 1
+                # 概念涨停数与6档分布统一使用分板阈值:
+                # 创业板/科创板20cm取19.8%, 其余10cm取9.8%。
+                if pct >= thresh:
                     zt_stocks.append({'code': code, 'pct': round(pct, 2)})
                     realtime_zt_codes.add(code)
             if total == 0:
@@ -3197,24 +3317,52 @@ def monitor_concept_zt_stats():
                 'zt_count': len(zt_stocks),
                 'zt_stocks': zt_stocks[:20],  # 最多返回20只
                 'dist': dist,
+                'dist6': dist6,
                 'total_members': total,
             })
             timeline_entry['concepts'][concept] = len(zt_stocks)
+            dist6_entry['buckets'][concept] = dict(dist6)
 
-        # 按涨停数降序
-        concepts_result.sort(key=lambda x: x['zt_count'], reverse=True)
+        # 按涨停数降序；同数量时按概念名稳定排序，避免每次请求边界抖动。
+        concepts_result.sort(key=lambda x: (-x['zt_count'], x['concept']))
 
-        # 取top10, 记录曾进top10的概念
-        top10_now = [c['concept'] for c in concepts_result[:10] if c['zt_count'] > 0]
+        # 取当前前10, 记录曾进top10的概念
+        top10_now = [c['concept'] for c in concepts_result if c['zt_count'] > 0][:10]
         _concept_zt_top10_ever.update(top10_now)
 
         # 返回top15(前端取top10, 多给几条避免边界抖动)
         top_concepts = [c for c in concepts_result if c['zt_count'] > 0][:15]
 
-        # 维护时间线(最多200个点)
-        _concept_zt_timeline.append(timeline_entry)
-        if len(_concept_zt_timeline) > 200:
-            _concept_zt_timeline = _concept_zt_timeline[-200:]
+        def _build_rank_map(counts, candidates):
+            """按涨停数生成Top10竞争排名；同数量并列同名次(如1,1,3)。"""
+            ordered = sorted(
+                [(c, counts.get(c, 0)) for c in candidates if counts.get(c, 0) > 0],
+                key=lambda x: (-x[1], x[0])
+            )[:10]
+            rank_map = {}
+            prev_count = None
+            current_rank = 0
+            for pos, (concept_name, count) in enumerate(ordered, 1):
+                if count != prev_count:
+                    current_rank = pos
+                    prev_count = count
+                rank_map[concept_name] = current_rank
+            return rank_map
+
+        # 维护时间线(最多200个点, 同一trade_min更新最新值)
+        # 交易时段正常采样; 非交易时段(收盘后)也更新最后一点保持与concepts同步
+        if _concept_zt_timeline and _concept_zt_timeline[-1].get('trade_min') == _trade_min:
+            _concept_zt_timeline[-1] = timeline_entry  # 同分钟更新
+        else:
+            _concept_zt_timeline.append(timeline_entry)
+            if len(_concept_zt_timeline) > 200:
+                _concept_zt_timeline = _concept_zt_timeline[-200:]
+        if _concept_dist6_timeline and _concept_dist6_timeline[-1].get('trade_min') == _trade_min:
+            _concept_dist6_timeline[-1] = dist6_entry  # 同分钟更新
+        else:
+            _concept_dist6_timeline.append(dist6_entry)
+            if len(_concept_dist6_timeline) > 200:
+                _concept_dist6_timeline = _concept_dist6_timeline[-200:]
 
         # 折线图数据: 只保留曾进top10的概念
         timeline_out = []
@@ -3224,6 +3372,26 @@ def monitor_concept_zt_stats():
                 'ts': entry['ts'],
                 'trade_min': entry.get('trade_min', 0),
                 'counts': {c: entry['concepts'].get(c, 0) for c in ever_list},
+            })
+
+        # 排名时间线: 每个时间点按涨停数排Top10；同数量并列同名次。
+        ranks_out = []
+        for entry in _concept_zt_timeline:
+            counts = entry.get('concepts', {})
+            rank_map = _build_rank_map(counts, ever_list)
+            ranks_out.append({
+                'ts': entry['ts'],
+                'trade_min': entry.get('trade_min', 0),
+                'ranks': {c: rank_map.get(c) for c in ever_list},
+            })
+
+        # 分桶时间线: 只保留 ever_list 概念的分桶
+        dist6_out = []
+        for entry in _concept_dist6_timeline:
+            dist6_out.append({
+                'ts': entry['ts'],
+                'trade_min': entry.get('trade_min', 0),
+                'buckets': {c: entry['buckets'].get(c, {}) for c in ever_list},
             })
 
         # 若实时timeline时间点不足(收盘后/刚启动), 用逐分钟分时数据还原当天涨停轨迹
@@ -3241,14 +3409,58 @@ def monitor_concept_zt_stats():
                         'trade_min': entry.get('trade_min', 0),
                         'counts': {c: entry['counts'].get(c, 0) for c in ever_list},
                     })
+                # 历史回放只有涨停数, 据此重建排名(同数量并列; 分桶dist6无历史数据, 留空)
+                ranks_out = []
+                for entry in hist_timeline:
+                    counts = entry.get('counts', {})
+                    rank_map = _build_rank_map(counts, ever_list)
+                    ranks_out.append({
+                        'ts': entry['ts'],
+                        'trade_min': entry.get('trade_min', 0),
+                        'ranks': {c: rank_map.get(c) for c in ever_list},
+                    })
+
+        # 追加当前实时数据作为最后一个点, 确保排名/涨停数与concepts完全一致
+        # (历史回放的分时封板判断 与 实时报价的pct判断 可能不一致)
+        cur_counts = {c['concept']: c['zt_count'] for c in concepts_result}
+        current_concepts_map = {c['concept']: c for c in concepts_result}
+        cur_rank_map = _build_rank_map(cur_counts, ever_list)
+        cur_point = {
+            'ts': now_str,
+            'trade_min': _trade_min,
+            'counts': {c: cur_counts.get(c, 0) for c in ever_list},
+        }
+        cur_rank_point = {
+            'ts': now_str,
+            'trade_min': _trade_min,
+            'ranks': {c: cur_rank_map.get(c) for c in ever_list},
+        }
+        # 若最后一点trade_min不同则追加, 相同则替换
+        if timeline_out and timeline_out[-1].get('trade_min') == _trade_min:
+            timeline_out[-1] = cur_point
+            ranks_out[-1] = cur_rank_point
+        else:
+            timeline_out.append(cur_point)
+            ranks_out.append(cur_rank_point)
 
         result = {
             'success': True,
             'ts': now_str,
             'concepts': top_concepts,
+            # 下方曾入榜卡片需要完整当前值，不能仅依赖前15 concepts。
+            'ever_current': {
+                c: {
+                    'concept': c,
+                    'zt_count': cur_counts.get(c, 0),
+                    'total_members': current_concepts_map.get(c, {}).get('total_members', 0),
+                }
+                for c in ever_list
+            },
             'top10_ever': ever_list,
             'timeline': timeline_out,
-            'source': 'mootdx',
+            'ranks_timeline': ranks_out,
+            'dist6_timeline': dist6_out,
+            'source': 'tqcenter' if used_tq else 'mootdx',
         }
         _concept_zt_cache = {'data': result, 'ts': now_ts}
         return jsonify(result)
@@ -3256,6 +3468,124 @@ def monitor_concept_zt_stats():
         # 缓存还有数据就返回旧的(降级)
         if _concept_zt_cache:
             return jsonify(_concept_zt_cache['data'])
+        return jsonify({'success': False, 'error': f'{type(e).__name__}: {e}'}), 500
+
+
+@app.route('/api/monitor/concept/dist-timeline', methods=['GET'])
+def monitor_concept_dist_timeline():
+    """单概念板块成员股涨跌分布的实时分时(5秒采样, 5秒缓存)。
+    参数: concept=概念名
+    返回: {success, concept, members_count, timeline:[{ts,trade_min,buckets}], current}
+    buckets: {g3_5, g5_7, zt_up, d3_5, d5_7, zt_down} 各档家数
+    涨停阈值按板块: 30/68开头=19.8, 其余=9.8
+    """
+    import time as _time
+    from datetime import datetime as _dt
+
+    concept = request.args.get('concept', '').strip()
+    if not concept:
+        return jsonify({'success': False, 'error': '缺少 concept 参数'}), 400
+
+    # 5秒缓存命中直接返回
+    cached = _concept_dist_cache.get(concept)
+    if cached and (_time.time() - cached['ts'] < 5):
+        return jsonify(cached['data'])
+
+    try:
+        import hot_track as ht
+        import pandas as pd
+
+        concept_map = _load_concept_members()
+        codes = concept_map.get(concept)
+        if not codes:
+            return jsonify({'success': False, 'error': f'概念「{concept}」无成分股'}), 404
+
+        # mootdx 批量拉报价(80只/批, 同 zt-stats 模式)
+        with ht._get_tdx_lock():
+            client = ht._get_tdx_client()
+            frames = []
+            for i in range(0, len(codes), 80):
+                batch = codes[i:i + 80]
+                df = ht._tdx_call_with_timeout(client, 'quotes', timeout=8, symbol=batch)
+                if df is not None and not df.empty:
+                    frames.append(df)
+
+        # 分6档计数(仅看正/负, 不计abs; 涨停按板块阈值)
+        buckets = {'g3_5': 0, 'g5_7': 0, 'zt_up': 0, 'd3_5': 0, 'd5_7': 0, 'zt_down': 0}
+        members_count = 0
+        if frames:
+            all_q = pd.concat(frames, ignore_index=True)
+            for col in ('last_close', 'price'):
+                if col in all_q.columns:
+                    all_q[col] = pd.to_numeric(all_q[col], errors='coerce')
+            if 'name' in all_q.columns:
+                all_q = all_q[~all_q['name'].astype(str).str.contains('ST', case=False, na=False)]
+            valid = all_q[(all_q['last_close'] > 0) & (all_q['price'] > 0)].copy()
+            if not valid.empty:
+                valid['pct'] = (valid['price'] - valid['last_close']) / valid['last_close'] * 100
+                valid['code'] = valid['code'].astype(str).str.zfill(6)
+                members_count = len(valid)
+                for _, r in valid.iterrows():
+                    pct = float(r['pct'])
+                    code = str(r['code'])
+                    thresh = 19.8 if code.startswith(('30', '68')) else 9.8
+                    if pct >= thresh:
+                        buckets['zt_up'] += 1
+                    elif pct >= 5:
+                        buckets['g5_7'] += 1
+                    elif pct >= 3:
+                        buckets['g3_5'] += 1
+                    elif pct <= -thresh:
+                        buckets['zt_down'] += 1
+                    elif pct <= -5:
+                        buckets['d5_7'] += 1
+                    elif pct <= -3:
+                        buckets['d3_5'] += 1
+
+        # 交易分钟序号(9:25=0, 11:30=125, 13:00=126, 15:00=246)
+        _now_hm = _dt.now().hour * 60 + _dt.now().minute
+        if _now_hm < 9 * 60 + 25:
+            _trade_min = 0
+        elif _now_hm <= 11 * 60 + 30:
+            _trade_min = _now_hm - (9 * 60 + 25)
+        elif _now_hm < 13 * 60:
+            _trade_min = 125
+        elif _now_hm <= 15 * 60:
+            _trade_min = _now_hm - (13 * 60) + 126
+        else:
+            _trade_min = 246
+
+        # 追加采样点(有报价数据时才采, 避免非交易时段产生空点)
+        now_str = _time.strftime('%H:%M:%S')
+        tl = _concept_dist_timelines.setdefault(concept, [])
+        if members_count > 0:
+            # 同一 trade_min 不重复采(缓存miss但仍在同一分钟内)
+            if not tl or tl[-1].get('trade_min') != _trade_min:
+                tl.append({
+                    'ts': now_str,
+                    'trade_min': _trade_min,
+                    'buckets': dict(buckets),
+                })
+                if len(tl) > 200:
+                    _concept_dist_timelines[concept] = tl[-200:]
+
+        if not tl:
+            return jsonify({'success': False, 'error': '暂无分时数据(可能非交易时段且无历史采样)'}), 404
+
+        result = {
+            'success': True,
+            'concept': concept,
+            'members_count': members_count or (len(codes)),
+            'timeline': tl[:],
+            'current': {'ts': now_str, 'buckets': buckets, 'trade_min': _trade_min},
+            'source': 'mootdx',
+        }
+        _concept_dist_cache[concept] = {'data': result, 'ts': _time.time()}
+        return jsonify(result)
+    except Exception as e:
+        cached = _concept_dist_cache.get(concept)
+        if cached:
+            return jsonify(cached['data'])
         return jsonify({'success': False, 'error': f'{type(e).__name__}: {e}'}), 500
 
 
@@ -6162,4 +6492,4 @@ if __name__ == '__main__':
     print("=" * 60)
 
     start_ws_push()
-    socketio.run(app, host='0.0.0.0', port=5000, debug=True, allow_unsafe_werkzeug=True)
+    socketio.run(app, host='0.0.0.0', port=5000, debug=DEBUG_MODE, allow_unsafe_werkzeug=True)
