@@ -5730,6 +5730,228 @@ def api_sector_ladder():
                     'emotion': emotion, 'trend': trend, 'trend_ready': trend_ready})
 
 
+# ---- 新高追踪: 每日创N日新高的个股, 按同花顺板块分类 ----
+# 全量计算缓存: {n: (ts, {all_dates, days_by_date: {date: {...}}})}
+# .day文件一天才变一次, 一次全量算完所有日期, 切换日期范围只在内存中切片
+_newhigh_full_cache = {}  # {n: (ts, full_result)}
+
+
+def _compute_newhigh_full(n):
+    """全量计算所有已入库交易日创N日新高的个股, 按概念分类。
+    返回 {all_dates: [...], days: {date_str: {date,total,sectors}}}。
+    .day文件不变则结果不变, 缓存1小时。"""
+    import time as _time
+    cached = _newhigh_full_cache.get(n)
+    if cached and (_time.time() - cached[0] < 3600):
+        return cached[1]
+
+    from collections import defaultdict
+    import db as _db
+    from datetime import datetime as _dt
+
+    # 已入库交易日列表
+    try:
+        all_dates = sorted(_db.get_submitted_dates())
+    except Exception:
+        all_dates = []
+    today_str = _dt.now().strftime('%Y%m%d')
+    if _dt.now().weekday() < 5 and today_str not in all_dates:
+        all_dates.append(today_str)
+        all_dates.sort()
+    if not all_dates:
+        return {'all_dates': [], 'days': {}}
+
+    # 概念成员
+    cm = _load_concept_members()
+    if not cm:
+        return {'all_dates': all_dates, 'days': {}}
+    code_concepts = defaultdict(list)
+    all_codes = set()
+    for concept, codes in cm.items():
+        for c in codes:
+            code_concepts[c].append(concept)
+            all_codes.add(c)
+    all_codes = sorted(all_codes)
+
+    # 批量读 .day 收盘价
+    closes_map = _read_day_closes_batch(all_codes)
+    if not closes_map:
+        return {'all_dates': all_dates, 'days': {}}
+
+    # 股票名称
+    names = {}
+    try:
+        import tdx_source as _ts
+        lst = _ts.stock_list('5', with_name=True) or []
+        names = {x['code']: x.get('name', '') for x in lst}
+    except Exception:
+        pass
+
+    # 预排每只股票的有序日期列表(加速索引)
+    stock_dates = {}
+    for c in all_codes:
+        mc = closes_map.get(c)
+        if mc and len(mc) > n:
+            stock_dates[c] = sorted(mc.keys())
+
+    # 全量计算: 每个交易日
+    FWD_DAYS = 10  # 创新高后追踪10个交易日
+    days_by_date = {}
+    for d in all_dates:
+        nh_stocks = {}
+        for c in all_codes:
+            mc = closes_map.get(c)
+            dl = stock_dates.get(c)
+            if not mc or not dl or d not in mc:
+                continue
+            i = dl.index(d)
+            if i < n:
+                continue
+            close = mc[d]
+            if close <= 0:
+                continue
+            win = dl[i - n:i]
+            prev_hi = max(mc[x] for x in win)
+            if close >= prev_hi * 0.999:
+                prev_close = mc.get(dl[i - 1], 0)
+                pct = round((close - prev_close) / prev_close * 100, 2) if prev_close > 0 else 0
+                # 创新高后FWD_DAYS日累计涨幅
+                fwd = []
+                for k in range(1, FWD_DAYS + 1):
+                    if i + k < len(dl):
+                        c_k = mc[dl[i + k]]
+                        fwd.append(round((c_k / close - 1) * 100, 2))
+                    else:
+                        fwd.append(None)  # 数据不足
+                nh_stocks[c] = {'code': c, 'name': names.get(c, c),
+                                'close': round(close, 2), 'pct': pct, 'fwd': fwd}
+        if not nh_stocks:
+            days_by_date[d] = {'date': d, 'total': 0, 'sectors': [], 'fwd_avg': [None] * FWD_DAYS}
+            continue
+        sector_stocks = defaultdict(list)
+        for c, info in nh_stocks.items():
+            for con in code_concepts.get(c, []):
+                sector_stocks[con].append(info)
+
+        def _avg_fwd(stocks):
+            """计算一批股票的平均前向涨幅, 返回[10]数组(None表示无数据)"""
+            out = []
+            for k in range(FWD_DAYS):
+                vals = [s['fwd'][k] for s in stocks if s['fwd'][k] is not None]
+                out.append(round(sum(vals) / len(vals), 2) if vals else None)
+            return out
+
+        sectors = []
+        for con, stocks in sector_stocks.items():
+            stocks.sort(key=lambda x: -x['pct'])
+            sectors.append({'concept': con, 'count': len(stocks),
+                            'stocks': stocks, 'fwd_avg': _avg_fwd(stocks)})
+        sectors.sort(key=lambda x: -x['count'])
+        # 全日平均前向涨幅(所有创新高个股)
+        all_fwd = _avg_fwd(list(nh_stocks.values()))
+        days_by_date[d] = {'date': d, 'total': len(nh_stocks), 'sectors': sectors, 'fwd_avg': all_fwd}
+
+    full = {'all_dates': all_dates, 'days': days_by_date, 'closes_map': closes_map,
+            'stock_dates': stock_dates}
+    _newhigh_full_cache[n] = (_time.time(), full)
+    return full
+
+
+@app.route('/api/hot/newhigh', methods=['GET'])
+def api_hot_newhigh():
+    """每日创N日收盘新高的个股, 按同花顺概念板块分类。
+    参数: start,end(YYYYMMDD), n(60/120/200, 默认60), force=1强制重算。
+    全量计算按n缓存1小时(.day文件一天才变), 切换日期范围只在内存中切片, 瞬间返回。"""
+    import time as _time
+    start = request.args.get('start', '')
+    end = request.args.get('end', '')
+    try:
+        n = int(request.args.get('n', '60'))
+    except ValueError:
+        n = 60
+    if n not in (60, 120, 200):
+        n = 60
+    force = request.args.get('force', '') == '1'
+    if force:
+        _newhigh_full_cache.pop(n, None)
+
+    full = _compute_newhigh_full(n)
+    all_dates = full['all_dates']
+    days_by_date = full['days']
+    if not all_dates:
+        return jsonify({'success': False, 'error': '无已入库交易日'})
+
+    # 默认日期范围: 最近30天
+    if not re.match(r'^\d{8}$', end):
+        end = all_dates[-1]
+    if not re.match(r'^\d{8}$', start):
+        start = all_dates[max(0, len(all_dates) - 30)]
+    dates = [d for d in all_dates if start <= d <= end]
+    if not dates:
+        return jsonify({'success': False, 'error': '区间内无已入库交易日'})
+
+    # 切片: 从全量缓存中取出区间内的天数
+    days = [days_by_date[d] for d in dates if d in days_by_date]
+    # 给每只stock补算 range_pct: 范围起始日到结束日的累计涨幅
+    # 同时计算每只股票K线窗口(250根截止end_date)的最大涨跌幅, 用于统一比例尺
+    closes_map = full.get('closes_map', {})
+    stock_dates_map = full.get('stock_dates', {})
+    start_date = dates[0]
+    end_date = dates[-1]
+    import bisect
+    KLINE_COUNT = 250
+    seen_codes = set()
+    for day in days:
+        for sec in day.get('sectors', []):
+            for s in sec.get('stocks', []):
+                code = s['code']
+                if code in seen_codes:
+                    continue
+                seen_codes.add(code)
+                mc = closes_map.get(code)
+                dl = stock_dates_map.get(code)
+                if mc and dl:
+                    # 找到 >= start_date 和 <= end_date 的最近日期
+                    cs = mc.get(start_date)
+                    ce = mc.get(end_date)
+                    if not cs:
+                        for dd in dl:
+                            if dd >= start_date:
+                                cs = mc.get(dd)
+                                break
+                    if not ce:
+                        for dd in reversed(dl):
+                            if dd <= end_date:
+                                ce = mc.get(dd)
+                                break
+                    if cs and ce and cs > 0:
+                        s['range_pct'] = round((ce / cs - 1) * 100, 2)
+                    else:
+                        s['range_pct'] = None
+                    # K线窗口(250根截止end_date)的最大涨跌幅, 用于统一比例尺
+                    ei = bisect.bisect_right(dl, end_date) - 1
+                    if ei >= 0:
+                        si = max(0, ei - KLINE_COUNT + 1)
+                        base = mc[dl[si]]
+                        if base > 0:
+                            win_closes = [mc[dl[j]] for j in range(si, ei + 1)]
+                            s['kline_max_pct'] = round((max(win_closes) / base - 1) * 100, 2)
+                            s['kline_min_pct'] = round((min(win_closes) / base - 1) * 100, 2)
+                        else:
+                            s['kline_max_pct'] = 0
+                            s['kline_min_pct'] = 0
+                    else:
+                        s['kline_max_pct'] = 0
+                        s['kline_min_pct'] = 0
+                else:
+                    s['range_pct'] = None
+                    s['kline_max_pct'] = 0
+                    s['kline_min_pct'] = 0
+    result = {'success': True, 'n': n, 'start': start, 'end': end,
+              'dates': dates, 'days': days}
+    return jsonify(result)
+
+
 @app.route('/api/hot/concept-daymap', methods=['GET'])
 def api_concept_daymap():
     """某一交易日的产业链地图: 按 产业链 -> 上下游层级 -> 概念。

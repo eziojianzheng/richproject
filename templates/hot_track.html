@@ -626,6 +626,36 @@
   .bk-bar { display: inline-block; width: 60px; height: 8px; border-radius: 3px; margin-right: 6px;
     background: rgba(255,255,255,0.08); vertical-align: middle; overflow: hidden; }
   .bk-bar i { display: block; height: 100%; background: linear-gradient(90deg,#e0483f,#ff8a3d); }
+  /* 新高追踪 */
+  .nh-day { margin: 8px 0; border: 1px solid var(--border-light); border-radius: 6px; overflow: hidden; }
+  .nh-day-hd { padding: 7px 12px; cursor: pointer; font-size: 13px; background: rgba(255,255,255,0.03); user-select: none; }
+  .nh-day-hd:hover { background: rgba(255,255,255,0.06); }
+  .nh-toggle { display: inline-block; width: 14px; color: var(--text-muted); font-size: 10px; }
+  .nh-day-body { padding: 6px 12px 10px; }
+  .nh-sector { margin: 6px 0; padding: 6px 8px; background: rgba(255,255,255,0.02); border-radius: 4px; border-left: 3px solid #3a4156; }
+  .nh-sector-hd { font-size: 12px; color: var(--text-primary); margin-bottom: 4px; }
+  .nh-count { display: inline-block; background: rgba(255,214,10,0.15); color: #ffd60a; font-size: 11px; padding: 1px 6px; border-radius: 8px; margin-left: 4px; }
+  .nh-stocks { display: flex; flex-wrap: wrap; gap: 3px; }
+  .nh-stock { display: inline-flex; align-items: center; gap: 3px; font-size: 11px; padding: 2px 6px; background: rgba(255,255,255,0.04); border-radius: 3px; }
+  .nh-stock .s-code { color: var(--text-muted); font-size: 10px; }
+  .nh-up { color: #ff6b6b; font-weight: 600; }
+  .nh-down { color: #4dd07a; font-weight: 600; }
+  .nh-cc { width: calc(25% - 6px); min-width: 300px; border: 1px solid var(--border-light); border-radius: 6px; overflow: hidden; background: rgba(255,255,255,0.02); }
+  .nh-cc-title { font-size: 12px; font-weight: 600; padding: 4px 8px; color: var(--text-primary); background: rgba(66,165,245,0.08); }
+  .nh-cc-total { display: inline-block; background: rgba(66,165,245,0.2); color: #42a5f5; font-size: 11px; padding: 0 5px; border-radius: 6px; margin-left: 3px; }
+  .nh-cc-box { width: 100%; height: 120px; }
+  .nh-cc-pctbox { width: 100%; height: 120px; }
+  /* 高亮范围个股 */
+  .nh-rs-head { font-size: 13px; font-weight: 700; color: #ffd60a; margin: 10px 0 6px; padding: 4px 8px; background: rgba(255,214,10,0.08); border-left: 3px solid #ffd60a; border-radius: 0 4px 4px 0; }
+  .nh-rs-sector { margin: 6px 0; border: 1px solid var(--border-light); border-radius: 6px; overflow: hidden; }
+  .nh-rs-sec-hd { padding: 6px 12px; cursor: pointer; font-size: 13px; background: rgba(66,165,245,0.06); user-select: none; }
+  .nh-rs-sec-hd:hover { background: rgba(66,165,245,0.12); }
+  .nh-rs-sec-body { padding: 4px 8px; }
+  .nh-rs-stock { display: flex; align-items: center; gap: 8px; padding: 3px 0; border-bottom: 1px solid var(--border-light); }
+  .nh-rs-stock:last-child { border-bottom: none; }
+  .nh-rs-stock-info { flex-shrink: 0; width: 220px; display: flex; align-items: center; gap: 4px; font-size: 11px; }
+  .nh-rs-name { color: var(--text-primary); }
+  .nh-rs-kline { flex: 1; height: 200px; min-width: 300px; }
   .cm-legend { display: flex; gap: 12px; align-items: center; font-size: 12px; margin-bottom: 8px; flex-wrap: wrap; }
   .cm-legend .sw { display: inline-block; width: 12px; height: 12px; border-radius: 2px; vertical-align: middle; margin-right: 3px; }
 
@@ -787,6 +817,7 @@
     <span class="main-tab" data-tab="ladder" onclick="switchTab('ladder')">板块梯队·龙头健康</span>
     <span class="main-tab" data-tab="breakout" onclick="switchTab('breakout')">🚀 起爆扫描</span>
     <span class="main-tab" data-tab="caizhaomao" onclick="switchTab('caizhaomao')">🐱 招财猫复盘</span>
+    <span class="main-tab" data-tab="newhigh" onclick="switchTab('newhigh')">📈 新高追踪</span>
   </div>
 
   <div class="meta" id="meta"></div>
@@ -988,6 +1019,39 @@
       </div>
     </div>
   </div><!-- /view-caizhaomao -->
+
+  <!-- Tab 8: 新高追踪 -->
+  <div class="tab-view" id="view-newhigh" style="display:none">
+    <div class="exp-toolbar" style="flex-wrap:wrap;">
+      <div class="sort-tabs" id="nhPeriod">
+        <span data-n="60" class="active">60日新高</span>
+        <span data-n="120">120日新高</span>
+        <span data-n="200">200日新高</span>
+      </div>
+      <label>起始</label><select id="nhStart"></select>
+      <label>结束</label><select id="nhEnd"></select>
+      <button onclick="loadNewhigh(true)" title="强制重新读取.day文件全量计算">强制重算</button>
+      <span id="nhStatus" class="exp-status"></span>
+    </div>
+    <div id="nhRangeBar" style="display:flex;align-items:center;gap:6px;padding:3px 8px;font-size:11px;color:#9aa0a6;border-bottom:1px solid var(--border-light);margin-bottom:6px;">
+      <span>高亮范围</span>
+      <span id="nhRangeStartLabel" style="min-width:64px;text-align:right;color:#ffd700;font-weight:600">-</span>
+      <input type="range" id="nhRangeStart" min="0" max="100" value="0" style="flex:1;height:4px;accent-color:#ffd700;cursor:pointer;">
+      <input type="range" id="nhRangeEnd" min="0" max="100" value="100" style="flex:1;height:4px;accent-color:#ffd700;cursor:pointer;">
+      <span id="nhRangeEndLabel" style="min-width:64px;text-align:left;color:#ffd700;font-weight:600">-</span>
+      <button id="nhRangeReset" style="background:#333;border:1px solid #555;color:#ccc;font-size:10px;padding:1px 8px;border-radius:3px;cursor:pointer;">重置</button>
+      <button id="nhRangeFetch" onclick="renderNhRangeStocks()" style="background:#2563eb;border:1px solid #3b82f6;color:#fff;font-size:10px;padding:1px 8px;border-radius:3px;cursor:pointer;">获取个股</button>
+    </div>
+    <div class="exp-charts-head">新高追踪 - 扫描区间内每日创N日收盘新高的个股，按同花顺概念板块分类。折线=每日新高总数；下方表格=每日分板块明细。</div>
+    <div id="nhChart" style="width:100%;height:280px;"></div>
+    <div class="exp-charts-head" style="margin-top:10px;">创新高后10日涨幅 - 创N日新高当日买入, 后续10个交易日累计涨幅均值。+1日/+5日/+10日三条折线, 看新高后是继续走强还是回落。</div>
+    <div id="nhPctChart" style="width:100%;height:200px;"></div>
+    <div class="exp-charts-head" style="margin-top:10px;">概念新高趋势 - 区间内创新高最多的Top20概念, 每个概念两张图: 上=每日新高个股数, 下=新高后+10日累计涨幅。按总数降序排列。</div>
+    <div id="nhConceptCharts" style="display:flex;flex-wrap:wrap;gap:8px;"></div>
+    <div class="exp-charts-head" style="margin-top:10px;">高亮范围个股 - 拖动范围后点「获取个股」按钮, 筛选高亮区间内创N日新高的个股, 按板块分组, 板块内按涨幅降序。每只个股附带K线图(截止范围末日, 高亮圈选范围)。</div>
+    <div id="nhRangeStocks"></div>
+    <div id="nhResult"></div>
+  </div><!-- /view-newhigh -->
 
 <script src="https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"></script>
 <script>
@@ -2570,6 +2634,7 @@ function switchTab(tab) {
   document.getElementById('view-ladder').style.display = tab === 'ladder' ? '' : 'none';
   document.getElementById('view-breakout').style.display = tab === 'breakout' ? '' : 'none';
   document.getElementById('view-caizhaomao').style.display = tab === 'caizhaomao' ? '' : 'none';
+  document.getElementById('view-newhigh').style.display = tab === 'newhigh' ? '' : 'none';
   try { localStorage.setItem('hot_view', tab); } catch(e) {}
   if (tab === 'caizhaomao') { initCzm(); }
   if (tab === 'ths') {
@@ -2612,6 +2677,14 @@ function switchTab(tab) {
     else setTimeout(() => { if (_ldChart) _ldChart.resize(); }, 50);
   } else if (tab === 'breakout') {
     if (!_bkLoaded) { _bkLoaded = true; initBreakout(); }
+  } else if (tab === 'newhigh') {
+    if (!_nhLoaded) { _nhLoaded = true; initNewhigh(); }
+    else setTimeout(() => {
+      if (_nhChart) _nhChart.resize();
+      _nhConceptCharts.forEach(c => { try { c.resize(); } catch(e){} });
+      _nhPctCharts.forEach(c => { try { c.resize(); } catch(e){} });
+      _nhStockCharts.forEach(c => { try { c.resize(); } catch(e){} });
+    }, 50);
   }
 }
 
@@ -2765,6 +2838,497 @@ function renderBreakout(d) {
     html += '</tbody></table>';
   });
   box.innerHTML = html;
+}
+
+// ===== 新高追踪 =====
+let _nhLoaded = false, _nhChart = null, _nhData = null, _nhN = 60, _nhDates = [];
+let _nhConceptCharts = [];  // 概念小图 ECharts 实例
+let _nhPctCharts = [];      // 10日涨幅图 ECharts 实例(总图+概念图)
+let _nhStockCharts = [];    // 高亮范围个股 mini图 ECharts 实例
+let _nhRange = { startIdx: 0, endIdx: 0 };  // 高亮范围(数组索引)
+let _nhRangeInited = false;
+async function initNewhigh() {
+  // 子Tab切换
+  document.querySelectorAll('#nhPeriod span').forEach(s => s.onclick = () => {
+    document.querySelectorAll('#nhPeriod span').forEach(x => x.classList.remove('active'));
+    s.classList.add('active'); _nhN = parseInt(s.dataset.n); loadNewhigh();
+  });
+  try {
+    const dj = await (await fetch('/api/hot/dates')).json();
+    _nhDates = dj.dates || [];
+    if (!_nhDates.length) { document.getElementById('nhStatus').textContent = '无已入库交易日'; return; }
+    const fmt = s => `${s.slice(0,4)}-${s.slice(4,6)}-${s.slice(6,8)}`;
+    const opts = _nhDates.map(d => `<option value="${d}">${fmt(d)}</option>`).join('');
+    document.getElementById('nhStart').innerHTML = opts;
+    document.getElementById('nhEnd').innerHTML = opts;
+    document.getElementById('nhStart').value = _nhDates[Math.max(0, _nhDates.length - 30)];
+    document.getElementById('nhEnd').value = _nhDates[_nhDates.length - 1];
+    loadNewhigh();
+  } catch (e) { document.getElementById('nhStatus').textContent = '初始化失败: ' + e.message; }
+}
+async function loadNewhigh(force) {
+  const start = document.getElementById('nhStart').value, end = document.getElementById('nhEnd').value;
+  const status = document.getElementById('nhStatus');
+  status.textContent = force ? '强制重算中…(读.day文件约5秒)' : '加载中…';
+  try {
+    const resp = await fetch(`/api/hot/newhigh?start=${start}&end=${end}&n=${_nhN}${force ? '&force=1' : ''}`);
+    if (!resp.ok) { status.textContent = '接口 ' + resp.status + '(需重启api_server)'; return; }
+    const d = await resp.json();
+    if (!d.success) { status.textContent = '失败: ' + (d.error || ''); return; }
+    _nhData = d;
+    const totalNh = (d.days || []).reduce((s, x) => s + x.total, 0);
+    status.textContent = `${_nhN}日新高 · ${d.dates.length}天 · 共${totalNh}只次`;
+    // 重置高亮范围到全选
+    _nhRange = { startIdx: 0, endIdx: Math.max(0, (d.days || []).length - 1) };
+    renderNewhighChart();
+    renderNewhighPctCharts();
+    renderNewhighConceptCharts();
+    renderNewhighTable();
+    // 初始化范围选择器 + 应用高亮
+    initNhRange();
+    const sEl = document.getElementById('nhRangeStart'), eEl = document.getElementById('nhRangeEnd');
+    if (sEl) sEl.value = 0;
+    if (eEl) eEl.value = 100;
+    _updateNhRangeLabels();
+    applyNhRangeHighlight();
+    // 个股列表需点"获取个股"按钮触发
+    document.getElementById('nhRangeStocks').innerHTML = '<div class="empty">拖动高亮范围后点「获取个股」按钮加载K线</div>';
+  } catch (e) { status.textContent = '异常: ' + e.message; }
+}
+function renderNewhighChart() {
+  const d = _nhData; if (!d) return;
+  const box = document.getElementById('nhChart');
+  if (!_nhChart) _nhChart = echarts.init(box, 'dark');
+  const x = (d.days || []).map(x => `${x.date.slice(4,6)}/${x.date.slice(6,8)}`);
+  const totals = (d.days || []).map(x => x.total);
+  _nhChart.setOption({
+    backgroundColor: 'transparent', animation: false,
+    tooltip: { trigger: 'axis', formatter: p => `${p[0].axisValue} · ${p[0].data}只新高` },
+    grid: { left: 44, right: 20, top: 16, bottom: 24 },
+    xAxis: { type: 'category', data: x, axisLabel: { color: '#9aa0a6', fontSize: 10 }, axisLine: { lineStyle: { color: '#444' } } },
+    yAxis: { type: 'value', name: '新高数', nameTextStyle: { color: '#9aa0a6', fontSize: 10 },
+             axisLabel: { color: '#9aa0a6', fontSize: 10 }, splitLine: { lineStyle: { color: '#333' } } },
+    series: [{ type: 'line', data: totals, smooth: false, symbol: 'circle', symbolSize: 5,
+               lineStyle: { width: 1.5, color: '#ffd60a' }, itemStyle: { color: '#ffd60a' },
+               areaStyle: { opacity: 0.08 } }],
+  }, true);
+}
+function renderNewhighConceptCharts() {
+  const d = _nhData; if (!d) return;
+  const box = document.getElementById('nhConceptCharts');
+  // 销毁旧实例(概念新高图 + 概念涨幅图都在这里创建)
+  _nhConceptCharts.forEach(c => { try { c.dispose(); } catch(e){} });
+  _nhConceptCharts = [];
+  // 概念涨幅小图实例也在这里销毁重建(与新高图一一对应)
+  _nhPctCharts = _nhPctCharts.filter(c => {
+    // 只保留总图实例, 概念小图会被重建
+    try { if (c.getDom() && c.getDom().id === 'nhPctChart') return true; c.dispose(); } catch(e){}
+    return false;
+  });
+  const days = (d.days || []);
+  if (!days.length) { box.innerHTML = '<div class="empty">无数据</div>'; return; }
+  const x = days.map(x => `${x.date.slice(4,6)}/${x.date.slice(6,8)}`);
+  // 聚合: concept -> {total, nhSeries:[每日count], fwdSeries:[每日+10日涨幅]}
+  const cmap = {};
+  days.forEach(day => {
+    (day.sectors || []).forEach(sec => {
+      if (!cmap[sec.concept]) cmap[sec.concept] = { total: 0, nhSeries: [], fwdSeries: [] };
+      cmap[sec.concept].total += sec.count;
+      cmap[sec.concept].nhSeries.push(sec.count);
+      cmap[sec.concept].fwdSeries.push(sec.fwd_avg && sec.fwd_avg[9] != null ? sec.fwd_avg[9] : null);
+    });
+  });
+  // 没有出现的日期补0(保持长度一致)
+  Object.values(cmap).forEach(v => {
+    while (v.nhSeries.length < x.length) v.nhSeries.push(0);
+    while (v.fwdSeries.length < x.length) v.fwdSeries.push(null);
+  });
+  // 按区间总数降序, 取Top20
+  const top = Object.entries(cmap).sort((a, b) => b[1].total - a[1].total).slice(0, 20);
+  if (!top.length) { box.innerHTML = '<div class="empty">无创新高概念</div>'; return; }
+  // 统一Y轴最大值: 所有概念中单日最高数
+  const yMax = Math.max(...top.flatMap(([_, v]) => v.nhSeries), 1);
+  // 渲染: 每个概念一个卡片, 含两张图(上=新高数, 下=+10日涨幅)
+  box.innerHTML = top.map(([concept, v]) =>
+    `<div class="nh-cc"><div class="nh-cc-title">${concept} <span class="nh-cc-total">${v.total}</span></div>
+     <div class="nh-cc-box" data-concept="${concept}"></div>
+     <div class="nh-cc-pctbox" data-concept="${concept}"></div></div>`
+  ).join('');
+  top.forEach(([concept, v]) => {
+    // 上图: 新高数
+    const elNh = box.querySelector(`.nh-cc-box[data-concept="${CSS.escape(concept)}"]`);
+    if (elNh) {
+      const ch = echarts.init(elNh, 'dark');
+      _nhConceptCharts.push(ch);
+      ch.setOption({
+        backgroundColor: 'transparent', animation: false,
+        tooltip: { trigger: 'axis', formatter: p => `${concept} ${p[0].axisValue}: ${p[0].data}只` },
+        grid: { left: 28, right: 8, top: 6, bottom: 4 },
+        xAxis: { type: 'category', data: x, show: false },
+        yAxis: { type: 'value', minInterval: 1, max: yMax,
+          axisLabel: { color: '#6b7280', fontSize: 8 }, splitLine: { lineStyle: { color: '#222' } } },
+        series: [{ type: 'line', data: v.nhSeries, smooth: false, symbol: 'circle', symbolSize: 3,
+                   lineStyle: { width: 1.3, color: '#42a5f5' }, itemStyle: { color: '#42a5f5' },
+                   areaStyle: { opacity: 0.1 } }],
+      });
+    }
+    // 下图: +10日涨幅
+    const elPct = box.querySelector(`.nh-cc-pctbox[data-concept="${CSS.escape(concept)}"]`);
+    if (elPct) {
+      const ch = echarts.init(elPct, 'dark');
+      _nhPctCharts.push(ch);
+      ch.setOption({
+        backgroundColor: 'transparent', animation: false,
+        tooltip: { trigger: 'axis', formatter: p => `${concept} ${p[0].axisValue}<br/>+10日: ${p[0].data != null ? (p[0].data > 0 ? '+' : '') + p[0].data + '%' : '-'}` },
+        grid: { left: 32, right: 8, top: 4, bottom: 18 },
+        xAxis: { type: 'category', data: x, show: true,
+          axisLabel: { color: '#6b7280', fontSize: 8, interval: Math.ceil(x.length / 4) - 1 },
+          axisLine: { lineStyle: { color: '#333' } }, axisTick: { show: false } },
+        yAxis: { type: 'value', axisLabel: { color: '#6b7280', fontSize: 8, formatter: v => v + '%' },
+                 splitLine: { lineStyle: { color: '#222' } } },
+        series: [{ type: 'line', data: v.fwdSeries, smooth: false, symbol: 'circle', symbolSize: 3,
+                   lineStyle: { width: 1.3, color: '#e0483f' }, itemStyle: { color: '#e0483f' },
+                   areaStyle: { opacity: 0.1 } }],
+      });
+    }
+  });
+}
+// ---- 创新高后10日涨幅(总图) ----
+function renderNewhighPctCharts() {
+  const d = _nhData; if (!d) return;
+  const days = d.days || [];
+  if (!days.length) return;
+  const x = days.map(x => `${x.date.slice(4,6)}/${x.date.slice(6,8)}`);
+  // 总图: 每日新高股池的+1/+5/+10日累计涨幅
+  const fwdKeys = [0, 4, 9];  // +1日, +5日, +10日(fwd数组索引)
+  const fwdLabels = ['+1日', '+5日', '+10日'];
+  const fwdColors = ['#7f8c8d', '#42a5f5', '#ffd60a'];
+  const mainBox = document.getElementById('nhPctChart');
+  // 销毁旧总图实例
+  const oldInst = echarts.getInstanceByDom(mainBox);
+  if (oldInst) oldInst.dispose();
+  const mainChart = echarts.init(mainBox, 'dark');
+  // 替换 _nhPctCharts 中的旧总图
+  _nhPctCharts = _nhPctCharts.filter(c => { try { return c.getDom() !== mainBox; } catch(e){ return false; } });
+  _nhPctCharts.unshift(mainChart);
+  const mainSeries = fwdKeys.map((k, i) => ({
+    name: fwdLabels[i], type: 'line', smooth: false, symbol: 'circle', symbolSize: 4,
+    lineStyle: { width: 1.5, color: fwdColors[i] }, itemStyle: { color: fwdColors[i] },
+    data: days.map(day => (day.fwd_avg && day.fwd_avg[k] != null) ? day.fwd_avg[k] : null),
+    connectNulls: false,
+  }));
+  mainChart.setOption({
+    backgroundColor: 'transparent', animation: false,
+    title: { text: '全市场·新高后累计涨幅', left: 4, top: 2, textStyle: { color: '#9aa0a6', fontSize: 11 } },
+    tooltip: { trigger: 'axis', formatter: p => {
+      let s = p[0].axisValue;
+      p.forEach(pt => { if (pt.data != null) s += `<br/>${pt.marker}${pt.seriesName}: ${pt.data > 0 ? '+' : ''}${pt.data}%`; });
+      return s;
+    }},
+    legend: { textStyle: { color: '#9aa0a6', fontSize: 10 }, top: 0, right: 10 },
+    grid: { left: 44, right: 20, top: 28, bottom: 24 },
+    xAxis: { type: 'category', data: x, axisLabel: { color: '#9aa0a6', fontSize: 9 }, axisLine: { lineStyle: { color: '#444' } } },
+    yAxis: { type: 'value', name: '涨幅%', nameTextStyle: { color: '#9aa0a6', fontSize: 9 },
+             axisLabel: { color: '#9aa0a6', fontSize: 9, formatter: v => v + '%' }, splitLine: { lineStyle: { color: '#333' } } },
+    series: mainSeries,
+  }, true);
+}
+// ---- 全局日期范围高亮 ----
+function _nhDateLabel(idx) {
+  const days = (_nhData && _nhData.days) || [];
+  if (!days.length || idx < 0 || idx >= days.length) return '-';
+  const d = days[idx].date;
+  return `${d.slice(0,4)}-${d.slice(4,6)}-${d.slice(6,8)}`;
+}
+function applyNhRangeHighlight() {
+  const { startIdx, endIdx } = _nhRange;
+  const days = (_nhData && _nhData.days) || [];
+  if (!days.length) return;
+  const sd = days[Math.max(0, startIdx)].date;
+  const ed = days[Math.min(days.length - 1, endIdx)].date;
+  // markArea 的 xAxis 值必须与图表 X 轴 category 数据格式一致(MM/DD)
+  const xStart = `${sd.slice(4,6)}/${sd.slice(6,8)}`;
+  const xEnd = `${ed.slice(4,6)}/${ed.slice(6,8)}`;
+  // K线图 X 轴用 YYYY-MM-DD 格式
+  const xStartK = `${sd.slice(0,4)}-${sd.slice(4,6)}-${sd.slice(6,8)}`;
+  const xEndK = `${ed.slice(0,4)}-${ed.slice(4,6)}-${ed.slice(6,8)}`;
+  // 给单个 echarts 实例的 series[0] 加 markArea(淡黄色高亮选中区域)
+  function _applyMarkArea(chart) {
+    if (!chart) return;
+    const opt = chart.getOption();
+    if (!opt.series || !opt.series.length) return;
+    opt.series[0].markArea = {
+      silent: true,
+      itemStyle: { color: 'rgba(255,215,0,0.10)' },
+      data: [[ { xAxis: xStart }, { xAxis: xEnd } ]],
+    };
+    chart.setOption({ series: opt.series }, { lazyUpdate: true });
+  }
+  if (_nhChart) _applyMarkArea(_nhChart);
+  _nhConceptCharts.forEach(_applyMarkArea);
+  _nhPctCharts.forEach(_applyMarkArea);
+  // 同步已渲染的K线图上的高亮
+  _nhStockCharts.forEach(c => { try {
+    const opt = c.getOption();
+    if (opt.series && opt.series.length && opt.series[0].markArea) {
+      opt.series[0].markArea.data = [[{ xAxis: xStartK }, { xAxis: xEndK }]];
+      c.setOption({ series: opt.series }, { lazyUpdate: true });
+    }
+  } catch(e){} });
+}
+function _updateNhRangeLabels() {
+  document.getElementById('nhRangeStartLabel').textContent = _nhDateLabel(_nhRange.startIdx);
+  document.getElementById('nhRangeEndLabel').textContent = _nhDateLabel(_nhRange.endIdx);
+}
+function initNhRange() {
+  if (_nhRangeInited) return;
+  _nhRangeInited = true;
+  const sEl = document.getElementById('nhRangeStart');
+  const eEl = document.getElementById('nhRangeEnd');
+  const resetBtn = document.getElementById('nhRangeReset');
+  if (!sEl || !eEl) return;
+  function onInput() {
+    let s = parseInt(sEl.value), e = parseInt(eEl.value);
+    if (s > e) { s = e; sEl.value = s; }
+    const days = (_nhData && _nhData.days) || [];
+    const n = days.length || 1;
+    _nhRange.startIdx = Math.round(s / 100 * (n - 1));
+    _nhRange.endIdx = Math.round(e / 100 * (n - 1));
+    _updateNhRangeLabels();
+    applyNhRangeHighlight();
+  }
+  sEl.addEventListener('input', onInput);
+  eEl.addEventListener('input', onInput);
+  if (resetBtn) {
+    resetBtn.addEventListener('click', () => {
+      sEl.value = 0; eEl.value = 100;
+      const days = (_nhData && _nhData.days) || [];
+      _nhRange = { startIdx: 0, endIdx: Math.max(0, days.length - 1) };
+      _updateNhRangeLabels();
+      applyNhRangeHighlight();
+    });
+  }
+}
+// ---- 高亮范围个股筛选(K线) ----
+let _nhKlineObserver = null;  // IntersectionObserver 懒加载K线
+const _NH_PX_PER_PCT = 1.0;   // 统一比例尺: 每1%涨跌幅 = 1.0px (同比例缩小, 图更紧凑)
+const _NH_KLINE_OVERHEAD = 90; // K线容器固定开销px (legend+volume+dataZoom+padding)
+function renderNhRangeStocks() {
+  const d = _nhData; if (!d) return;
+  const box = document.getElementById('nhRangeStocks');
+  // 销毁旧 K线图
+  _nhStockCharts.forEach(c => { try { c.dispose(); } catch(e){} });
+  _nhStockCharts = [];
+  if (_nhKlineObserver) { _nhKlineObserver.disconnect(); _nhKlineObserver = null; }
+  const days = d.days || [];
+  if (!days.length) { box.innerHTML = ''; return; }
+  const sIdx = Math.max(0, _nhRange.startIdx), eIdx = Math.min(days.length - 1, _nhRange.endIdx);
+  if (sIdx > eIdx) { box.innerHTML = '<div class="empty">无效范围</div>'; return; }
+  // 范围起止日期(YYYYMMDD 和 YYYY-MM-DD)
+  const startDate = days[sIdx].date, endDate = days[eIdx].date;
+  const endDateK = `${endDate.slice(0,4)}-${endDate.slice(4,6)}-${endDate.slice(6,8)}`;
+  const startDateK = `${startDate.slice(0,4)}-${startDate.slice(4,6)}-${startDate.slice(6,8)}`;
+  // 收集范围内所有创新高个股, 同一股票取涨幅最高那次
+  const stockMap = {};
+  for (let i = sIdx; i <= eIdx; i++) {
+    const day = days[i];
+    (day.sectors || []).forEach(sec => {
+      sec.stocks.forEach(s => {
+        if (!stockMap[s.code] || (s.range_pct ?? -999) > (stockMap[s.code].range_pct ?? -999)) {
+          stockMap[s.code] = { code: s.code, name: s.name, close: s.close, pct: s.pct,
+                               range_pct: s.range_pct,
+                               kmax: s.kline_max_pct ?? 0, kmin: s.kline_min_pct ?? 0,
+                               concepts: new Set() };
+        }
+        stockMap[s.code].concepts.add(sec.concept);
+      });
+    });
+  }
+  const allStocks = Object.values(stockMap);
+  if (!allStocks.length) { box.innerHTML = '<div class="empty">范围内无创新高个股</div>'; return; }
+  // 按板块分组
+  const sectorMap = {};
+  allStocks.forEach(s => {
+    s.concepts.forEach(con => {
+      if (!sectorMap[con]) sectorMap[con] = [];
+      sectorMap[con].push(s);
+    });
+  });
+  const sectors = Object.entries(sectorMap).map(([con, stocks]) => {
+    stocks.sort((a, b) => (b.range_pct ?? -999) - (a.range_pct ?? -999));
+    return { concept: con, stocks };
+  }).sort((a, b) => b.stocks.length - a.stocks.length);
+  // 渲染结构
+  const total = allStocks.length;
+  const dateRange = `${_nhDateLabel(sIdx)} ~ ${_nhDateLabel(eIdx)}`;
+  let html = `<div class="nh-rs-head">范围 ${dateRange} · 共${total}只 · ${sectors.length}个板块 · K线截止${endDateK}</div>`;
+  sectors.forEach(sec => {
+    html += `<div class="nh-rs-sector">
+      <div class="nh-rs-sec-hd" onclick="this.parentElement.classList.toggle('nh-rs-collapsed')">
+        <span class="nh-toggle">▼</span><b>${sec.concept}</b> <span class="nh-count">${sec.stocks.length}</span>
+      </div>
+      <div class="nh-rs-sec-body">`;
+    sec.stocks.forEach(s => {
+      const pctCls = s.pct >= 0 ? 'nh-up' : 'nh-down';
+      const rp = s.range_pct;
+      const rpCls = rp == null ? '' : (rp >= 0 ? 'nh-up' : 'nh-down');
+      const rpTxt = rp == null ? '' : `${rp > 0 ? '+' : ''}${rp}%`;
+      // 统一比例尺: 容器高度 = 涨跌幅跨度 * pxPerPct + 固定开销
+      const pctSpan = Math.max(1, (s.kmax ?? 0) - (s.kmin ?? 0));
+      const klineH = Math.round(pctSpan * _NH_PX_PER_PCT + _NH_KLINE_OVERHEAD);
+      html += `<div class="nh-rs-stock">
+        <div class="nh-rs-stock-info">
+          <span class="s-code">${s.code}</span>
+          <span class="nh-rs-name">${s.name}</span>
+          <span class="${rpCls}" title="范围累计涨幅">${rpTxt}</span>
+          <span class="${pctCls}" title="新高日涨幅" style="font-size:10px;opacity:0.7">${s.pct > 0 ? '+' : ''}${s.pct}%</span>
+          <span style="color:var(--text-muted);font-size:10px">收${s.close}</span>
+        </div>
+        <div class="nh-rs-kline" data-code="${s.code}" data-end="${endDate}" data-kmax="${s.kmax ?? 0}" data-kmin="${s.kmin ?? 0}" style="height:${klineH}px"></div>
+      </div>`;
+    });
+    html += `</div></div>`;
+  });
+  box.innerHTML = html;
+  // 折叠事件
+  box.querySelectorAll('.nh-rs-sector').forEach(el => {
+    const hd = el.querySelector('.nh-rs-sec-hd');
+    hd.addEventListener('click', () => {
+      const body = el.querySelector('.nh-rs-sec-body');
+      const toggle = el.querySelector('.nh-toggle');
+      if (body.style.display === 'none') { body.style.display = ''; toggle.textContent = '▼'; }
+      else { body.style.display = 'none'; toggle.textContent = '▶'; }
+    });
+  });
+  // IntersectionObserver 懒加载K线: 进入视口才fetch+渲染
+  _nhKlineObserver = new IntersectionObserver((entries) => {
+    entries.forEach(entry => {
+      if (!entry.isIntersecting) return;
+      const el = entry.target;
+      _nhKlineObserver.unobserve(el);
+      _loadNhStockKline(el);
+    });
+  }, { rootMargin: '100px' });
+  box.querySelectorAll('.nh-rs-kline').forEach(el => _nhKlineObserver.observe(el));
+}
+// 加载单只个股K线
+async function _loadNhStockKline(el) {
+  const code = el.dataset.code, endDate = el.dataset.end;
+  el.innerHTML = '<div style="color:#6b7280;font-size:10px;padding:8px;">加载中…</div>';
+  try {
+    const resp = await fetch(`/api/hot/explosive/kline?code=${code}&end=${endDate}&count=250&fq=front`);
+    const data = await resp.json();
+    if (!data.success || !data.bars || !data.bars.length) {
+      el.innerHTML = '<div style="color:#666;font-size:10px;padding:8px;">K线加载失败</div>'; return;
+    }
+    _renderNhStockKline(el, data.bars, code);
+  } catch(e) { el.innerHTML = `<div style="color:#666;font-size:10px;padding:8px;">异常: ${e.message}</div>`; }
+}
+// 渲染单只个股K线(含高亮范围markArea, 统一比例尺: 每1%涨幅=固定px, 各股Y轴自适应不裁切)
+function _renderNhStockKline(dom, bars, code) {
+  const chart = echarts.init(dom, 'dark');
+  _nhStockCharts.push(chart);
+  const dates = bars.map(b => b.date);
+  const ohlc = bars.map(b => [b.open, b.close, b.low, b.high]);
+  const vols = bars.map(b => ({ value: b.vol, itemStyle: { color: b.close >= b.open ? 'rgba(239,83,80,0.6)' : 'rgba(38,166,154,0.6)' } }));
+  // 均线
+  const ma = n => { const r = []; for (let i = 0; i < bars.length; i++) { if (i < n - 1) { r.push('-'); continue; } let x = 0; for (let j = i - n + 1; j <= i; j++) x += bars[j].close; r.push(+(x / n).toFixed(2)); } return r; };
+  // 范围高亮日期(YYYY-MM-DD)
+  const days = (_nhData && _nhData.days) || [];
+  const sd = days[Math.max(0, _nhRange.startIdx)].date;
+  const ed = days[Math.min(days.length - 1, _nhRange.endIdx)].date;
+  const xStartK = `${sd.slice(0,4)}-${sd.slice(4,6)}-${sd.slice(6,8)}`;
+  const xEndK = `${ed.slice(0,4)}-${ed.slice(4,6)}-${ed.slice(6,8)}`;
+  // 统一比例尺: Y轴按个股自身最大涨跌幅设置(不裁切), 容器高度已按比例尺缩放
+  // => 同样的涨幅%在所有图中占相同像素高度
+  const baseClose = bars[0].close;
+  const kMax = parseFloat(dom.dataset.kmax) || 0;
+  const kMin = parseFloat(dom.dataset.kmin) || 0;
+  const yMax = baseClose * (1 + kMax / 100);
+  const yMin = baseClose * (1 + kMin / 100);
+  // K线主图区域占容器高度的比例 (固定开销除外的部分都是K线主图)
+  const domH = dom.clientHeight || 200;
+  const klineAreaH = Math.max(50, domH - _NH_KLINE_OVERHEAD);
+  const klineTopPct = Math.round(18 / domH * 100); // legend区域
+  const klineHeightPct = Math.round(klineAreaH / domH * 100 * 0.82); // K线占82%, 量图占18%
+  const volTopPct = klineTopPct + klineHeightPct + 2;
+  const volHeightPct = Math.round(klineAreaH / domH * 100 * 0.18);
+  chart.setOption({
+    backgroundColor: 'transparent', animation: false,
+    tooltip: { trigger: 'axis', axisPointer: { type: 'cross' } },
+    legend: { show: true, top: 0, right: 8, itemWidth: 12, itemHeight: 8, textStyle: { color: '#9aa0a6', fontSize: 9 },
+              data: ['日K', 'MA5', 'MA10', 'MA20'] },
+    axisPointer: { link: [{ xAxisIndex: 'all' }] },
+    grid: [{ left: 48, right: 12, top: klineTopPct + '%', height: klineHeightPct + '%' },
+           { left: 48, right: 12, top: volTopPct + '%', height: volHeightPct + '%' }],
+    xAxis: [
+      { type: 'category', data: dates, boundaryGap: true, axisLabel: { color: '#9aa0a6', fontSize: 8 } },
+      { type: 'category', gridIndex: 1, data: dates, axisLabel: { show: false } },
+    ],
+    yAxis: [
+      { min: yMin, max: yMax, scale: false, splitLine: { lineStyle: { color: '#252a33' } }, axisLabel: { color: '#9aa0a6', fontSize: 8 } },
+      { gridIndex: 1, splitNumber: 2, axisLabel: { show: false }, splitLine: { show: false } },
+    ],
+    dataZoom: [{ type: 'inside', xAxisIndex: [0, 1], start: 0, end: 100 },
+               { type: 'slider', xAxisIndex: [0, 1], bottom: 2, height: 10, start: 0, end: 100 }],
+    series: [
+      { name: '日K', type: 'candlestick', data: ohlc,
+        itemStyle: { color: '#ef5350', color0: '#26a69a', borderColor: '#ef5350', borderColor0: '#26a69a' },
+        markArea: { silent: true, itemStyle: { color: 'rgba(255,215,0,0.10)' },
+                    data: [[{ xAxis: xStartK }, { xAxis: xEndK }]] },
+        markLine: { silent: true, symbol: 'none', label: { show: true, position: 'insideEndTop', fontSize: 9, formatter: '{@score}' },
+                    data: [
+                      { yAxis: baseClose * 1.5, lineStyle: { color: '#ff9800', width: 1, type: 'dashed' }, label: { color: '#ff9800', formatter: '+50%' } },
+                      { yAxis: baseClose * 2.0, lineStyle: { color: '#ef5350', width: 1, type: 'dashed' }, label: { color: '#ef5350', formatter: '+100%' } },
+                    ] } },
+      { name: 'MA5', type: 'line', data: ma(5), symbol: 'none', smooth: true, lineStyle: { color: '#facc15', width: 1 } },
+      { name: 'MA10', type: 'line', data: ma(10), symbol: 'none', smooth: true, lineStyle: { color: '#60a5fa', width: 1 } },
+      { name: 'MA20', type: 'line', data: ma(20), symbol: 'none', smooth: true, lineStyle: { color: '#a855f7', width: 1 } },
+      { name: '成交量', type: 'bar', xAxisIndex: 1, yAxisIndex: 1, data: vols },
+    ],
+  }, true);
+  chart.resize();
+}
+function renderNewhighTable() {
+  const d = _nhData; if (!d) return;
+  const box = document.getElementById('nhResult');
+  const days = (d.days || []).filter(x => x.total > 0);
+  if (!days.length) { box.innerHTML = '<div class="empty">区间内无创新高个股</div>'; return; }
+  const lastDate = days[days.length - 1].date;
+  let html = '';
+  // 倒序展示(最新在上)
+  [...days].reverse().forEach(day => {
+    const open = day.date === lastDate;
+    const fmtDate = `${day.date.slice(4,6)}/${day.date.slice(6,8)}`;
+    html += `<div class="nh-day">
+      <div class="nh-day-hd" onclick="this.parentElement.classList.toggle('nh-collapsed')">
+        <span class="nh-toggle">${open ? '▼' : '▶'}</span>
+        <b>${fmtDate}</b> · <span style="color:#ffd60a">${day.total}只新高</span> · ${day.sectors.length}个板块
+      </div>
+      <div class="nh-day-body" style="${open ? '' : 'display:none'}">`;
+    day.sectors.forEach(sec => {
+      html += `<div class="nh-sector">
+        <div class="nh-sector-hd"><b>${sec.concept}</b> <span class="nh-count">${sec.count}</span></div>
+        <div class="nh-stocks">`;
+      sec.stocks.forEach(s => {
+        const pctCls = s.pct >= 0 ? 'nh-up' : 'nh-down';
+        html += `<span class="nh-stock" title="${s.name} 收盘${s.close}"><span class="s-code">${s.code}</span> ${s.name} <span class="${pctCls}">${s.pct > 0 ? '+' : ''}${s.pct}%</span></span>`;
+      });
+      html += `</div></div>`;
+    });
+    html += `</div></div>`;
+  });
+  box.innerHTML = html;
+  // 折叠展开事件: 非最后一天默认折叠, 点击切换
+  box.querySelectorAll('.nh-day').forEach(el => {
+    const hd = el.querySelector('.nh-day-hd');
+    hd.addEventListener('click', () => {
+      const body = el.querySelector('.nh-day-body');
+      const toggle = el.querySelector('.nh-toggle');
+      if (body.style.display === 'none') { body.style.display = ''; toggle.textContent = '▼'; }
+      else { body.style.display = 'none'; toggle.textContent = '▶'; }
+    });
+  });
 }
 
 // ===== 每日产业链地图(今天在炒啥) =====
