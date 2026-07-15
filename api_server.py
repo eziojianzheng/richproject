@@ -6363,45 +6363,16 @@ def _price_position(closes, date, lookback=250):
     return round(pct, 1), level
 
 
-# 涨跌8档分类(互斥, 从高到低匹配)
-# 涨: 涨停/≥9%/≥7%/≥5%/≥3%/≥2%/≥1%/>0%  跌: 跌停/≤-9%/≤-7%/≤-5%/≤-3%/≤-2%/≤-1%/<0%
-_PCT_BUCKETS_UP = [
-    ('limitup',  None),    # 涨停(≥thr, 特殊处理)
-    ('up9',      9.0),
-    ('up7',      7.0),
-    ('up5',      5.0),
-    ('up3',      3.0),
-    ('up2',      2.0),
-    ('up1',      1.0),
-    ('up0',      0.0),
-]
-_PCT_BUCKETS_DN = [
-    ('limitdown', None),   # 跌停(≤-thr, 特殊处理)
-    ('down9',     -9.0),
-    ('down7',     -7.0),
-    ('down5',     -5.0),
-    ('down3',     -3.0),
-    ('down2',     -2.0),
-    ('down1',     -1.0),
-    ('down0',      0.0),
-]
-# 涨侧type集合(用于build_day_rank判断方向)
-_RISING_TYPES = {name for name, _ in _PCT_BUCKETS_UP}
-
-
 def _classify_pct(pct, thr):
-    """涨跌幅归类为8涨+8跌共16档之一, 不属于任何档返回None。
-    thr=涨停阈值(主板10%/创业板20%), 涨停/跌停优先判定。"""
+    """涨跌幅归类: limitup涨停 / up5(5%~涨停) / limitdown跌停 / down5(-5%~跌停) / None(其它)。"""
     if pct >= thr:
         return 'limitup'
+    if pct >= 5:
+        return 'up5'
     if pct <= -thr:
         return 'limitdown'
-    for name, val in _PCT_BUCKETS_UP[1:]:   # 跳过limitup
-        if pct >= val:
-            return name
-    for name, val in _PCT_BUCKETS_DN[1:]:   # 跳过limitdown
-        if pct <= val:
-            return name
+    if pct <= -5:
+        return 'down5'
     return None
 
 
@@ -6547,8 +6518,8 @@ def caizhaomao_scan_task(task_id, start8, end8):
 
         def build_day_rank(con_map, count_type):
             """某一天内按 count_type 榜单: 只保留该类型的个股。
-            count_type: limitup/up9/up7/up5/up3/up2/up1/up0 或 limitdown/down9/.../down0。"""
-            rising = count_type in _RISING_TYPES
+            count_type: limitup 涨停 / up5 涨幅≥5%(不含涨停) / limitdown 跌停 / down5 跌幅≤-5%(不含跌停)。"""
+            rising = count_type in ('limitup', 'up5')
             scored = []
             for con, evs in con_map.items():
                 kept = [e for e in evs if e['type'] == count_type]
@@ -6559,24 +6530,19 @@ def caizhaomao_scan_task(task_id, start8, end8):
             scored.sort(key=lambda x: -x['count'])
             return scored[:10]
 
-        # 8涨+8跌榜单
-        up_keys = [name for name, _ in _PCT_BUCKETS_UP]
-        dn_keys = [name for name, _ in _PCT_BUCKETS_DN]
-        # 榜单中文标签
-        _BUCKET_LABELS = {
-            'limitup': '涨停', 'up9': '涨幅≥9%', 'up7': '涨幅≥7%', 'up5': '涨幅≥5%',
-            'up3': '涨幅≥3%', 'up2': '涨幅≥2%', 'up1': '涨幅≥1%', 'up0': '涨幅>0%',
-            'limitdown': '跌停', 'down9': '跌幅≤-9%', 'down7': '跌幅≤-7%', 'down5': '跌幅≤-5%',
-            'down3': '跌幅≤-3%', 'down2': '跌幅≤-2%', 'down1': '跌幅≤-1%', 'down0': '跌幅<0%',
-        }
-
         by_day = []
         for d in days:
             con_map = day_concept_events.get(d, {})
             by_day.append({
                 'date': d,
-                'rising': {f'by_{k}': build_day_rank(con_map, k) for k in up_keys},
-                'falling': {f'by_{k}': build_day_rank(con_map, k) for k in dn_keys},
+                'rising': {
+                    'by_limitup': build_day_rank(con_map, 'limitup'),
+                    'by_up5': build_day_rank(con_map, 'up5'),
+                },
+                'falling': {
+                    'by_limitdown': build_day_rank(con_map, 'limitdown'),
+                    'by_down5': build_day_rank(con_map, 'down5'),
+                },
             })
 
         t['result'] = {
