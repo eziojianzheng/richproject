@@ -3276,10 +3276,12 @@ function _renderNhStockKline(dom, bars, code) {
         itemStyle: { color: '#ef5350', color0: '#26a69a', borderColor: '#ef5350', borderColor0: '#26a69a' },
         markArea: { silent: true, itemStyle: { color: 'rgba(255,215,0,0.10)' },
                     data: [[{ xAxis: xStartK }, { xAxis: xEndK }]] },
-        markLine: { silent: true, symbol: 'none', label: { show: true, position: 'insideEndTop', fontSize: 9, formatter: '{@score}' },
+        markLine: { silent: true, symbol: 'none',
                     data: [
-                      { yAxis: baseClose * 1.5, lineStyle: { color: '#ff9800', width: 1, type: 'dashed' }, label: { color: '#ff9800', formatter: '+50%' } },
-                      { yAxis: baseClose * 2.0, lineStyle: { color: '#ef5350', width: 1, type: 'dashed' }, label: { color: '#ef5350', formatter: '+100%' } },
+                      { yAxis: baseClose * 1.5,  lineStyle: { color: '#ff9800', width: 1, type: 'dashed' }, label: { color: '#ff9800', formatter: '+50%',  fontSize: 9 } },
+                      { yAxis: baseClose * 2.0,  lineStyle: { color: '#ef5350', width: 1, type: 'dashed' }, label: { color: '#ef5350', formatter: '+100%', fontSize: 9 } },
+                      { yAxis: baseClose * 3.0,  lineStyle: { color: '#a855f7', width: 1, type: 'dashed' }, label: { color: '#a855f7', formatter: '+200%', fontSize: 9 } },
+                      { yAxis: baseClose * 4.0,  lineStyle: { color: '#ffd700', width: 1, type: 'dashed' }, label: { color: '#ffd700', formatter: '+300%', fontSize: 9 } },
                     ] } },
       { name: 'MA5', type: 'line', data: ma(5), symbol: 'none', smooth: true, lineStyle: { color: '#facc15', width: 1 } },
       { name: 'MA10', type: 'line', data: ma(10), symbol: 'none', smooth: true, lineStyle: { color: '#60a5fa', width: 1 } },
@@ -4579,6 +4581,19 @@ const CZM_FQ_LABEL={front:'前复权',back:'后复权',none:'不复权'};
 function czmRenderKline(dom, domId, bars, s, source, fq){
   let chart=czmStockCharts[domId];
   if(chart){ try{chart.dispose();}catch(_){} }
+  // 统一比例尺: 从bars计算个股最大涨跌幅(相对首日收盘), 容器高度按比例缩放
+  const baseClose = bars[0].close;
+  let kMax = 0, kMin = 0;
+  for (const b of bars) {
+    const hp = (b.high / baseClose - 1) * 100;
+    const lp = (b.low / baseClose - 1) * 100;
+    if (hp > kMax) kMax = hp;
+    if (lp < kMin) kMin = lp;
+  }
+  const pctSpan = Math.max(1, kMax - kMin);
+  const CZM_PX_PER_PCT = 1.0, CZM_OVERHEAD = 90;
+  const klineH = Math.round(pctSpan * CZM_PX_PER_PCT + CZM_OVERHEAD);
+  dom.style.height = klineH + 'px';
   chart=echarts.init(dom,'dark'); czmStockCharts[domId]=chart;
   chart.__czmBars=bars; chart.__czmStock=s; chart.__czmSrc=source; chart.__czmFq=fq;   // 存下, 供切换均线时重画
   const srcTxt='数据源: '+((CZM_SRC_LABEL[source])||source||'未知')+' · '+((CZM_FQ_LABEL[fq])||'前复权');
@@ -4591,6 +4606,27 @@ function czmRenderKline(dom, domId, bars, s, source, fq){
     name:'MA'+n, type:'line', data:ma(n), symbol:'none', smooth:true,
     lineStyle:{color:CZM_MA_COLORS[n]||'#cbd5e1', width:1},
   }));
+  // Y轴: 各自完整显示(不裁切), baseClose为基准
+  const yMax = baseClose * (1 + kMax / 100);
+  const yMin = baseClose * (1 + kMin / 100);
+  // grid比例按容器高度动态计算
+  const domH = klineH;
+  const klineAreaH = Math.max(50, domH - CZM_OVERHEAD);
+  const klineTopPct = Math.round(18 / domH * 100);
+  const klineHeightPct = Math.round(klineAreaH / domH * 100 * 0.82);
+  const volTopPct = klineTopPct + klineHeightPct + 2;
+  const volHeightPct = Math.round(klineAreaH / domH * 100 * 0.18);
+  // 涨幅横线: +50%橙 +100%红 +200%紫 +300%金 (只在Y轴范围内的画)
+  const pctMarks = [
+    { pct: 50,  color: '#ff9800', label: '+50%' },
+    { pct: 100, color: '#ef5350', label: '+100%' },
+    { pct: 200, color: '#a855f7', label: '+200%' },
+    { pct: 300, color: '#ffd700', label: '+300%' },
+  ].filter(m => m.pct <= kMax + 1).map(m => ({
+    yAxis: baseClose * (1 + m.pct / 100),
+    lineStyle: { color: m.color, width: 1, type: 'dashed' },
+    label: { color: m.color, formatter: m.label, fontSize: 9 },
+  }));
   chart.setOption({
     backgroundColor:'transparent', animation:false,
     title:{text:srcTxt,left:8,top:2,textStyle:{color:'#6b7280',fontSize:9,fontWeight:'normal'}},
@@ -4598,19 +4634,19 @@ function czmRenderKline(dom, domId, bars, s, source, fq){
     legend:{show:true,top:0,right:8,itemWidth:14,itemHeight:8,textStyle:{color:'#9aa0a6',fontSize:9},
       data:['日K'].concat(maSeries.map(x=>x.name))},
     axisPointer:{link:[{xAxisIndex:'all'}]},
-    grid:[{left:48,right:12,top:18,height:'60%'},{left:48,right:12,top:'76%',height:'16%'}],
+    grid:[{left:48,right:12,top:klineTopPct+'%',height:klineHeightPct+'%'},{left:48,right:12,top:volTopPct+'%',height:volHeightPct+'%'}],
     xAxis:[
       {type:'category',data:dates,boundaryGap:true,axisLabel:{color:'#9aa0a6',fontSize:9}},
       {type:'category',gridIndex:1,data:dates,axisLabel:{show:false}},
     ],
     yAxis:[
-      {scale:true,splitLine:{lineStyle:{color:'#252a33'}},axisLabel:{color:'#9aa0a6',fontSize:9}},
+      {min:yMin,max:yMax,scale:false,splitLine:{lineStyle:{color:'#252a33'}},axisLabel:{color:'#9aa0a6',fontSize:9}},
       {gridIndex:1,splitNumber:2,axisLabel:{show:false},splitLine:{show:false}},
     ],
     dataZoom:[{type:'inside',xAxisIndex:[0,1],start:0,end:100},{type:'slider',xAxisIndex:[0,1],bottom:2,height:12,start:0,end:100}],
     series:[
       {name:'日K',type:'candlestick',data:ohlc,itemStyle:{color:'#ef5350',color0:'#26a69a',borderColor:'#ef5350',borderColor0:'#26a69a'},
-        markLine:{symbol:'none',silent:true,data:[{xAxis:endDash,lineStyle:{color:'#ffd166',type:'dashed',width:1},label:{formatter:'当天',color:'#ffd166',fontSize:9}}]}},
+        markLine:{symbol:'none',silent:true,data:[{xAxis:endDash,lineStyle:{color:'#ffd166',type:'dashed',width:1},label:{formatter:'当天',color:'#ffd166',fontSize:9}}].concat(pctMarks)}},
     ].concat(maSeries).concat([
       {name:'成交量',type:'bar',xAxisIndex:1,yAxisIndex:1,data:vols},
     ]),
