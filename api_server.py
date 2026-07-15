@@ -6685,6 +6685,44 @@ def api_caizhaomao_locks():
     return jsonify({'success': True, 'locks': _caizhaomao_locks})
 
 
+# 扫描结果服务端持久化(localStorage只有5MB, 扫描结果常超10MB会静默丢失)
+_CAIZHAOMAO_RESULT_FILE = '.caizhaomao_result_server.json'
+_caizhaomao_result_lock = threading.Lock()
+
+
+@app.route('/api/hot/caizhaomao/save', methods=['POST'])
+def api_caizhaomao_save():
+    """保存扫描结果到服务端文件(供刷新/重开浏览器后恢复)。"""
+    try:
+        data = request.get_json(force=True)
+        if not data or 'result' not in data:
+            return jsonify({'success': False, 'error': '缺少 result 字段'}), 400
+        payload = {'result': data['result'], 'curDay': data.get('curDay'),
+                   'ts': data.get('ts', int(time.time()))}
+        with _caizhaomao_result_lock:
+            with open(_CAIZHAOMAO_RESULT_FILE, 'w', encoding='utf-8') as f:
+                json.dump(payload, f, ensure_ascii=False)
+        return jsonify({'success': True, 'size': os.path.getsize(_CAIZHAOMAO_RESULT_FILE)})
+    except Exception as e:
+        return jsonify({'success': False, 'error': f'{type(e).__name__}: {e}'}), 500
+
+
+@app.route('/api/hot/caizhaomao/load', methods=['GET'])
+def api_caizhaomao_load():
+    """从服务端文件加载上次保存的扫描结果。"""
+    try:
+        if not os.path.exists(_CAIZHAOMAO_RESULT_FILE):
+            return jsonify({'success': False, 'error': '无已保存的扫描结果'})
+        with _caizhaomao_result_lock:
+            with open(_CAIZHAOMAO_RESULT_FILE, 'r', encoding='utf-8') as f:
+                payload = json.load(f)
+        if payload and payload.get('result', {}).get('days'):
+            return jsonify({'success': True, **payload})
+        return jsonify({'success': False, 'error': '扫描结果数据无效'})
+    except Exception as e:
+        return jsonify({'success': False, 'error': f'{type(e).__name__}: {e}'}), 500
+
+
 if __name__ == '__main__':
     print("=" * 60)
     print("淘股吧数据服务")

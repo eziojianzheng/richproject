@@ -4308,24 +4308,20 @@ let czmCurDay = null;            // 当前选中的交易日 YYYYMMDD
 let czmCurConcept = null;        // 当前选中的概念 {concept, side, stocks}
 let czmInited = false;
 let czmDrag = null;
-const CZM_RESULT_KEY = 'czm_result_cache';   // 扫描结果持久化(切页面/刷新不丢)
 function czmLockKey(date,concept){ return `${date}_${concept}`; }
 function czmIsLocked(date,concept){ return !!czmLockMap[czmLockKey(date,concept)]; }
-// 保存扫描结果到 localStorage(含当前选中日), 使切 tab / 刷新后仍在
+// 保存扫描结果到服务端(localStorage只有5MB, 扫描结果常超10MB会丢失)
 function czmPersistResult(){
   try{
-    localStorage.setItem(CZM_RESULT_KEY, JSON.stringify({
-      result: czmResult, curDay: czmCurDay, ts: Date.now()
-    }));
-  }catch(e){ /* 数据过大时忽略 */ }
+    fetch('/api/hot/caizhaomao/save',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({result:czmResult, curDay:czmCurDay, ts:Date.now()})}).catch(()=>{});
+  }catch(e){ /* 忽略 */ }
 }
-function czmRestoreResult(){
+async function czmRestoreResult(){
   try{
-    const raw=localStorage.getItem(CZM_RESULT_KEY);
-    if(!raw) return false;
-    const o=JSON.parse(raw);
-    if(o && o.result && o.result.days && o.result.days.length){
-      czmResult=o.result; czmCurDay=o.curDay || o.result.days[o.result.days.length-1];
+    const r=await(await fetch('/api/hot/caizhaomao/load')).json();
+    if(r && r.success && r.result && r.result.days && r.result.days.length){
+      czmResult=r.result; czmCurDay=r.curDay || r.result.days[r.result.days.length-1];
       return true;
     }
   }catch(e){}
@@ -4380,8 +4376,8 @@ function initCzm(){
     document.getElementById('czmEnd').value = localStorage.getItem('czm_end') || f(end);
   }catch(_){ document.getElementById('czmStart').value=f(start); document.getElementById('czmEnd').value=f(end); }
   // 恢复持久化: 先拉服务端标签/锁定, 再恢复上次扫描结果, 重绘页面(切 tab / 刷新不丢)
-  czmLoadPersisted().then(()=>{
-    if(czmRestoreResult()){
+  czmLoadPersisted().then(async ()=>{
+    if(await czmRestoreResult()){
       renderCzmDayBar();
       renderCzmDay();
     }
