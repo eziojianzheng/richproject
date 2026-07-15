@@ -1003,6 +1003,8 @@
       <label>结束</label><input type="date" id="czmEnd">
       <button id="czmScan" onclick="startCzm()">开始</button>
       <button id="czmCancel" onclick="cancelCzm()" style="display:none;background:#6b7280;">中断</button>
+      <button onclick="czmExport()" title="导出全部数据(扫描结果+标签+锁定)为JSON文件, 供另一环境导入" style="background:#059669;border:1px solid #10b981;color:#fff;">导出</button>
+      <label style="background:#7c3aed;border:1px solid #8b5cf6;color:#fff;cursor:pointer;padding:2px 10px;border-radius:4px;font-size:12px;" title="导入另一环境导出的JSON, 合并标签+锁定+扫描结果">导入<input type="file" accept=".json" onchange="czmImport(event)" style="display:none;"></label>
       <span id="czmStatus" class="exp-status"></span>
       <span class="czm-ma-cfg" id="czmMaCfg" style="margin-left:auto;display:flex;gap:8px;align-items:center;font-size:12px;">
         <span style="color:var(--text-muted);">均线</span>
@@ -4722,6 +4724,28 @@ async function czmSaveLabel(s, concept, label){
   catch(e){}
 }
 function czmRemoveLabel(code,date,concept){ czmSaveLabel({code,date}, concept, ''); }
+// 导出全部数据(扫描结果+标签+锁定)为JSON文件下载
+function czmExport(){
+  window.location.href='/api/hot/caizhaomao/export';
+}
+// 导入JSON文件, 合并到当前数据
+async function czmImport(ev){
+  const file=ev.target.files[0]; if(!file) return;
+  ev.target.value='';   // 允许重复选同一文件
+  try{
+    const text=await file.text();
+    const data=JSON.parse(text);
+    if(!data || typeof data!=='object'){ alert('文件格式无效'); return; }
+    const r=await(await fetch('/api/hot/caizhaomao/import',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)})).json();
+    if(!r.success){ alert('导入失败: '+(r.error||'未知错误')); return; }
+    const m=r.merged||{};
+    // 重新从服务端加载全部数据
+    await czmLoadPersisted();
+    if(m.result && await czmRestoreResult()){ renderCzmDayBar(); renderCzmDay(); }
+    renderCzmCats();
+    alert(`导入完成: 标签${m.labels||0}条, 锁定${m.locks||0}个, 扫描结果${m.result?'已更新':'未包含'}`);
+  }catch(e){ alert('导入异常: '+e.message); }
+}
 </script>
 </body>
 </html>

@@ -6670,6 +6670,7 @@ def api_caizhaomao_label():
         else:
             _caizhaomao_labels[key] = {
                 'code': code, 'date': date, 'concept': concept, 'label': label,
+                'labels': [label],   # 兼容旧格式(数组)
                 'name': str(data.get('name', '')), 'type': str(data.get('type', '')),
                 'pct': data.get('pct'), 'ts': time.time(),
             }
@@ -6679,10 +6680,19 @@ def api_caizhaomao_label():
 
 @app.route('/api/hot/caizhaomao/labels', methods=['GET'])
 def api_caizhaomao_labels():
-    """返回所有已保存的行为分类标签(可选 label / concept 过滤)。"""
+    """返回所有已保存的行为分类标签(可选 label / concept 过滤)。
+    兼容旧格式: 旧数据用labels(数组), 新数据用label(字符串), 返回时统一补全两者。"""
     label = request.args.get('label', '')
     concept = request.args.get('concept', '')
-    items = list(_caizhaomao_labels.values())
+    items = []
+    for x in _caizhaomao_labels.values():
+        item = dict(x)
+        # 兼容: label缺失时从labels数组取第一个
+        if not item.get('label') and item.get('labels'):
+            item['label'] = item['labels'][0] if item['labels'] else ''
+        if not item.get('labels') and item.get('label'):
+            item['labels'] = [item['label']]
+        items.append(item)
     if label:
         items = [x for x in items if x.get('label') == label]
     if concept:
@@ -6753,6 +6763,84 @@ def api_caizhaomao_load():
         if payload and payload.get('result', {}).get('days'):
             return jsonify({'success': True, **payload})
         return jsonify({'success': False, 'error': '扫描结果数据无效'})
+    except Exception as e:
+        return jsonify({'success': False, 'error': f'{type(e).__name__}: {e}'}), 500
+
+
+@app.route('/api/hot/caizhaomao/export', methods=['GET'])
+def api_caizhaomao_export():
+    """导出全部招财猫数据(扫描结果+标签+锁定)为一个JSON, 供跨环境同步。"""
+    try:
+        result = None
+        if os.path.exists(_CAIZHAOMAO_RESULT_FILE):
+            with _caizhaomao_result_lock:
+                with open(_CAIZHAOMAO_RESULT_FILE, 'r', encoding='utf-8') as f:
+                    result = json.load(f)
+        # 标签: 兼容label/labels双格式
+        labels_out = []
+        for x in _caizhaomao_labels.values():
+            item = dict(x)
+            if not item.get('label') and item.get('labels'):
+                item['label'] = item['labels'][0] if item['labels'] else ''
+            if not item.get('labels') and item.get('label'):
+                item['labels'] = [item['label']]
+            labels_out.append(item)
+        payload = {
+            'version': 2,
+            'exported_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            'result': result,
+            'labels': labels_out,
+            'locks': dict(_caizhaomao_locks),
+        }
+        resp = make_response(json.dumps(payload, ensure_ascii=False))
+        resp.headers['Content-Type'] = 'application/json; charset=utf-8'
+        fname = f'caizhaomao_backup_{datetime.now().strftime("%Y%m%d_%H%M%S")}.json'
+        resp.headers['Content-Disposition'] = f'attachment; filename="{fname}"'
+        return resp
+    except Exception as e:
+        return jsonify({'success': False, 'error': f'{type(e).__name__}: {e}'}), 500
+
+
+@app.route('/api/hot/caizhaomao/import', methods=['POST'])
+def api_caizhaomao_import():
+    """导入招财猫数据(扫描结果+标签+锁定), 合并到当前数据。"""
+    try:
+        data = request.get_json(force=True)
+        if not data:
+            return jsonify({'success': False, 'error': '无数据'}), 400
+        merged = {'labels': 0, 'locks': 0, 'result': False}
+        # 导入标签(合并: 同key覆盖) -- 不在外层加锁, _save_caizhaomao_labels内部自带锁
+        if isinstance(data.get('labels'), list):
+            for item in data['labels']:
+                key = f"{item.get('code','')}_{item.get('date','')}_{item.get('concept','')}"
+                if not item.get('code') or not item.get('date'):
+                    continue
+                label = item.get('label') or (item.get('labels') or [None])[0]
+                if not label:
+                    continue
+                _caizhaomao_labels[key] = {
+                    'code': item['code'], 'date': item['date'], 'concept': item.get('concept',''),
+                    'label': label, 'labels': [label],
+                    'name': item.get('name',''), 'type': item.get('type',''),
+                    'pct': item.get('pct'), 'ts': item.get('ts', time.time()),
+                }
+                merged['labels'] += 1
+            _save_caizhaomao_labels()
+        # 导入锁定(合并) -- _save_caizhaomao_locks内部自带锁
+        if isinstance(data.get('locks'), dict):
+            for k, v in data['locks'].items():
+                _caizhaomao_locks[k] = v
+                merged['locks'] += 1
+            _save_caizhaomao_locks()
+        # 导入扫描结果(覆盖)
+        if data.get('result') and isinstance(data['result'], dict):
+            payload = {'result': data['result'], 'curDay': data.get('curDay'),
+                       'ts': data.get('ts', int(time.time()))}
+            with _caizhaomao_result_lock:
+                with open(_CAIZHAOMAO_RESULT_FILE, 'w', encoding='utf-8') as f:
+                    json.dump(payload, f, ensure_ascii=False)
+            merged['result'] = True
+        return jsonify({'success': True, 'merged': merged})
     except Exception as e:
         return jsonify({'success': False, 'error': f'{type(e).__name__}: {e}'}), 500
 
