@@ -103,7 +103,7 @@
   .grid-stack-item-content .hint-bar { flex-shrink: 0; }
   #dailyChart, #minuteChart, #histMinuteChart { height: 100%; }
   #stockDailyChart, #stockMinute5Chart, #stockHistChart { height: 100%; }
-  #conceptZtChart, #conceptDistChart { height: 100%; }
+  #conceptZtChart { height: 100%; }
   .ever-concept-card { border-bottom: 1px solid #2b3038; padding: 4px 0 8px; }
   .ever-concept-card.current-top { background: rgba(239,83,80,.035); }
   .ever-row { display: flex; gap: 6px; padding: 4px; }
@@ -272,6 +272,22 @@
   .cb-con .cb-lu { color: #ffd60a; }
   .cb-chev { transition: transform .15s; font-size: 10px; color: var(--text-muted); }
   .cb-chain.open .cb-chev { transform: rotate(90deg); }
+  /* 链头涨幅分级着色 */
+  .cb-chain-head.lv-35 { background: rgba(255,105,180,0.10); }
+  .cb-chain-head.lv-57 { background: rgba(239,83,80,0.13); }
+  .cb-chain-head.lv-710 { background: rgba(255,215,0,0.13); }
+  .cb-chain-head.lv-10p { background: rgba(255,69,0,0.16); }
+  .cb-name.lv-35 { color: #ff69b4; }
+  .cb-name.lv-57 { color: #ef5350; }
+  .cb-name.lv-710 { color: #ffd700; }
+  .cb-name.lv-10p { color: #ff4500; }
+  /* 层级上下游标记 */
+  .cb-tier-name.tier-up { border-left-color: #26a69a; color: #4dd0c0; }
+  .cb-tier-name.tier-mid { border-left-color: #42a5f5; color: #64b5f6; }
+  .cb-tier-name.tier-down { border-left-color: #ff9800; color: #ffb74d; }
+  /* 细分概念高亮 */
+  .cb-con.hl-zt { border-color: #ffd700; background: rgba(255,215,0,0.06); }
+  .cb-con.hl-up5 { border-color: #ef5350; background: rgba(239,83,80,0.05); }
 </style>
 </head>
 <body>
@@ -467,7 +483,7 @@
   <div class="mon-view" id="mon-view-dist" style="display:none">
   <div class="grid-stack" data-grid="dist">
     <!-- 概念涨停数 Top10 (柱状/折线切换) -->
-    <div class="grid-stack-item" gs-id="item-czt" gs-x="0" gs-y="0" gs-w="6" gs-h="10" id="item-czt">
+    <div class="grid-stack-item" gs-id="item-czt" gs-x="0" gs-y="0" gs-w="12" gs-h="10" id="item-czt">
       <div class="grid-stack-item-content">
         <div class="chart-card">
           <div class="chart-title">
@@ -482,22 +498,6 @@
       </div>
     </div>
 
-    <!-- 概念涨跌幅分布 Top10 -->
-    <div class="grid-stack-item" gs-id="item-cdist" gs-x="6" gs-y="0" gs-w="6" gs-h="10" id="item-cdist">
-      <div class="grid-stack-item-content">
-        <div class="chart-card">
-          <div class="chart-title">
-            📊 概念涨跌幅分布 Top10
-            <span style="float:right;font-size:10px;color:var(--text-muted);font-weight:400">灰&lt;3% 橙3-5% 红5-7%</span>
-          </div>
-          <div class="chart-container">
-            <div id="conceptDistChart"></div>
-          </div>
-          <div class="hint-bar" id="conceptDistHint">等待数据…</div>
-        </div>
-      </div>
-    </div>
-
     <!-- 曾进Top10概念: 排名图 + 涨跌分布分时图(每个概念一行) -->
     <div class="grid-stack-item" gs-id="item-everlist" gs-x="0" gs-y="10" gs-w="12" gs-h="24" id="item-everlist">
       <div class="grid-stack-item-content">
@@ -505,6 +505,14 @@
           <div class="chart-title">
             📈 曾进Top10概念 · 排名与涨跌分布分时
             <span style="float:right;font-size:10px;color:var(--text-muted);font-weight:400">左:排名(1在上,出榜断灰) 右:涨跌分布(金涨停/红5-7%/粉3-5% | 浅绿3-5%/绿5-7%/深绿跌停)</span>
+          </div>
+          <div id="everRangeBar" style="display:flex;align-items:center;gap:6px;padding:3px 8px;font-size:11px;color:#9aa0a6;border-bottom:1px solid #2b3038;flex-shrink:0;">
+            <span>🔍 高亮范围</span>
+            <span id="everRangeStartLabel" style="min-width:36px;text-align:right;color:#ffd700;font-weight:600">9:25</span>
+            <input type="range" id="everRangeStart" min="0" max="246" value="0" style="flex:1;height:4px;accent-color:#ffd700;cursor:pointer;">
+            <input type="range" id="everRangeEnd" min="0" max="246" value="246" style="flex:1;height:4px;accent-color:#ffd700;cursor:pointer;">
+            <span id="everRangeEndLabel" style="min-width:36px;text-align:left;color:#ffd700;font-weight:600">15:00</span>
+            <button id="everRangeReset" style="background:#333;border:1px solid #555;color:#ccc;font-size:10px;padding:1px 8px;border-radius:3px;cursor:pointer;">重置</button>
           </div>
           <div id="everListContainer" style="overflow-y:auto;flex:1;min-height:0;"></div>
           <div class="hint-bar" id="everListHint">等待数据…</div>
@@ -551,10 +559,11 @@ const UP = '#ef5350', DOWN = '#26a69a';
 let dailyChart = null, minuteChart = null, histMinuteChart = null;
 let dailyData = [];   // 缓存日K数据
 let stockDailyChart = null, stockMinute5Chart = null, stockHistChart = null;
-let conceptZtChart = null, conceptDistChart = null;
+let conceptZtChart = null;
 let _everListCharts = [];            // 曾进top10概念的动态echarts实例(排名图+涨幅图)
 let _cztChartMode = 'bar';  // 'bar' | 'line'
 let _conceptZtData = null;  // 缓存最近一次接口数据
+let _everRange = { start: 0, end: 246 };  // 高亮范围(trade_min, 0=9:25, 246=15:00)
 let _conceptRefreshTimer = null;
 let curStockSeg = 'cyb', curStockCode = null;  // 当前选中板块/股票
 let stockDailyBars = [];  // 缓存个股日K数据(供假定涨停toggle重渲染)
@@ -1193,7 +1202,7 @@ function renderMinute(chartVar, domId, points, dateLabel, leadingLine, stockPoin
 function resizeAllCharts() {
   [dailyChart, minuteChart, histMinuteChart,
    stockDailyChart, stockMinute5Chart, stockHistChart,
-   conceptZtChart, conceptDistChart].forEach(c => c && c.resize());
+   conceptZtChart].forEach(c => c && c.resize());
   _everListCharts.forEach(c => c && c.resize());
 }
 // 图表错误显示(不破坏 echarts 实例: 用临时 overlay)
@@ -2226,26 +2235,21 @@ Promise.all([_dailyP, _listP]).then(() => {
 // ===== 概念板块涨停统计 =====
 async function loadConceptZtStats() {
   const hint = document.getElementById('conceptZtHint');
-  const hint2 = document.getElementById('conceptDistHint');
   try {
     const resp = await fetchWithTimeout('/api/monitor/concept/zt-stats', 20000);
     const data = await resp.json();
     if (!data.success || !data.concepts) {
       hint.textContent = '⚠ ' + (data.error || '无数据');
-      hint2.textContent = '';
       return;
     }
     _conceptZtData = data;
     setSrcTag('#item-czt', data.source);
     renderConceptZtChart(data);
-    renderConceptDistChart(data);
     renderEverList(data);
     const top3 = data.concepts.slice(0, 3).map(c => `${c.concept}(${c.zt_count})`).join(' ');
     hint.textContent = `${data.ts} · 涨停概念${data.concepts.length}个 · ${top3}`;
-    hint2.textContent = `${data.ts} · ${data.concepts.length}个概念 · 当前Top概念有效成员合计${data.concepts.reduce((s,c)=>s+c.total_members,0)}（股票跨概念会重复）`;
   } catch(e) {
     hint.textContent = '⚠ 请求异常: ' + e.message;
-    hint2.textContent = '';
   }
 }
 
@@ -2383,45 +2387,6 @@ function toggleCztChart() {
   if (_conceptZtData) renderConceptZtChart(_conceptZtData);
 }
 
-function renderConceptDistChart(data) {
-  const el = document.getElementById('conceptDistChart');
-  if (!conceptDistChart || !el.querySelector('canvas')) {
-    conceptDistChart = echarts.init(el, 'dark');
-  }
-  const top = data.concepts.slice(0, 10);
-  const names = top.map(c => c.concept);
-  conceptDistChart.setOption({
-    backgroundColor: 'transparent',
-    animation: false,
-    tooltip: {
-      trigger: 'axis',
-      formatter: function(params) {
-        const c = top[params[0].dataIndex];
-        let html = `<b>${c.concept}</b> (${c.total_members}只)<br>`;
-        html += `|涨跌|&lt;3%: ${c.dist.lt3}只<br>`;
-        html += `|涨跌|3-5%: ${c.dist.g3_5}只<br>`;
-        html += `|涨跌|5-7%: ${c.dist.g5_7}只<br>`;
-        html += `涨停: ${c.zt_count}只`;
-        return html;
-      },
-    },
-    legend: { bottom: 0, textStyle: { color: '#9aa0a6', fontSize: 9 }, data: ['<3%', '3-5%', '5-7%'] },
-    grid: { left: 45, right: 15, top: 20, bottom: 50 },
-    xAxis: {
-      type: 'category', data: names,
-      axisLabel: { color: '#9aa0a6', rotate: 35, fontSize: 10, interval: 0 },
-      axisLine: { lineStyle: { color: '#444' } },
-    },
-    yAxis: { type: 'value', name: '个股数', nameTextStyle: { color: '#9aa0a6' }, axisLabel: { color: '#9aa0a6' }, splitLine: { lineStyle: { color: '#333' } } },
-    series: [
-      { name: '<3%', type: 'bar', stack: 'dist', data: top.map(c => c.dist.lt3), itemStyle: { color: '#555' } },
-      { name: '3-5%', type: 'bar', stack: 'dist', data: top.map(c => c.dist.g3_5), itemStyle: { color: '#ff9800' } },
-      { name: '5-7%', type: 'bar', stack: 'dist', data: top.map(c => c.dist.g5_7), itemStyle: { color: '#ef5350' } },
-    ],
-  }, true);
-  conceptDistChart.resize();
-}
-
 // ===== 曾进Top10概念: 排名图 + 涨跌分布分时图 =====
 // trade_min -> HH:MM (9:25=0, 11:30=125, 13:00=126, 15:00=246)
 function tradeMinToTimeLabel(m) {
@@ -2430,6 +2395,64 @@ function tradeMinToTimeLabel(m) {
   else { h = 13; mi = (m - 126); }
   h += Math.floor(mi / 60); mi = mi % 60;
   return h + ':' + String(mi).padStart(2, '0');
+}
+
+// ===== 全局时间范围高亮(联动所有ever列表图 + 顶部概念涨停折线图) =====
+function applyEverRangeHighlight() {
+  const { start, end } = _everRange;
+  // 给单个 echarts 实例的 series[0] 加 markArea(淡黄色高亮选中区域)
+  function _applyMarkArea(chart) {
+    if (!chart) return;
+    const opt = chart.getOption();
+    if (!opt.series || !opt.series.length) return;
+    // 仅给 series[0] 加 markArea, 不动其他 series 的配置
+    opt.series[0].markArea = {
+      silent: true,
+      itemStyle: { color: 'rgba(255,215,0,0.08)' },
+      data: [[ { xAxis: start }, { xAxis: end } ]],
+    };
+    chart.setOption({ series: opt.series }, { lazyUpdate: true });
+  }
+  _everListCharts.forEach(_applyMarkArea);
+  // 顶部概念涨停折线图也同步高亮
+  if (conceptZtChart && _cztChartMode === 'line') _applyMarkArea(conceptZtChart);
+}
+
+// 更新滑块标签文字
+function _updateRangeLabels() {
+  document.getElementById('everRangeStartLabel').textContent = tradeMinToTimeLabel(_everRange.start);
+  document.getElementById('everRangeEndLabel').textContent = tradeMinToTimeLabel(_everRange.end);
+}
+
+// 初始化范围选择器事件(幂等)
+let _everRangeInited = false;
+function initEverRange() {
+  if (_everRangeInited) return;
+  _everRangeInited = true;
+  const sEl = document.getElementById('everRangeStart');
+  const eEl = document.getElementById('everRangeEnd');
+  const resetBtn = document.getElementById('everRangeReset');
+  if (!sEl || !eEl) return;
+
+  function onInput() {
+    let s = parseInt(sEl.value), e = parseInt(eEl.value);
+    // 保证 start <= end, 否则钳制
+    if (s > e) { s = e; sEl.value = s; }
+    _everRange.start = s;
+    _everRange.end = e;
+    _updateRangeLabels();
+    applyEverRangeHighlight();
+  }
+  sEl.addEventListener('input', onInput);
+  eEl.addEventListener('input', onInput);
+  if (resetBtn) {
+    resetBtn.addEventListener('click', () => {
+      sEl.value = 0; eEl.value = 246;
+      _everRange = { start: 0, end: 246 };
+      _updateRangeLabels();
+      applyEverRangeHighlight();
+    });
+  }
 }
 
 // 6档配置(涨侧正向, 跌侧负向, 形成以0为轴上下对称面积)
@@ -2489,8 +2512,8 @@ function renderEverList(data) {
       + `<span style="color:#e0483f">涨停${ztCount}</span>`
       + `<span style="color:#888">成员${members}只</span></div>`
       + `<div class="ever-row" id="everRow_${idx}">`
-      + `<div class="ever-chart-box"><div id="rankChart_${idx}" style="height:100%"></div></div>`
-      + `<div class="ever-chart-box"><div id="distChart_${idx}" style="height:100%"></div></div>`
+      + `<div class="ever-chart-box" style="flex:1"><div id="rankChart_${idx}" style="height:100%"></div></div>`
+      + `<div class="ever-chart-box" style="flex:1"><div id="distChart_${idx}" style="height:100%"></div></div>`
       + `</div></div>`;
   });
   container.innerHTML = html;
@@ -2512,63 +2535,56 @@ function renderEverList(data) {
   });
 
   hint.textContent = `${data.ts} · 曾进Top10概念${everList.length}个 · 排名点${ranksTl.length} · 分时点${dist6Tl.length}`;
+
+  // 图表渲染完成后, 应用全局高亮范围 + 初始化选择器事件(首次)
+  initEverRange();
+  applyEverRangeHighlight();
 }
 
 // 排名图: 倒轴(1在上), 出榜(rank=null)断线变灰
-// X轴用连续索引(去除午休间隙), formatter显示时间
+// X轴用trade_min数值(0=9:25, 246=15:00), 保证9:25-15:00全跨度显示
 function renderRankChart(chart, concept, ranksTl) {
   if (!ranksTl.length) {
     chart.setOption({ backgroundColor:'transparent', title:{text:'暂无排名数据',left:'center',top:'center',textStyle:{color:'#666',fontSize:11}} }, true);
     return;
   }
-  // X轴: 用连续索引, 标签显示对应时间
-  const xData = ranksTl.map((_, i) => i);
-  const tmArr = ranksTl.map(t => t.trade_min);
+  // X轴: trade_min (9:25=0 ~ 15:00=246), 去午休间隙(125~126无缝)
   const rankData = ranksTl.map(t => {
     const r = t.ranks[concept];
-    return r ? r : null;  // null 断线
+    return r ? [t.trade_min, r] : [t.trade_min, null];  // null 断线
   });
-  // 标签: 按固定间隔显示(约每整点一个), 用trade_min就近匹配
-  const labelTargets = [0, 60, 120, 125, 126, 186, 246];  // 9:25 10:25 11:25 11:30 13:00 14:00 15:00
-  const labelIdx = new Set();
-  labelTargets.forEach(target => {
-    // 找最接近target的数据点索引
-    let best = -1, bestDiff = 999;
-    tmArr.forEach((tm, i) => {
-      const diff = Math.abs(tm - target);
-      if (diff < bestDiff) { bestDiff = diff; best = i; }
-    });
-    if (best >= 0 && bestDiff <= 5) labelIdx.add(best);  // 容差5分钟
-  });
-  const currentRank = [...rankData].reverse().find(v => v != null);
+  const tmArr = ranksTl.map(t => t.trade_min);
+  // 标签: 固定时间点(9:25 10:00 10:30 11:00 11:30/13:00 13:30 14:00 14:30 15:00)
+  const labelMins = [0, 35, 65, 95, 125, 126, 156, 186, 216, 246];
+  const currentRank = [...rankData].reverse().find(v => v != null && v[1] != null);
+  const curRankVal = currentRank ? currentRank[1] : null;
   chart.setOption({
     backgroundColor: 'transparent', animation: false,
     title: {
       text: '排名', left: 4, top: 2, textStyle: { color: '#9aa0a6', fontSize: 10 },
-      subtext: currentRank ? `当前 #${currentRank}` : '当前出榜',
-      subtextStyle: { color: currentRank === 1 ? '#ffd54f' : '#42a5f5', fontSize: 10, fontWeight: 'bold' }
+      subtext: curRankVal ? `当前 #${curRankVal}` : '当前出榜',
+      subtextStyle: { color: curRankVal === 1 ? '#ffd54f' : '#42a5f5', fontSize: 10, fontWeight: 'bold' }
     },
     tooltip: { trigger: 'axis', formatter: p => {
-      const v = p[0].data;
-      return tradeMinToTimeLabel(tmArr[p[0].dataIndex]) + (v ? ' 第' + v + '名' : ' 出榜');
+      const v = p[0].data[1];
+      return tradeMinToTimeLabel(p[0].data[0]) + (v ? ' 第' + v + '名' : ' 出榜');
     }},
     grid: { left: 32, right: 34, top: 18, bottom: 18 },
-    xAxis: { type: 'category', data: xData, boundaryGap: false,
+    xAxis: { type: 'value', min: 0, max: 246,
       axisLabel: { color:'#9aa0a6', fontSize:8,
-        formatter: i => tradeMinToTimeLabel(tmArr[Number(i)] || 0),
-        interval: (i) => labelIdx.has(i) },
+        formatter: v => tradeMinToTimeLabel(v),
+        interval: function(index, value) { return labelMins.includes(value); } },
       axisLine: { lineStyle:{ color:'#444' } } },
     yAxis: { type: 'value', inverse: true, min: 0.5, max: 10.5,
       interval: 1, axisLabel: { color:'#9aa0a6', fontSize:9, formatter: v => v<=10 ? v : '' },
       splitLine: { lineStyle:{ color:'#333' } } },
     series: [
-      { type: 'line', data: rankData, smooth: false, step: 'end', symbol: 'circle', symbolSize: (value, params) => params.dataIndex === rankData.length - 1 ? 7 : 3,
+      { type: 'line', data: rankData, smooth: false, step: false, symbol: 'circle', symbolSize: (value, params) => params.dataIndex === rankData.length - 1 ? 7 : 2,
         connectNulls: false,
-        lineStyle: { width: 1.5, color: '#42a5f5' },
+        lineStyle: { width: 1.2, color: '#42a5f5' },
         itemStyle: { color: params => params.dataIndex === rankData.length - 1 ? '#ffd54f' : '#42a5f5' },
-        endLabel: { show: true, formatter: () => currentRank ? `#${currentRank}` : '', color: currentRank === 1 ? '#ffd54f' : '#42a5f5', fontSize: 11, fontWeight: 'bold' },
-        areaStyle: { opacity: 0.08 } },
-      { type: 'line', data: ranksTl.map(() => 5), symbol: 'none',
+        endLabel: { show: true, formatter: () => curRankVal ? `#${curRankVal}` : '', color: curRankVal === 1 ? '#ffd54f' : '#42a5f5', fontSize: 11, fontWeight: 'bold' } },
+      { type: 'line', data: [[0, 5], [246, 5]], symbol: 'none',
         lineStyle: { type: 'dashed', color: '#e0483f', width: 1 },
         silent: true, tooltip: { show: false } },
     ],
@@ -2576,22 +2592,25 @@ function renderRankChart(chart, concept, ranksTl) {
 }
 
 // 涨跌分布分时图: 6档折线(涨侧正向/跌侧负向, 各自独立不堆叠)
-// X轴连续索引(去午休间隙), Y轴上下对称用该概念最大值统一
+// X轴用trade_min数值(0=9:25, 246=15:00), 保证9:25-15:00全跨度显示
+// Y轴上下对称用该概念最大值统一
 function renderDistChart6(chart, concept, dist6Tl) {
   if (!dist6Tl.length) {
     chart.setOption({ backgroundColor:'transparent', title:{text:'暂无分时数据',left:'center',top:'center',textStyle:{color:'#666',fontSize:11}} }, true);
     return;
   }
-  const xData = dist6Tl.map((_, i) => i);
   const tmArr = dist6Tl.map(t => t.trade_min);
+  // 若首个数据点不是从开盘(9:25)开始, 补 [0,0] 起点, 让折线从0连接而非凭空出现
+  const firstTm = dist6Tl.length ? dist6Tl[0].trade_min : 0;
+  const needStartZero = firstTm > 0;
   const series = _DIST6_SERIES.map(s => ({
     name: s.name, type: 'line',
-    data: dist6Tl.map(t => {
+    data: (needStartZero ? [[0, 0]] : []).concat(dist6Tl.map(t => {
       const b = t.buckets[concept] || {};
-      return (b[s.key] || 0) * s.side;
-    }),
-    smooth: true, symbol: 'none',
-    lineStyle: { width: 1.5 },
+      return [t.trade_min, (b[s.key] || 0) * s.side];
+    })),
+    smooth: false, symbol: 'none',
+    lineStyle: { width: 1.2 },
     itemStyle: { color: s.color },
     emphasis: { focus: 'series' },
   }));
@@ -2605,34 +2624,25 @@ function renderDistChart6(chart, concept, dist6Tl) {
     });
   });
   const yMax = Math.max(maxAbs * 1.15, 5);  // 留15%余量, 最小5
-  // 标签: 按固定间隔显示(约每整点一个), 用trade_min就近匹配
-  const labelTargets = [0, 60, 120, 125, 126, 186, 246];
-  const labelIdx = new Set();
-  labelTargets.forEach(target => {
-    let best = -1, bestDiff = 999;
-    dist6Tl.forEach((t, i) => {
-      const diff = Math.abs(t.trade_min - target);
-      if (diff < bestDiff) { bestDiff = diff; best = i; }
-    });
-    if (best >= 0 && bestDiff <= 5) labelIdx.add(best);
-  });
+  // 标签: 固定时间点(9:25 10:00 10:30 11:00 11:30/13:00 13:30 14:00 14:30 15:00)
+  const labelMins = [0, 35, 65, 95, 125, 126, 156, 186, 216, 246];
   chart.setOption({
     backgroundColor: 'transparent', animation: false,
     title: { text: '涨跌分布', left: 4, top: 2, textStyle: { color: '#9aa0a6', fontSize: 10 } },
     tooltip: { trigger: 'axis', formatter: p => {
-      let html = '<b>' + tradeMinToTimeLabel(tmArr[p[0].dataIndex]) + '</b><br>';
-      const up = p.filter(x => x.value > 0).sort((a,b)=>b.value-a.value);
-      const dn = p.filter(x => x.value < 0).sort((a,b)=>a.value-b.value);
-      up.forEach(x => html += x.marker + x.seriesName + ': ' + x.value + '<br>');
-      dn.forEach(x => html += x.marker + x.seriesName + ': ' + (-x.value) + '<br>');
+      let html = '<b>' + tradeMinToTimeLabel(p[0].data[0]) + '</b><br>';
+      const up = p.filter(x => x.data[1] > 0).sort((a,b)=>b.data[1]-a.data[1]);
+      const dn = p.filter(x => x.data[1] < 0).sort((a,b)=>a.data[1]-b.data[1]);
+      up.forEach(x => html += x.marker + x.seriesName + ': ' + x.data[1] + '<br>');
+      dn.forEach(x => html += x.marker + x.seriesName + ': ' + (-x.data[1]) + '<br>');
       return html;
     }},
     legend: { show: false },
     grid: { left: 32, right: 10, top: 18, bottom: 18 },
-    xAxis: { type: 'category', data: xData, boundaryGap: false,
+    xAxis: { type: 'value', min: 0, max: 246,
       axisLabel: { color:'#9aa0a6', fontSize:8,
-        formatter: i => tradeMinToTimeLabel(tmArr[Number(i)] || 0),
-        interval: (i) => labelIdx.has(i) },
+        formatter: v => tradeMinToTimeLabel(v),
+        interval: function(index, value) { return labelMins.includes(value); } },
       axisLine: { lineStyle:{ color:'#444' } } },
     yAxis: { type: 'value', min: -yMax, max: yMax,
       axisLabel: { color:'#9aa0a6', fontSize:9, formatter: v => Math.abs(v) },
@@ -2965,30 +2975,64 @@ function renderChainBoard(chains) {
     return `<div class="cb-bar"><i style="${side}width:${w/2}%;background:${col};"></i>
       <i style="left:50%;width:1px;background:#555;"></i></div>`;
   };
+  // 链头涨幅分级: 返回 {headCls, nameCls}
+  function _chainLvCls(avg) {
+    if (avg >= 10) return { headCls: 'lv-10p', nameCls: 'lv-10p' };   // 10%以上 橙红
+    if (avg >= 7)  return { headCls: 'lv-710', nameCls: 'lv-710' };   // 7-10% 涨停金
+    if (avg >= 5)  return { headCls: 'lv-57',  nameCls: 'lv-57' };    // 5-7% 红
+    if (avg >= 3)  return { headCls: 'lv-35',  nameCls: 'lv-35' };    // 3-5% 粉红
+    return { headCls: '', nameCls: '' };
+  }
+  // 层级上下游标记: 优先按名称前缀, 否则按位置推断(第1=上游/末=下游/中间=中游)
+  function _tierCls(tierName, idx, total) {
+    if (tierName.startsWith('上游')) return 'tier-up';
+    if (tierName.startsWith('中游')) return 'tier-mid';
+    if (tierName.startsWith('下游')) return 'tier-down';
+    // 无前缀: 按位置推断(total<=1时不标)
+    if (total <= 1) return '';
+    if (idx === 0) return 'tier-up';
+    if (idx === total - 1) return 'tier-down';
+    return 'tier-mid';
+  }
   let html = '';
   for (const ch of chains) {
     const s = ch.summary;
     const open = opened.has(ch.id) ? ' open' : '';
+    const lv = _chainLvCls(s.avg);
     let tiersHtml = '';
+    const validTiers = ch.tiers.filter(t => t.concepts.some(c => c.quoted > 0));
+    const totalTiers = validTiers.length;
+    let tierSeen = 0;
     for (const t of ch.tiers) {
       const cons = t.concepts.filter(c => c.quoted > 0);
       if (!cons.length) continue;
+      const tierIdx = tierSeen++;
+      // 细分高亮: 涨停最多金色, 大于5%家数最多红色
+      let maxZt = 0, maxUp5 = 0;
+      cons.forEach(c => {
+        if (c.limitup > maxZt) maxZt = c.limitup;
+        if ((c.up5 || 0) > maxUp5) maxUp5 = c.up5 || 0;
+      });
       let consHtml = '';
       for (const c of cons) {
         const top = (c.top || []).map(x => `${x.name} ${x.pct >= 0 ? '+' : ''}${x.pct}%`).join(' / ');
-        consHtml += `<div class="cb-con">
+        // 高亮class: 涨停最多(且>0)金色, 否则大于5%家数最多(且>0)红色
+        let hlCls = '';
+        if (maxZt > 0 && c.limitup === maxZt) hlCls = 'hl-zt';
+        else if (maxUp5 > 0 && (c.up5 || 0) === maxUp5) hlCls = 'hl-up5';
+        consHtml += `<div class="cb-con ${hlCls}">
           <div class="cb-con-top"><span class="cb-con-name">${c.concept}</span>
             <span class="cb-con-pct ${_pctCls(c.avg)}">${c.avg >= 0 ? '+' : ''}${c.avg}%</span></div>
           <div class="cb-con-sub">红 ${c.up}/${c.quoted} · <span class="cb-lu">停 ${c.limitup}</span></div>
-          <div class="cb-con-sub" title="${top}">${top || '—'}</div>
+          <div class="cb-con-sub" title="${top}">${top || '-'}</div>
         </div>`;
       }
-      tiersHtml += `<div class="cb-tier"><div class="cb-tier-name">${t.tier}</div><div class="cb-cons">${consHtml}</div></div>`;
+      tiersHtml += `<div class="cb-tier"><div class="cb-tier-name ${_tierCls(t.tier, tierIdx, totalTiers)}">${t.tier}</div><div class="cb-cons">${consHtml}</div></div>`;
     }
     html += `<div class="cb-chain${open}" data-id="${ch.id}">
-      <div class="cb-chain-head" onclick="this.parentNode.classList.toggle('open')">
+      <div class="cb-chain-head ${lv.headCls}" onclick="this.parentNode.classList.toggle('open')">
         <span class="cb-chev">▶</span>
-        <span class="cb-name">${ch.name}</span>
+        <span class="cb-name ${lv.nameCls}">${ch.name}</span>
         <span class="cb-con-pct ${_pctCls(s.avg)}">${s.avg >= 0 ? '+' : ''}${s.avg}%</span>
         ${barHtml(s.avg)}
         <span class="cb-stat">涨停 <b class="cb-lu">${s.limitup}</b> · 红 ${s.up}/${s.quoted}</span>

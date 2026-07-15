@@ -1,5 +1,5 @@
 @echo off
-chcp 65001 >nul 2>&1
+chcp 936 >nul 2>&1
 title 淘股吧数据服务 (debug + 探针会话)
 setlocal enabledelayedexpansion
 
@@ -75,7 +75,7 @@ set READY=0
 for /l %%i in (1,1,25) do (
     if "!READY!"=="0" (
         ping -n 2 127.0.0.1 >nul
-        powershell -Command "try{=Invoke-WebRequest -Uri 'http://127.0.0.1:5000/' -UseBasicParsing -TimeoutSec 2; if(.StatusCode -eq 200){exit 0}else{exit 1}}catch{exit 1}" >nul 2>&1
+        powershell -Command "try{ $r=Invoke-WebRequest -Uri 'http://127.0.0.1:5000/' -UseBasicParsing -TimeoutSec 2; if($r.StatusCode -eq 200){exit 0}else{exit 1} }catch{exit 1}" >nul 2>&1
         if not errorlevel 1 (
             set READY=1
             echo [服务] 已就绪
@@ -93,7 +93,7 @@ REM 3. 启动探针会话 (Playwright Chrome 常驻)
 REM ============================================================
 echo.
 if "!NO_PROBE!"=="1" (
-    echo [探针] 跳过 (未安装 playwright)
+    echo [探针] 跳过 ^(未安装 playwright^)
     echo.
     echo 服务已启动, 可在浏览器访问 http://127.0.0.1:5000
     echo 按 Ctrl+C 或关闭本窗口停止服务。
@@ -108,7 +108,8 @@ echo [探针] 关闭本窗口会同时停止服务和探针。
 echo.
 
 REM 前台运行探针会话 (关闭本窗口=全部停止)
-%PYCMD% debug_session.py serve // --wait 4
+REM 注意: 此处不能写 // (cmd下非转义符), 直接指定盯盘页面路径
+%PYCMD% debug_session.py serve /monitor --wait 4
 
 echo.
 echo [探针] 会话已结束。服务仍在后台运行, 可手动关闭。

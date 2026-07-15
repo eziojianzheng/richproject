@@ -1,5 +1,5 @@
 @echo off
-chcp 65001 >nul 2>&1
+chcp 936 >nul 2>&1
 title 关闭前端探针会话
 cd /d "%~dp0"
 

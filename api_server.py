@@ -3394,31 +3394,48 @@ def monitor_concept_zt_stats():
                 'buckets': {c: entry['buckets'].get(c, {}) for c in ever_list},
             })
 
-        # 若实时timeline时间点不足(收盘后/刚启动), 用逐分钟分时数据还原当天涨停轨迹
-        # 传入实时涨停股集合, 使回放的最终数量与柱状图完全一致
-        unique_mins = set(e.get('trade_min', 0) for e in _concept_zt_timeline)
-        if len(unique_mins) < 3:
-            hist_timeline, hist_concepts = _build_historical_timeline(realtime_zt_codes)
-            if hist_timeline:
-                ever_list = sorted(set(hist_concepts) | _concept_zt_top10_ever)
-                # 只保留 ever_list 的概念, 去掉冗余(从~300KB降到~30KB)
-                timeline_out = []
-                for entry in hist_timeline:
-                    timeline_out.append({
-                        'ts': entry['ts'],
-                        'trade_min': entry.get('trade_min', 0),
-                        'counts': {c: entry['counts'].get(c, 0) for c in ever_list},
-                    })
-                # 历史回放只有涨停数, 据此重建排名(同数量并列; 分桶dist6无历史数据, 留空)
-                ranks_out = []
-                for entry in hist_timeline:
-                    counts = entry.get('counts', {})
-                    rank_map = _build_rank_map(counts, ever_list)
-                    ranks_out.append({
-                        'ts': entry['ts'],
-                        'trade_min': entry.get('trade_min', 0),
-                        'ranks': {c: rank_map.get(c) for c in ever_list},
-                    })
+        # 用逐分钟分时数据还原当天涨停轨迹(9:25起), 补全实时点之前的开盘段。
+        # 传入实时涨停股集合, 使回放的最终数量与柱状图完全一致。
+        # 盘中始终触发(不再仅<3点), 让涨停数/排名曲线从9:25铺满到当前时间。
+        hist_timeline, hist_concepts = _build_historical_timeline(realtime_zt_codes)
+        if hist_timeline:
+            ever_list = sorted(set(hist_concepts) | _concept_zt_top10_ever)
+            # 历史回放只覆盖到首个实时点之前; 实时点更精确, 保留实时段。
+            # 取实时timeline的首个trade_min作为分界点。
+            first_real_min = _concept_zt_timeline[0].get('trade_min', 0) if _concept_zt_timeline else 999
+            hist_part = [e for e in hist_timeline if e.get('trade_min', 0) < first_real_min]
+            # 合并: 历史段(仅counts) + 实时段
+            timeline_out = []
+            for entry in hist_part:
+                timeline_out.append({
+                    'ts': entry['ts'],
+                    'trade_min': entry.get('trade_min', 0),
+                    'counts': {c: entry['counts'].get(c, 0) for c in ever_list},
+                })
+            for entry in _concept_zt_timeline:
+                timeline_out.append({
+                    'ts': entry['ts'],
+                    'trade_min': entry.get('trade_min', 0),
+                    'counts': {c: entry['concepts'].get(c, 0) for c in ever_list},
+                })
+            # 排名: 历史段+实时段都用各自counts重建(同数量并列; dist6无历史, 留空)
+            ranks_out = []
+            for entry in hist_part:
+                counts = entry.get('counts', {})
+                rank_map = _build_rank_map(counts, ever_list)
+                ranks_out.append({
+                    'ts': entry['ts'],
+                    'trade_min': entry.get('trade_min', 0),
+                    'ranks': {c: rank_map.get(c) for c in ever_list},
+                })
+            for entry in _concept_zt_timeline:
+                counts = entry.get('concepts', {})
+                rank_map = _build_rank_map(counts, ever_list)
+                ranks_out.append({
+                    'ts': entry['ts'],
+                    'trade_min': entry.get('trade_min', 0),
+                    'ranks': {c: rank_map.get(c) for c in ever_list},
+                })
 
         # 追加当前实时数据作为最后一个点, 确保排名/涨停数与concepts完全一致
         # (历史回放的分时封板判断 与 实时报价的pct判断 可能不一致)
@@ -5987,7 +6004,7 @@ def api_chain_board():
 
     def agg(code_set):
         pcts = []
-        up = lu = 0
+        up = lu = up5 = 0
         tops = []
         for c in code_set:
             q = quotes.get(c)
@@ -5997,6 +6014,8 @@ def api_chain_board():
             pcts.append(p)
             if p > 0:
                 up += 1
+            if p >= 5:
+                up5 += 1
             if p >= _limit_threshold(c):
                 lu += 1
             tops.append((c, p))
@@ -6004,7 +6023,7 @@ def api_chain_board():
         top3 = [{'code': c, 'name': names.get(c, c), 'pct': round(p, 2)} for c, p in tops[:3]]
         return {'members': len(code_set), 'quoted': len(pcts),
                 'avg': round(sum(pcts) / len(pcts), 2) if pcts else 0,
-                'up': up, 'limitup': lu, 'top': top3}
+                'up': up, 'up5': up5, 'limitup': lu, 'top': top3}
 
     chains = []
     for cid, c in ci.items():
