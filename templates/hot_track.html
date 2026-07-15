@@ -693,10 +693,24 @@
   .czm-stk .s-pct { font-weight: 700; text-align: right; white-space: nowrap; }
   .czm-stk .s-pct.up { color: #ff6b6b; } .czm-stk .s-pct.down { color: #4dd07a; }
   .czm-badge { font-size: 9px; padding: 1px 6px; border-radius: 3px; margin-left: 4px; }
-  .czm-badge.lu { background: rgba(255,214,10,.3); color: #ffd60a; }
-  .czm-badge.u5 { background: rgba(255,107,53,.25); color: #ff8a3d; }
-  .czm-badge.ld { background: rgba(168,85,247,.3); color: #c084fc; }
-  .czm-badge.d5 { background: rgba(77,208,122,.2); color: #9be3a0; }
+  /* 涨8档: 涨停金 / ≥9%亮红 / ≥7%红 / ≥5%橙 / ≥3%暖橙 / ≥2%黄褐 / ≥1%暗黄 / >0%灰黄 */
+  .czm-badge.lu  { background: rgba(255,215,0,.35);  color: #ffd60a; }
+  .czm-badge.up9 { background: rgba(255,50,50,.30);  color: #ff6b6b; }
+  .czm-badge.up7 { background: rgba(239,83,80,.28);  color: #ff8a80; }
+  .czm-badge.up5 { background: rgba(255,107,53,.25); color: #ff8a3d; }
+  .czm-badge.up3 { background: rgba(255,152,0,.22);  color: #ffb74d; }
+  .czm-badge.up2 { background: rgba(204,153,0,.20);  color: #d4a017; }
+  .czm-badge.up1 { background: rgba(180,160,40,.18);  color: #c0b030; }
+  .czm-badge.up0 { background: rgba(140,140,80,.15);  color: #a0a060; }
+  /* 跌8档: 跌停紫 / ≤-9%亮绿 / ≤-7%绿 / ≤-5%青绿 / ≤-3%青 / ≤-2%暗青 / ≤-1%灰青 / <0%灰 */
+  .czm-badge.ld   { background: rgba(168,85,247,.35);  color: #c084fc; }
+  .czm-badge.dn9  { background: rgba(20,200,120,.30);  color: #00e676; }
+  .czm-badge.dn7  { background: rgba(38,166,154,.28);  color: #4dd07a; }
+  .czm-badge.dn5  { background: rgba(77,208,122,.22);  color: #9be3a0; }
+  .czm-badge.dn3  { background: rgba(0,188,212,.20);   color: #80deea; }
+  .czm-badge.dn2  { background: rgba(0,150,170,.18);   color: #60b0c0; }
+  .czm-badge.dn1  { background: rgba(80,140,150,.15);  color: #6090a0; }
+  .czm-badge.dn0  { background: rgba(100,110,120,.12); color: #808890; }
   .czm-lab { font-size: 10px; color: #ffd166; margin-left: 4px; }
   .czm-pos { font-size: 9px; padding: 1px 6px; border-radius: 3px; margin-left: 4px; font-weight: 700; }
   .czm-pos.lo { background: rgba(77,208,122,.2); color: #7ee6a0; }   /* 低位=绿(便宜) */
@@ -4470,16 +4484,25 @@ function renderCzmDay(){
           + `${escapeHtmlHT(c.concept)} <span class="cc-n">${c.count}</span></span>`;
       }).join('') + `</div>`
     : `<div class="czm-sub">无</div>`;
+  // 8涨+8跌榜单定义: [bucket_key, 中文标签]
+  const upBuckets = [
+    ['by_limitup','涨停'],['by_up9','涨幅≥9%'],['by_up7','涨幅≥7%'],['by_up5','涨幅≥5%'],
+    ['by_up3','涨幅≥3%'],['by_up2','涨幅≥2%'],['by_up1','涨幅≥1%'],['by_up0','涨幅>0%'],
+  ];
+  const dnBuckets = [
+    ['by_limitdown','跌停'],['by_down9','跌幅≤-9%'],['by_down7','跌幅≤-7%'],['by_down5','跌幅≤-5%'],
+    ['by_down3','跌幅≤-3%'],['by_down2','跌幅≤-2%'],['by_down1','跌幅≤-1%'],['by_down0','跌幅<0%'],
+  ];
+  const upHtml = upBuckets.map(([k,label])=>`<div class="czm-sub">${label} Top10</div>${conceptChips(day.rising[k],'rise',k)}`).join('');
+  const dnHtml = dnBuckets.map(([k,label])=>`<div class="czm-sub">${label} Top10</div>${conceptChips(day.falling[k],'fall',k)}`).join('');
   box.innerHTML = `
     <div class="czm-sec">
       <div class="czm-sec-title rise">📈 在涨什么 · ${day.date.slice(0,4)}-${fmtDay(day.date)}</div>
-      <div class="czm-sub">涨停数 Top10</div>${conceptChips(day.rising.by_limitup,'rise','by_limitup')}
-      <div class="czm-sub">涨幅≥5% 数 Top10</div>${conceptChips(day.rising.by_up5,'rise','by_up5')}
+      ${upHtml}
     </div>
     <div class="czm-sec">
       <div class="czm-sec-title fall">📉 在跌什么 · ${day.date.slice(0,4)}-${fmtDay(day.date)}</div>
-      <div class="czm-sub">跌停数 Top10</div>${conceptChips(day.falling.by_limitdown,'fall','by_limitdown')}
-      <div class="czm-sub">跌幅≤-5% 数 Top10</div>${conceptChips(day.falling.by_down5,'fall','by_down5')}
+      ${dnHtml}
     </div>
     <div id="czmStockPanel"></div>`;
   // 重新渲染已选概念的股票(如果有)
@@ -4533,8 +4556,14 @@ function renderCzmStocks(){
     const k=czmKey(s.code,s.date,c.concept);
     const lab=czmLabelMap[k];
     const pctCls=s.pct>=0?'up':'down';
-    const badge=({limitup:'<span class="czm-badge lu">涨停</span>',up5:'<span class="czm-badge u5">≥5%</span>',
-                  limitdown:'<span class="czm-badge ld">跌停</span>',down5:'<span class="czm-badge d5">≤-5%</span>'})[s.type]||'';
+    const badge=({limitup:'<span class="czm-badge lu">涨停</span>',up9:'<span class="czm-badge up9">≥9%</span>',
+                  up7:'<span class="czm-badge up7">≥7%</span>',up5:'<span class="czm-badge up5">≥5%</span>',
+                  up3:'<span class="czm-badge up3">≥3%</span>',up2:'<span class="czm-badge up2">≥2%</span>',
+                  up1:'<span class="czm-badge up1">≥1%</span>',up0:'<span class="czm-badge up0">&gt;0%</span>',
+                  limitdown:'<span class="czm-badge ld">跌停</span>',down9:'<span class="czm-badge dn9">≤-9%</span>',
+                  down7:'<span class="czm-badge dn7">≤-7%</span>',down5:'<span class="czm-badge dn5">≤-5%</span>',
+                  down3:'<span class="czm-badge dn3">≤-3%</span>',down2:'<span class="czm-badge dn2">≤-2%</span>',
+                  down1:'<span class="czm-badge dn1">≤-1%</span>',down0:'<span class="czm-badge dn0">&lt;0%</span>'})[s.type]||'';
     const posHtml=(s.pos!=null)?`<span class="czm-pos ${s.poslevel==='低位'?'lo':(s.poslevel==='高位'?'hi':'mid')}">${s.poslevel} ${s.pos}%</span>`:'';
     const labHtml=lab?`<span class="czm-lab">▸${escapeHtmlHT(lab.label)}</span>`:'';
     const sj=JSON.stringify(s).replace(/'/g,"&#39;");
