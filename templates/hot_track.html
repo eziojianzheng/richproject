@@ -2915,25 +2915,45 @@ function renderNewhighChart() {
                areaStyle: { opacity: 0.08 } }],
   }, true);
 }
-// 统一涨幅Y轴范围: 总图(+1/+5/+10日)与所有概念小图(+10日)共用同一min/max, 跨图可比
-function _nhPctYRange() {
+// 涨幅Y轴统一范围:
+//  - main: 总图(+1/+5/+10日全市场均值), 数据干净无离群, 用自然min/max
+//  - concept: 概念小图(均为+10日, 按板块), 个别小盘概念可达+150%/-48%,
+//    用p3/p97百分位裁掉极端离群值, 否则正常波动被压平看不出来
+function _nhPctYRange(mode) {
   const d = _nhData; if (!d || !d.days) return null;
-  let mn = Infinity, mx = -Infinity;
+  const vals = [];
   d.days.forEach(day => {
-    // 总图用 fwd_avg[0],[4],[9]
-    [0, 4, 9].forEach(k => {
-      const v = day.fwd_avg && day.fwd_avg[k];
-      if (v != null) { if (v < mn) mn = v; if (v > mx) mx = v; }
-    });
-    // 概念小图用 sec.fwd_avg[9]
-    (day.sectors || []).forEach(sec => {
-      const v = sec.fwd_avg && sec.fwd_avg[9];
-      if (v != null) { if (v < mn) mn = v; if (v > mx) mx = v; }
-    });
+    if (mode === 'main') {
+      // 总图用 fwd_avg[0],[4],[9]
+      [0, 4, 9].forEach(k => {
+        const v = day.fwd_avg && day.fwd_avg[k];
+        if (v != null) vals.push(v);
+      });
+    } else {
+      // 概念小图用 sec.fwd_avg[9]
+      (day.sectors || []).forEach(sec => {
+        const v = sec.fwd_avg && sec.fwd_avg[9];
+        if (v != null) vals.push(v);
+      });
+    }
   });
-  if (mn === Infinity) return null;
-  const pad = Math.max((mx - mn) * 0.1, 1);
-  return { min: Math.floor((mn - pad) * 10) / 10, max: Math.ceil((mx + pad) * 10) / 10 };
+  if (!vals.length) return null;
+  vals.sort((a, b) => a - b);
+  const n = vals.length;
+  let lo, hi;
+  if (mode === 'main') {
+    // 总图数据干净, 直接用自然边界
+    lo = vals[0]; hi = vals[n - 1];
+  } else {
+    // 概念图裁离群: p3/p97, 避免个别+150%压平所有线
+    lo = vals[Math.floor(n * 0.03)];
+    hi = vals[Math.min(n - 1, Math.ceil(n * 0.97))];
+  }
+  // 保证0线可见, 且至少±3%有起伏
+  lo = Math.min(lo, -3);
+  hi = Math.max(hi, 3);
+  const pad = Math.max((hi - lo) * 0.08, 1);
+  return { min: Math.floor((lo - pad) * 10) / 10, max: Math.ceil((hi + pad) * 10) / 10 };
 }
 function renderNewhighConceptCharts() {
   const d = _nhData; if (!d) return;
@@ -2970,8 +2990,8 @@ function renderNewhighConceptCharts() {
   if (!top.length) { box.innerHTML = '<div class="empty">无创新高概念</div>'; return; }
   // 统一Y轴最大值: 所有概念中单日最高数
   const yMax = Math.max(...top.flatMap(([_, v]) => v.nhSeries), 1);
-  // 统一涨幅Y轴范围(与总图一致)
-  const pctRange = _nhPctYRange();
+  // 统一涨幅Y轴范围(所有概念小图共用, 裁离群)
+  const pctRange = _nhPctYRange('concept');
   // 渲染: 每个概念一个卡片, 含两张图(上=新高数, 下=+10日涨幅)
   box.innerHTML = top.map(([concept, v]) =>
     `<div class="nh-cc"><div class="nh-cc-title">${concept} <span class="nh-cc-total">${v.total}</span></div>
@@ -3028,8 +3048,8 @@ function renderNewhighPctCharts() {
   const fwdKeys = [0, 4, 9];  // +1日, +5日, +10日(fwd数组索引)
   const fwdLabels = ['+1日', '+5日', '+10日'];
   const fwdColors = ['#7f8c8d', '#42a5f5', '#ffd60a'];
-  // 统一涨幅Y轴范围(与概念小图一致)
-  const pctRange = _nhPctYRange();
+  // 统一涨幅Y轴范围(总图自身min/max, 数据干净无需裁离群)
+  const pctRange = _nhPctYRange('main');
   const mainBox = document.getElementById('nhPctChart');
   // 销毁旧总图实例
   const oldInst = echarts.getInstanceByDom(mainBox);
