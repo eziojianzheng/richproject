@@ -355,6 +355,17 @@ def serve(path, headless=False, width=1600, height=1000, wait=2.0):
                     result["status"] = "ok"
                     result["frames"] = frs
 
+                elif action == "eval":
+                    # 执行任意 JS 并返回结果
+                    code = cmd.get("arg", "")
+                    try:
+                        val = ap.evaluate(code)
+                        result["status"] = "ok"
+                        result["value"] = val
+                    except Exception as e:
+                        result["status"] = "error"
+                        result["error"] = str(e)
+
                 else:
                     result["status"] = "unknown_action"
 

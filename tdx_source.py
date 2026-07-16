@@ -215,6 +215,9 @@ def is_available(force=False):
     缓存策略: 可用(True)结果永久缓存; 不可用(False)结果仅缓存 _TQ_RECHECK_COOLDOWN 秒,
     到期后自动重新探测。这样即使 api_server 先于通达信客户端启动, 客户端登录后也能自动恢复,
     无需重启服务。force=True 可强制立即重新探测。
+
+    线程安全: 探测过程(initialize+snapshot+close)加锁, 避免多线程并发调用
+    导致 tqcenter DLL 连接冲突("连接路径为空"等报错)。
     """
     global _tq_available, _tq_unavail_ts
     import time as _time
@@ -225,33 +228,40 @@ def is_available(force=False):
             return False
     _ensure_path()
     _probe = None
-    try:
-        from tqcenter import tq as _tq_mod
-        _probe = _tq_mod
-        _probe.initialize(_tq_init_path)
-        # 测试一次快照确认连接正常
-        snap = _probe.get_market_snapshot(stock_code='000001.SH', field_list=[])
-        if snap and snap.get('ErrorId') == '0':
-            _tq_available = True
-            _logger.info('tqcenter 可用 (通达信量化版已连接)')
-            return True
-        else:
+    with _tq_lock:
+        # double-check: 拿到锁后再次检查缓存(可能其他线程刚探测完)
+        if not force:
+            if _tq_available is True:
+                return True
+            if _tq_available is False and (_time.time() - _tq_unavail_ts) < _TQ_RECHECK_COOLDOWN:
+                return False
+        try:
+            from tqcenter import tq as _tq_mod
+            _probe = _tq_mod
+            _probe.initialize(_tq_init_path)
+            # 测试一次快照确认连接正常
+            snap = _probe.get_market_snapshot(stock_code='000001.SH', field_list=[])
+            if snap and snap.get('ErrorId') == '0':
+                _tq_available = True
+                _logger.info('tqcenter 可用 (通达信量化版已连接)')
+                return True
+            else:
+                _tq_available = False
+                _tq_unavail_ts = _time.time()
+                _logger.warning(f'tqcenter 快照测试失败: {snap}')
+                return False
+        except Exception as e:
             _tq_available = False
             _tq_unavail_ts = _time.time()
-            _logger.warning(f'tqcenter 快照测试失败: {snap}')
+            _logger.warning(f'tqcenter 不可用 (通达信量化版未启动?): {e}')
             return False
-    except Exception as e:
-        _tq_available = False
-        _tq_unavail_ts = _time.time()
-        _logger.warning(f'tqcenter 不可用 (通达信量化版未启动?): {e}')
-        return False
-    finally:
-        # 检测时不要保持连接, 后续 initialize() 会重新建
-        try:
-            if _probe is not None:
-                _probe.close()
-        except Exception:
-            pass
+        finally:
+            # 检测时不要保持连接, 后续 initialize() 会重新建
+            try:
+                if _probe is not None:
+                    _probe.close()
+            except Exception:
+                pass
 
 
 def initialize():

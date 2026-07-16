@@ -2504,22 +2504,29 @@ def monitor_stock_minutes():
         return jsonify({'success': False, 'error': f'{type(e).__name__}: {e}'}), 500
 
 
-@app.route('/api/monitor/stock/minutes5', methods=['GET'])
-def monitor_stock_minutes5():
-    """个股5日分时拼接 (逐日拉 minutes, 拼成一条线)。
-    参数: code=300001"""
-    code = request.args.get('code', '')
+_m5_cache = {}  # {(code): {'data':..., 'ts':...}} 5日/10日分时缓存, 30秒TTL
+
+def _load_stock_minutes_n(code, days, label):
+    """个股N日分时拼接 (逐日拉 minutes, 拼成一条线)。
+    code: 6位股票代码, days: 天数, label: '5'/'10' (用于错误提示)
+    30秒缓存, 避免切股票来回切换时重复远程拉取。"""
     if not re.match(r'^\d{6}$', code):
-        return jsonify({'success': False, 'error': 'code 需为6位数字'}), 400
+        return {'success': False, 'error': 'code 需为6位数字'}, 400
+    # 30秒缓存
+    import time as _time
+    ck = (code, days)
+    cached = _m5_cache.get(ck)
+    if cached and (_time.time() - cached['ts'] < 30):
+        return cached['data'], 200
     try:
         import hot_track as ht
         lock = ht._get_tdx_lock()
         with lock:
             client = ht._get_tdx_client()
-            # 先取最近5个交易日日期
-            df_k = ht._tdx_call_with_timeout(client, 'bars', timeout=8, symbol=code, frequency=9, offset=5)
+            # 先取最近N个交易日日期
+            df_k = ht._tdx_call_with_timeout(client, 'bars', timeout=8, symbol=code, frequency=9, offset=days)
             if df_k is None or len(df_k) == 0:
-                return jsonify({'success': False, 'error': f'{code} 无K线数据'}), 404
+                return {'success': False, 'error': f'{code} 无K线数据'}, 404
             df_k = df_k.sort_index()
             dates = [str(idx)[:10].replace('-', '') for idx in df_k.index]
             # 逐日拉分时, 拼接
@@ -2539,10 +2546,21 @@ def monitor_stock_minutes5():
                         'day': f'{d[4:6]}-{d[6:8]}',
                     })
         if not all_points:
-            return jsonify({'success': False, 'error': '无5日分时数据'}), 404
-        return jsonify({'success': True, 'points': all_points, 'days': day_labels, 'source': 'mootdx'})
+            return {'success': False, 'error': f'无{label}日分时数据'}, 404
+        result = {'success': True, 'points': all_points, 'days': day_labels, 'source': 'mootdx'}
+        _m5_cache[ck] = {'data': result, 'ts': _time.time()}
+        return result, 200
     except Exception as e:
-        return jsonify({'success': False, 'error': f'{type(e).__name__}: {e}'}), 500
+        return {'success': False, 'error': f'{type(e).__name__}: {e}'}, 500
+
+
+@app.route('/api/monitor/stock/minutes5', methods=['GET'])
+def monitor_stock_minutes5():
+    """个股5日分时拼接 (逐日拉 minutes, 拼成一条线)。
+    参数: code=300001"""
+    code = request.args.get('code', '')
+    result, status = _load_stock_minutes_n(code, 5, '5')
+    return jsonify(result), status
 
 
 @app.route('/api/monitor/stock/minutes10', methods=['GET'])
@@ -2550,38 +2568,8 @@ def monitor_stock_minutes10():
     """个股近10个交易日分时拼接 (逐日拉 minutes, 拼成一条连续线)。
     参数: code=300001"""
     code = request.args.get('code', '')
-    if not re.match(r'^\d{6}$', code):
-        return jsonify({'success': False, 'error': 'code 需为6位数字'}), 400
-    try:
-        import hot_track as ht
-        lock = ht._get_tdx_lock()
-        with lock:
-            client = ht._get_tdx_client()
-            df_k = ht._tdx_call_with_timeout(client, 'bars', timeout=8, symbol=code, frequency=9, offset=10)
-            if df_k is None or len(df_k) == 0:
-                return jsonify({'success': False, 'error': f'{code} 无K线数据'}), 404
-            df_k = df_k.sort_index()
-            dates = [str(idx)[:10].replace('-', '') for idx in df_k.index]
-            all_points = []
-            day_labels = []
-            for d in dates:
-                df_m = ht._tdx_call_with_timeout(client, 'minutes', timeout=5, symbol=code, date=int(d))
-                if df_m is None or df_m.empty:
-                    continue
-                times = _minute_time_axis(len(df_m))
-                day_labels.append(f'{d[4:6]}-{d[6:8]}')
-                for i, row in df_m.iterrows():
-                    all_points.append({
-                        'time': times[i] if i < len(times) else str(i),
-                        'price': round(float(row['price']), 2),
-                        'vol': float(row['vol']),
-                        'day': f'{d[4:6]}-{d[6:8]}',
-                    })
-        if not all_points:
-            return jsonify({'success': False, 'error': '无10日分时数据'}), 404
-        return jsonify({'success': True, 'points': all_points, 'days': day_labels, 'source': 'mootdx'})
-    except Exception as e:
-        return jsonify({'success': False, 'error': f'{type(e).__name__}: {e}'}), 500
+    result, status = _load_stock_minutes_n(code, 10, '10')
+    return jsonify(result), status
 
 
 # ===== 自选股接口 =====
