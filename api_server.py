@@ -3448,6 +3448,19 @@ def monitor_concept_zt_stats():
             timeline_out.append(cur_point)
             ranks_out.append(cur_rank_point)
 
+        # 构建 stock -> [(concept, rank), ...] 反向映射(仅当前Top10概念)
+        # 供前端个股列表"所属概念"列使用: 显示该股属于哪些Top10概念及排名
+        stock_top10_concepts = {}
+        for concept_name in top10_now:
+            rank = cur_rank_map.get(concept_name)
+            if not rank:
+                continue
+            for code in concept_map.get(concept_name, []):
+                stock_top10_concepts.setdefault(code, []).append([concept_name, rank])
+        # 每只股票的概念按排名升序排
+        for code in stock_top10_concepts:
+            stock_top10_concepts[code].sort(key=lambda x: x[1])
+
         result = {
             'success': True,
             'ts': now_str,
@@ -3465,6 +3478,7 @@ def monitor_concept_zt_stats():
             'timeline': timeline_out,
             'ranks_timeline': ranks_out,
             'dist6_timeline': dist6_out,
+            'stock_top10_concepts': stock_top10_concepts,
             'source': 'tqcenter' if used_tq else 'mootdx',
         }
         _concept_zt_cache = {'data': result, 'ts': now_ts}

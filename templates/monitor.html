@@ -173,6 +173,10 @@
   .stock-item .s-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 0 4px; }
   .stock-item .s-price { width: 50px; text-align: right; color: var(--text-primary); flex-shrink: 0; }
   .stock-item .s-pct { width: 50px; text-align: right; font-weight: 600; flex-shrink: 0; }
+  .stock-item .s-concept { width: 110px; flex-shrink: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 10px; padding-left: 6px; }
+  .stock-item .s-concept .ctag { margin-right: 2px; }
+  .stock-item .s-concept .crk1, .stock-item .s-concept .crk2, .stock-item .s-concept .crk3 { color: #ffd54f; font-weight: 600; }
+  .stock-item .s-concept .crk { color: #60a5fa; }
   .s-up { color: var(--up-color); }
   .s-down { color: var(--down-color); }
   .s-flat { color: var(--text-muted); }
@@ -1425,14 +1429,38 @@ function renderStockList(seg, stocks) {
     const addLabel = watchlistCodes.has(s.code) ? '★' : '+';
     // name 转义防 XSS/引号破坏
     const safeName = s.name.replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+    const conceptHtml = buildConceptTagHtml(s.code);
     return `<div class="stock-item${clsStr}" data-code="${s.code}" data-name="${safeName}" data-pct="${s.pct}">
       <span class="wl-add" title="${watchlistCodes.has(s.code) ? '已在自选' : '加入自选'}">${addLabel}</span>
       <span class="s-code">${s.code}</span>
       <span class="s-name">${s.name}</span>
-      <span class="s-price">${s.price != null ? s.price.toFixed(2) : '—'}</span>
+      <span class="s-price">${s.price != null ? s.price.toFixed(2) : '-'}</span>
       <span class="s-pct ${cls}">${sign}${s.pct}%</span>
+      <span class="s-concept">${conceptHtml}</span>
     </div>`;
   }).join('');
+}
+
+// 构建个股所属Top10概念的HTML标签: 华为【1】 机器人【2】
+// 排名1-3金色, 4-10浅蓝; 不在Top10概念中的返回空
+function buildConceptTagHtml(code) {
+  const data = (typeof _conceptZtData !== 'undefined' && _conceptZtData) ? _conceptZtData.stock_top10_concepts : null;
+  if (!data || !data[code]) return '';
+  return data[code].map(([concept, rank]) => {
+    const rkCls = rank <= 3 ? 'crk' + rank : 'crk';
+    const shortName = concept.length > 4 ? concept.slice(0, 4) : concept;
+    return `<span class="ctag ${rkCls}" title="${concept} 第${rank}名">${shortName}【${rank}】</span>`;
+  }).join('');
+}
+
+// zt-stats刷新后, 原地更新已渲染列表的概念列(不重建DOM)
+function refreshStockConceptTags() {
+  document.querySelectorAll('.stock-item .s-concept').forEach(el => {
+    const row = el.closest('.stock-item');
+    if (!row) return;
+    const code = row.dataset.code;
+    el.innerHTML = buildConceptTagHtml(code);
+  });
 }
 
 // 列表点击事件委托: + 按钮加入自选; 其余点击选中个股
@@ -2246,6 +2274,7 @@ async function loadConceptZtStats() {
     setSrcTag('#item-czt', data.source);
     renderConceptZtChart(data);
     renderEverList(data);
+    refreshStockConceptTags();
     const top3 = data.concepts.slice(0, 3).map(c => `${c.concept}(${c.zt_count})`).join(' ');
     hint.textContent = `${data.ts} · 涨停概念${data.concepts.length}个 · ${top3}`;
   } catch(e) {
