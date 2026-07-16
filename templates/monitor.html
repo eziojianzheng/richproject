@@ -1414,6 +1414,8 @@ async function loadStockList(seg) {
         ensureOpenGain(seg).then(() => applyFilters(seg));
       }
     }
+    // 列表渲染后刷新概念列(异步, 不阻塞)
+    refreshStockConceptTags();
   } catch (e) {
     container.innerHTML = '<div class="error-msg">请求异常: ' + e.message + '</div>';
   }
@@ -1443,8 +1445,10 @@ function renderStockList(seg, stocks) {
 
 // 构建个股所属Top10概念的HTML标签: 华为【1】 机器人【2】
 // 排名1-3金色, 4-10浅蓝; 不在Top10概念中的返回空
+let _stockConceptMap = {};  // {code: [[concept, rank], ...]} 从独立接口获取
+
 function buildConceptTagHtml(code) {
-  const data = (typeof _conceptZtData !== 'undefined' && _conceptZtData) ? _conceptZtData.stock_top10_concepts : null;
+  const data = _stockConceptMap;
   if (!data || !data[code]) return '';
   return data[code].map(([concept, rank]) => {
     const rkCls = rank <= 3 ? 'crk' + rank : 'crk';
@@ -1453,13 +1457,27 @@ function buildConceptTagHtml(code) {
   }).join('');
 }
 
-// zt-stats刷新后, 原地更新已渲染列表的概念列(不重建DOM)
-function refreshStockConceptTags() {
+// 拉取当前列表中股票的所属概念(轻量, 只传列表中的~100只code)
+// 在loadStockList后和loadConceptZtStats后各调一次
+async function refreshStockConceptTags() {
+  // 收集当前列表中所有股票code
+  const codes = [];
+  document.querySelectorAll('.stock-item[data-code]').forEach(el => {
+    codes.push(el.dataset.code);
+  });
+  if (!codes.length) return;
+  try {
+    const resp = await fetchWithTimeout('/api/monitor/stock/concepts?codes=' + codes.join(','), 8000);
+    const data = await resp.json();
+    if (data.success && data.concepts) {
+      _stockConceptMap = data.concepts;
+    }
+  } catch(e) { /* 静默失败, 不影响主流程 */ }
+  // 原地更新已渲染行的概念列
   document.querySelectorAll('.stock-item .s-concept').forEach(el => {
     const row = el.closest('.stock-item');
     if (!row) return;
-    const code = row.dataset.code;
-    el.innerHTML = buildConceptTagHtml(code);
+    el.innerHTML = buildConceptTagHtml(row.dataset.code);
   });
 }
 

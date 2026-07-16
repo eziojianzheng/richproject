@@ -3448,18 +3448,8 @@ def monitor_concept_zt_stats():
             timeline_out.append(cur_point)
             ranks_out.append(cur_rank_point)
 
-        # 构建 stock -> [(concept, rank), ...] 反向映射(仅当前Top10概念)
-        # 供前端个股列表"所属概念"列使用: 显示该股属于哪些Top10概念及排名
-        stock_top10_concepts = {}
-        for concept_name in top10_now:
-            rank = cur_rank_map.get(concept_name)
-            if not rank:
-                continue
-            for code in concept_map.get(concept_name, []):
-                stock_top10_concepts.setdefault(code, []).append([concept_name, rank])
-        # 每只股票的概念按排名升序排
-        for code in stock_top10_concepts:
-            stock_top10_concepts[code].sort(key=lambda x: x[1])
+        # 当前Top10概念名->排名(轻量, 供前端独立接口查股票所属概念)
+        top10_concept_ranks = {c: cur_rank_map.get(c) for c in top10_now if cur_rank_map.get(c)}
 
         result = {
             'success': True,
@@ -3478,7 +3468,7 @@ def monitor_concept_zt_stats():
             'timeline': timeline_out,
             'ranks_timeline': ranks_out,
             'dist6_timeline': dist6_out,
-            'stock_top10_concepts': stock_top10_concepts,
+            'top10_concept_ranks': top10_concept_ranks,
             'source': 'tqcenter' if used_tq else 'mootdx',
         }
         _concept_zt_cache = {'data': result, 'ts': now_ts}
@@ -3487,6 +3477,43 @@ def monitor_concept_zt_stats():
         # 缓存还有数据就返回旧的(降级)
         if _concept_zt_cache:
             return jsonify(_concept_zt_cache['data'])
+        return jsonify({'success': False, 'error': f'{type(e).__name__}: {e}'}), 500
+
+
+@app.route('/api/monitor/stock/concepts', methods=['GET'])
+def monitor_stock_concepts():
+    """批量查询股票所属的当前Top10概念及排名(轻量, 供个股列表"所属概念"列)。
+    参数: codes=300001,300002,688001  (逗号分隔, 最多200只)
+    返回: {success, concepts: {code: [[concept, rank], ...]}}
+    """
+    codes_param = request.args.get('codes', '')
+    codes = [c.strip() for c in codes_param.split(',') if re.match(r'^\d{6}$', c.strip())][:200]
+    if not codes:
+        return jsonify({'success': False, 'error': '缺少 codes 参数'}), 400
+    try:
+        # 从zt-stats缓存取当前Top10概念排名(不重新计算, 复用10秒缓存)
+        cached = _concept_zt_cache
+        if not cached or not cached.get('data'):
+            return jsonify({'success': True, 'concepts': {}})
+        zt_data = cached['data']
+        top10_ranks = zt_data.get('top10_concept_ranks', {})
+        if not top10_ranks:
+            return jsonify({'success': True, 'concepts': {}})
+
+        # 取概念成分股, 只查Top10概念
+        concept_map = _load_concept_members()
+        # 构建 code -> [(concept, rank)] 只针对请求的codes
+        result = {}
+        for concept_name, rank in top10_ranks.items():
+            members = set(concept_map.get(concept_name, []))
+            for code in codes:
+                if code in members:
+                    result.setdefault(code, []).append([concept_name, rank])
+        # 按排名排序
+        for code in result:
+            result[code].sort(key=lambda x: x[1])
+        return jsonify({'success': True, 'concepts': result})
+    except Exception as e:
         return jsonify({'success': False, 'error': f'{type(e).__name__}: {e}'}), 500
 
 
