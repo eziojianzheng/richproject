@@ -6308,13 +6308,18 @@ def api_chain_board():
 
 # ============== 招财猫复盘: 大涨/大跌个股行为收集 ==============
 
-# 8 种行为分类(右上/右下 × 回调/不回调 × 起涨/续涨)
-CAIZHAOMAO_LABELS = [
+# 16 种行为分类: 8涨(起涨/续涨) + 8跌(起跌/续跌)
+CAIZHAOMAO_LABELS_UP = [
     '右上角回调后起涨', '右上角回调后续涨', '右上角不回调式起涨', '右上角不回调式续涨',
     '右下角回调后起涨', '右下角回调后续涨', '右下角不回调式起涨', '右下角不回调式续涨',
 ]
+CAIZHAOMAO_LABELS_DN = [
+    '右上角回调后起跌', '右上角回调后续跌', '右上角不回调式起跌', '右上角不回调式续跌',
+    '右下角回调后起跌', '右下角回调后续跌', '右下角不回调式起跌', '右下角不回调式续跌',
+]
+CAIZHAOMAO_LABELS = CAIZHAOMAO_LABELS_UP + CAIZHAOMAO_LABELS_DN
 _CAIZHAOMAO_LABELS_FILE = '.caizhaomao_labels.json'
-_caizhaomao_labels = {}          # {"code_date": {code,name,date,pct,type,label,ts}}
+_caizhaomao_labels = {}          # {"code_date_concept": {code,name,date,pct,type,label,labels:[...],ts}}
 _caizhaomao_labels_lock = threading.Lock()
 
 
@@ -6650,28 +6655,39 @@ def api_caizhaomao_cancel(task_id):
 
 @app.route('/api/hot/caizhaomao/label', methods=['POST'])
 def api_caizhaomao_label():
-    """保存/更新某个个股(某日,某概念)的行为分类。label 为空则清除。
-    参数: code, date(YYYYMMDD), concept, type, pct, name, label
+    """保存/更新某个个股(某日,某概念)的行为分类(支持多选)。
+    参数: code, date(YYYYMMDD), concept, type, pct, name
+          labels: [行为分类名, ...] 多选; 为空数组则清除。
+          label: 兼容旧格式(单选), 若提供则转为 [label]。
     行为分类按概念板块区分, 同一只票在不同概念下可分别归类。"""
     data = request.get_json() or {}
     code = str(data.get('code', '')).strip()
     date = str(data.get('date', '')).strip()
     concept = str(data.get('concept', '')).strip()
-    label = str(data.get('label', '')).strip()
     if not re.match(r'^\d{6}$', code) or not re.match(r'^\d{8}$', date):
         return jsonify({'success': False, 'error': 'code/date 格式错误'}), 400
     if not concept:
         return jsonify({'success': False, 'error': '缺少 concept'}), 400
-    if label and label not in CAIZHAOMAO_LABELS:
-        return jsonify({'success': False, 'error': '未知分类标签'}), 400
+    # 兼容: 旧格式单 label -> [label]; 新格式 labels 数组
+    labels = data.get('labels')
+    if labels is None:
+        single = str(data.get('label', '')).strip()
+        labels = [single] if single else []
+    if not isinstance(labels, list):
+        return jsonify({'success': False, 'error': 'labels 须为数组'}), 400
+    labels = [str(x).strip() for x in labels if str(x).strip()]
+    for lb in labels:
+        if lb not in CAIZHAOMAO_LABELS:
+            return jsonify({'success': False, 'error': f'未知分类标签: {lb}'}), 400
     key = f'{code}_{date}_{concept}'
     with _caizhaomao_labels_lock:
-        if not label:
+        if not labels:
             _caizhaomao_labels.pop(key, None)
         else:
             _caizhaomao_labels[key] = {
-                'code': code, 'date': date, 'concept': concept, 'label': label,
-                'labels': [label],   # 兼容旧格式(数组)
+                'code': code, 'date': date, 'concept': concept,
+                'label': labels[0],          # 兼容旧格式(首个)
+                'labels': labels,            # 多选数组
                 'name': str(data.get('name', '')), 'type': str(data.get('type', '')),
                 'pct': data.get('pct'), 'ts': time.time(),
             }
@@ -6682,7 +6698,8 @@ def api_caizhaomao_label():
 @app.route('/api/hot/caizhaomao/labels', methods=['GET'])
 def api_caizhaomao_labels():
     """返回所有已保存的行为分类标签(可选 label / concept 过滤)。
-    兼容旧格式: 旧数据用labels(数组), 新数据用label(字符串), 返回时统一补全两者。"""
+    兼容旧格式: 旧数据用labels(数组), 新数据用label(字符串), 返回时统一补全两者。
+    labels_up/labels_dn: 上涨8项/下跌8项, 供前端按side渲染checkbox。"""
     label = request.args.get('label', '')
     concept = request.args.get('concept', '')
     items = []
@@ -6695,11 +6712,13 @@ def api_caizhaomao_labels():
             item['labels'] = [item['label']]
         items.append(item)
     if label:
-        items = [x for x in items if x.get('label') == label]
+        items = [x for x in items if label in (x.get('labels') or []) or x.get('label') == label]
     if concept:
         items = [x for x in items if x.get('concept') == concept]
     items.sort(key=lambda x: (x.get('date', ''), x.get('concept', ''), x.get('code', '')))
-    return jsonify({'success': True, 'labels': CAIZHAOMAO_LABELS, 'items': items})
+    return jsonify({'success': True, 'labels': CAIZHAOMAO_LABELS,
+                    'labels_up': CAIZHAOMAO_LABELS_UP, 'labels_dn': CAIZHAOMAO_LABELS_DN,
+                    'items': items})
 
 
 @app.route('/api/hot/caizhaomao/lock', methods=['POST'])

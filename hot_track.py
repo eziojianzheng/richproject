@@ -590,6 +590,25 @@ def fetch_range_tqcenter(code, start, end):
         return False
 
 
+def fetch_range_local_day(code, start, end):
+    """读本地通达信 .day 日线文件(盘后数据, 无网络无锁, 几毫秒), 计算并缓存指标。
+    失败返回 False, 由调用方回退 tqcenter/mootdx。"""
+    try:
+        import tdx_source as ts
+        offset = _mootdx_offset(start)
+        bars = ts.read_day_file(code, count=offset)
+        if not bars or len(bars) < 2:
+            return False
+        closes = [b['close'] for b in bars]
+        opens = [b['open'] for b in bars]
+        dates = [b['date'].replace('-', '') for b in bars]
+        _compute_and_cache_metrics(code, closes, dates, opens)
+        return True
+    except Exception as e:
+        _ht_logger.debug(f'local_day获取{code}失败: {e}')
+        return False
+
+
 def fetch_range_mootdx(code, start, end):
     """
     用通达信 mootdx 获取个股日线, 计算并缓存: 当日涨跌幅 / 20日 / 60日 / MA10 / 是否跌破MA10
@@ -650,8 +669,12 @@ def fetch_range_local_tdx(code, start, end):
 
 
 def fetch_range(code, start, end):
-    """获取个股涨幅数据: 优先 tqcenter(官方量化接口, 不封IP) -> mootdx -> 本地通达信 -> 失败返回 False"""
+    """获取个股涨幅数据: 优先 本地.day(盘后直读,无网络无锁,极快) -> tqcenter -> mootdx -> 本地通达信 -> 失败返回 False"""
     _ht_logger.debug(f'fetch_range {code} {start}~{end}')
+    # 0. 本地 .day 文件(盘后直读, 无网络无锁, 最快)
+    if fetch_range_local_day(code, start, end):
+        _ht_logger.debug(f'fetch_range {code} local_day成功')
+        return True
     # 1. tqcenter (通达信官方量化接口, 走自己账号不封IP)
     result = fetch_range_tqcenter(code, start, end)
     if result is True:
@@ -1169,16 +1192,28 @@ def track_hot_stocks(start, end, sort='stock_count', with_price=True,
     # 全局指标(整个区间, 用于一致排序):
     #   block_total: 累计入选票数
     #   block_times: 累计出现次数(区间内该板块出现的天数)
+    #   block_times_series/total_series: 逐日累计序列(供前端按"近N日"窗口取增量, 口径与标量一致)
     block_total = {}      # block -> 累计入选票数
     block_times = {}      # block -> 累计出现天数
+    block_times_series = {}   # block -> {date: 截至该日累计出现天数}
+    block_total_series = {}   # block -> {date: 截至该日累计入选去重票数}
     for blk in selected_blocks:
-        codes = set()
+        codes_seen = set()
+        ts_series = {}
+        tot_series = {}
+        t_cnt = 0
         for d in dates:
-            for s in daily[d].get(blk, []):
-                if stock_qualifies(s):
-                    codes.add(s['代码'])
-        block_total[blk] = len(codes)
-        block_times[blk] = sum(1 for d in dates if blk in daily[d])
+            if blk in daily[d]:
+                t_cnt += 1
+                for s in daily[d].get(blk, []):
+                    if stock_qualifies(s):
+                        codes_seen.add(s['代码'])
+            ts_series[d] = t_cnt
+            tot_series[d] = len(codes_seen)
+        block_total[blk] = len(codes_seen)
+        block_times[blk] = t_cnt
+        block_times_series[blk] = ts_series
+        block_total_series[blk] = tot_series
 
     _report('remove', '阶段3: 应用移除规则(跌破10日线预警, 第三日仍破位则移除)…', 0, len(dates))
     date_pos = {dd: i for i, dd in enumerate(dates)}  # 交易日 -> 序号
@@ -1396,6 +1431,8 @@ def track_hot_stocks(start, end, sort='stock_count', with_price=True,
             'block': blk,
             'times_count': block_times[blk],
             'total_count': block_total[blk],
+            'times_series': block_times_series[blk],   # 逐日累计出现天数(供前端按近N日取增量)
+            'total_series': block_total_series[blk],   # 逐日累计入选去重票数
             'avg_pct': cum_avg_series,   # 改为累计平均涨幅
             'daily_avg_pct': avg_series, # 单日平均涨幅（保留）
             'cum_count': cum_series,

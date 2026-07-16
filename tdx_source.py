@@ -285,19 +285,19 @@ def initialize():
 
 
 def _to_tq_code(code):
-    """6位纯数字代码 -> tqcenter 格式 (XXXXXX.SH/SZ)。
-    6开头=沪市SH, 0/3开头=深市SZ, 8开头=北交所BJ"""
+    """6位纯数字代码 -> tqcenter 格式 (XXXXXX.SH/SZ/BJ)。
+    沪市: 60/68/9(除920外, 含11x指数); 深市: 0/2/3; 北交所: 920/8/4(三板)"""
     code = str(code).strip()
     if '.' in code:
         return code.upper()
     if not code.isdigit() or len(code) != 6:
         return None
+    if code.startswith('920') or code.startswith(('8', '4')):
+        return f'{code}.BJ'
     if code.startswith(('60', '68', '9')):
         return f'{code}.SH'
     elif code.startswith(('0', '2', '3')):
         return f'{code}.SZ'
-    elif code.startswith('8') or code.startswith('4'):
-        return f'{code}.BJ'
     return f'{code}.SH'
 
 
