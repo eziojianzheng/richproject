@@ -95,6 +95,10 @@ def meaningful_concepts():
             out.append(con)
     return out
 
+def company_chains():
+    """公司链: {company_name: [concept, ...]} (如 华为链 -> [华为概念, 华为昇腾, ...])"""
+    return _load()['company_map']
+
 
 def reload_chains():
     global _cache

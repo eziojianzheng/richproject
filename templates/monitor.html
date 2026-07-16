@@ -3076,10 +3076,12 @@ function renderChainBoard(chains) {
       }
       tiersHtml += `<div class="cb-tier"><div class="cb-tier-name ${_tierCls(t.tier, tierIdx, totalTiers)}">${t.tier}</div><div class="cb-cons">${consHtml}</div></div>`;
     }
+    const isComp = ch.id.startsWith('company:');
+    const nameTag = isComp ? '🏢 ' : '';
     html += `<div class="cb-chain${open}" data-id="${ch.id}">
       <div class="cb-chain-head ${lv.headCls}" onclick="this.parentNode.classList.toggle('open')">
         <span class="cb-chev">▶</span>
-        <span class="cb-name ${lv.nameCls}">${ch.name}</span>
+        <span class="cb-name ${lv.nameCls}">${nameTag}${ch.name}</span>
         <span class="cb-con-pct ${_pctCls(s.avg)}">${s.avg >= 0 ? '+' : ''}${s.avg}%</span>
         ${barHtml(s.avg)}
         <span class="cb-stat">涨停 <b class="cb-lu">${s.limitup}</b> · 红 ${s.up}/${s.quoted}</span>
