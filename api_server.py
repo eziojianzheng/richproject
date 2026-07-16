@@ -2505,35 +2505,42 @@ def monitor_stock_minutes():
 
 
 _m5_cache = {}  # {(code): {'data':..., 'ts':...}} 5日/10日分时缓存, 30秒TTL
+_m5_down_until = 0  # mootdx不可达时的熔断时间戳, 避免反复超时卡死
 
 def _load_stock_minutes_n(code, days, label):
     """个股N日分时拼接 (逐日拉 minutes, 拼成一条线)。
     code: 6位股票代码, days: 天数, label: '5'/'10' (用于错误提示)
     30秒缓存, 避免切股票来回切换时重复远程拉取。"""
+    import time as _time
+    global _m5_down_until
     if not re.match(r'^\d{6}$', code):
         return {'success': False, 'error': 'code 需为6位数字'}, 400
     # 30秒缓存
-    import time as _time
     ck = (code, days)
     cached = _m5_cache.get(ck)
     if cached and (_time.time() - cached['ts'] < 30):
         return cached['data'], 200
+    # 熔断: mootdx近期不可达时快速失败, 避免每次切股票都卡30秒+
+    if _time.time() < _m5_down_until:
+        return {'success': False, 'error': '分时数据源暂不可达(熔断中), 请开启本地通达信或稍后重试'}, 503
     try:
         import hot_track as ht
         lock = ht._get_tdx_lock()
         with lock:
             client = ht._get_tdx_client()
-            # 先取最近N个交易日日期
-            df_k = ht._tdx_call_with_timeout(client, 'bars', timeout=8, symbol=code, frequency=9, offset=days)
+            # 先取最近N个交易日日期 (timeout=6, 快速失败)
+            df_k = ht._tdx_call_with_timeout(client, 'bars', timeout=6, symbol=code, frequency=9, offset=days)
             if df_k is None or len(df_k) == 0:
-                return {'success': False, 'error': f'{code} 无K线数据'}, 404
+                # bars超时/失败 -> mootdx可能不可达, 开启30秒熔断
+                _m5_down_until = _time.time() + 30
+                return {'success': False, 'error': f'{code} 无K线数据(行情源可能不可达)'}, 503
             df_k = df_k.sort_index()
             dates = [str(idx)[:10].replace('-', '') for idx in df_k.index]
-            # 逐日拉分时, 拼接
+            # 逐日拉分时, 拼接 (timeout=4, 单日超时即跳过该日)
             all_points = []
             day_labels = []
             for d in dates:
-                df_m = ht._tdx_call_with_timeout(client, 'minutes', timeout=5, symbol=code, date=int(d))
+                df_m = ht._tdx_call_with_timeout(client, 'minutes', timeout=4, symbol=code, date=int(d))
                 if df_m is None or df_m.empty:
                     continue
                 times = _minute_time_axis(len(df_m))
@@ -2550,6 +2557,10 @@ def _load_stock_minutes_n(code, days, label):
         result = {'success': True, 'points': all_points, 'days': day_labels, 'source': 'mootdx'}
         _m5_cache[ck] = {'data': result, 'ts': _time.time()}
         return result, 200
+    except RuntimeError as e:
+        # _get_tdx_client 抛 RuntimeError(远程不可达/熔断)
+        _m5_down_until = _time.time() + 30
+        return {'success': False, 'error': f'分时数据源不可达: {e}'}, 503
     except Exception as e:
         return {'success': False, 'error': f'{type(e).__name__}: {e}'}, 500
 
