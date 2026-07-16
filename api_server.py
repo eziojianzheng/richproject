@@ -2712,12 +2712,12 @@ _minute_vol_ratio_cache = {}  # {segment: {data, ts}}
 
 @app.route('/api/monitor/stocks/minute-vol-ratio', methods=['GET'])
 def monitor_stocks_minute_vol_ratio():
-    """计算板块内个股 当日最大分时量 / 前5天平均最大分时量。
-    用于"当日最大分时量>前5天平均分时量×2"条件筛选。
+    """计算板块内个股 当日成交量 / 前5天平均成交量。
+    用于"当日最大分时量>前5天平均分时量×2"条件筛选(用日总量近似, 避免逐日拉分时太慢)。
     参数: segment=cyb|kcb。60秒缓存。
-    返回 {success, ratios: {code: {max_minute_vol, avg5_max_minute_vol, ratio, pass}}}"""
+    返回 {success, ratios: {code: {max_minute_vol, avg5_max_minute_vol, ratio, pass}}}
+    数据源: tqcenter kline(日K vol), 走本地DLL不封IP, 50只约8秒。"""
     import time as _time
-    import hot_track as ht
     segment = request.args.get('segment', 'cyb')
     if segment not in ('cyb', 'kcb'):
         return jsonify({'success': False, 'error': 'segment 需为 cyb 或 kcb'}), 400
@@ -2731,47 +2731,31 @@ def monitor_stocks_minute_vol_ratio():
     stocks = sorted(all_records, key=lambda r: r.get('pct', 0), reverse=True)[:50]
     ratios = {}
     try:
-        with ht._get_tdx_lock():
-            client = ht._get_tdx_client()
-            for s in stocks:
-                code = s['code']
-                try:
-                    # 当日分时最大量
-                    df_today = ht._tdx_call_with_timeout(client, 'minute', timeout=5, symbol=code)
-                    if df_today is not None and not df_today.empty:
-                        max_minute_vol = float(df_today['vol'].max())
-                    else:
-                        max_minute_vol = 0
-                    # 前5天: 先取6根日K(最后一根=今日), 对前5天逐日拉分时取max
-                    df_k = ht._tdx_call_with_timeout(client, 'bars', timeout=5, symbol=code, frequency=9, offset=6)
-                    if df_k is None or len(df_k) < 2:
-                        ratios[code] = {'max_minute_vol': max_minute_vol, 'avg5_max_minute_vol': 0, 'ratio': 0, 'pass': False}
-                        continue
-                    df_k = df_k.sort_index()
-                    # 取前5天日期(排除最后一根=今日)
-                    prev_dates = [str(idx)[:10].replace('-', '') for idx in df_k.index[:-1]]
-                    prev_max_vols = []
-                    for d in prev_dates[-5:]:  # 最近5天
-                        df_m = ht._tdx_call_with_timeout(client, 'minutes', timeout=5, symbol=code, date=int(d))
-                        if df_m is not None and not df_m.empty:
-                            prev_max_vols.append(float(df_m['vol'].max()))
-                        else:
-                            continue
-                    avg5_max = float(sum(prev_max_vols) / len(prev_max_vols)) if prev_max_vols else 0
-                    # 盘前 fallback: 当日无分时数据时, 用昨日最大分时量代替
-                    if max_minute_vol == 0 and prev_max_vols:
-                        max_minute_vol = prev_max_vols[-1]
-                    ratio = (max_minute_vol / avg5_max) if avg5_max > 0 else 0
-                    ratios[code] = {
-                        'max_minute_vol': round(max_minute_vol, 0),
-                        'avg5_max_minute_vol': round(avg5_max, 0),
-                        'ratio': round(ratio, 2),
-                        'pass': ratio >= 2.0,
-                    }
-                except Exception:
+        import tdx_source as ts
+        if not ts.is_available():
+            return jsonify({'success': False, 'error': '通达信tq接口不可用'}), 503
+        for s in stocks:
+            code = s['code']
+            try:
+                # 用日K vol(总量)近似: 取6根日K, 最后一根=今日, 前5根=前5天
+                bars = ts.kline(code, count=6, period='1d')
+                if not bars or len(bars) < 2:
                     ratios[code] = {'max_minute_vol': 0, 'avg5_max_minute_vol': 0, 'ratio': 0, 'pass': False}
+                    continue
+                today_vol = float(bars[-1]['vol'])
+                prev_vols = [float(b['vol']) for b in bars[:-1][-5:]]
+                avg5_vol = sum(prev_vols) / len(prev_vols) if prev_vols else 0
+                ratio = (today_vol / avg5_vol) if avg5_vol > 0 else 0
+                ratios[code] = {
+                    'max_minute_vol': round(today_vol, 0),
+                    'avg5_max_minute_vol': round(avg5_vol, 0),
+                    'ratio': round(ratio, 2),
+                    'pass': ratio >= 2.0,
+                }
+            except Exception:
+                ratios[code] = {'max_minute_vol': 0, 'avg5_max_minute_vol': 0, 'ratio': 0, 'pass': False}
         _minute_vol_ratio_cache[segment] = {'data': ratios, 'ts': _time.time()}
-        return jsonify({'success': True, 'ratios': ratios, 'source': 'mootdx'})
+        return jsonify({'success': True, 'ratios': ratios, 'source': 'tqcenter'})
     except Exception as e:
         return jsonify({'success': False, 'error': f'{type(e).__name__}: {e}'}), 500
 
