@@ -6208,12 +6208,9 @@ def api_chain_board():
         return jsonify(_chain_board_cache['data'])
 
     ci = _cc.chain_info()
-    comp_chains = _cc.company_chains()  # {公司链名: [概念,...]}
     concept_set = set()
     for c in ci.values():
         concept_set.update(c['concepts'])
-    for cons in comp_chains.values():
-        concept_set.update(cons)
 
     if not _ts.is_available():
         return jsonify({'success': False, 'error': '通达信tq接口不可用(请确认量化版客户端已开启并登录)'}), 503
@@ -6307,26 +6304,6 @@ def api_chain_board():
         summ = agg(chain_codes)
         chains.append({'id': cid, 'name': c['name'], 'summary': summ, 'tiers': tiers})
     chains.sort(key=lambda x: -x['summary']['avg'])
-
-    # 公司链(华为链/比亚迪链/宁德时代链等)作为单层链追加,
-    # tier=公司名, 含其伞下概念。单独排序后接在产业链之后,
-    # 避免小盘公司链(成员少、均值易偏高)挤占产业链位置。
-    comp_chain_list = []
-    for cname, cons_list in comp_chains.items():
-        cons = []
-        comp_codes = set()
-        for con in cons_list:
-            m = con_members.get(con, set())
-            comp_codes |= m
-            a = agg(m)
-            a['concept'] = con
-            cons.append(a)
-        cons.sort(key=lambda x: -x['avg'])
-        summ = agg(comp_codes)
-        comp_chain_list.append({'id': 'company:' + cname, 'name': cname, 'summary': summ,
-                                'tiers': [{'tier': cname, 'concepts': cons}]})
-    comp_chain_list.sort(key=lambda x: -x['summary']['avg'])
-    chains.extend(comp_chain_list)
 
     out = {'success': True, 'ts': datetime.now().strftime('%H:%M:%S'), 'chains': chains}
     _chain_board_cache['data'] = out
