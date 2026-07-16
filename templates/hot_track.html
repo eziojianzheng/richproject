@@ -2915,6 +2915,26 @@ function renderNewhighChart() {
                areaStyle: { opacity: 0.08 } }],
   }, true);
 }
+// 统一涨幅Y轴范围: 总图(+1/+5/+10日)与所有概念小图(+10日)共用同一min/max, 跨图可比
+function _nhPctYRange() {
+  const d = _nhData; if (!d || !d.days) return null;
+  let mn = Infinity, mx = -Infinity;
+  d.days.forEach(day => {
+    // 总图用 fwd_avg[0],[4],[9]
+    [0, 4, 9].forEach(k => {
+      const v = day.fwd_avg && day.fwd_avg[k];
+      if (v != null) { if (v < mn) mn = v; if (v > mx) mx = v; }
+    });
+    // 概念小图用 sec.fwd_avg[9]
+    (day.sectors || []).forEach(sec => {
+      const v = sec.fwd_avg && sec.fwd_avg[9];
+      if (v != null) { if (v < mn) mn = v; if (v > mx) mx = v; }
+    });
+  });
+  if (mn === Infinity) return null;
+  const pad = Math.max((mx - mn) * 0.1, 1);
+  return { min: Math.floor((mn - pad) * 10) / 10, max: Math.ceil((mx + pad) * 10) / 10 };
+}
 function renderNewhighConceptCharts() {
   const d = _nhData; if (!d) return;
   const box = document.getElementById('nhConceptCharts');
@@ -2950,6 +2970,8 @@ function renderNewhighConceptCharts() {
   if (!top.length) { box.innerHTML = '<div class="empty">无创新高概念</div>'; return; }
   // 统一Y轴最大值: 所有概念中单日最高数
   const yMax = Math.max(...top.flatMap(([_, v]) => v.nhSeries), 1);
+  // 统一涨幅Y轴范围(与总图一致)
+  const pctRange = _nhPctYRange();
   // 渲染: 每个概念一个卡片, 含两张图(上=新高数, 下=+10日涨幅)
   box.innerHTML = top.map(([concept, v]) =>
     `<div class="nh-cc"><div class="nh-cc-title">${concept} <span class="nh-cc-total">${v.total}</span></div>
@@ -2986,7 +3008,8 @@ function renderNewhighConceptCharts() {
         xAxis: { type: 'category', data: x, show: true,
           axisLabel: { color: '#6b7280', fontSize: 8, interval: Math.ceil(x.length / 4) - 1 },
           axisLine: { lineStyle: { color: '#333' } }, axisTick: { show: false } },
-        yAxis: { type: 'value', axisLabel: { color: '#6b7280', fontSize: 8, formatter: v => v + '%' },
+        yAxis: { type: 'value', min: pctRange ? pctRange.min : null, max: pctRange ? pctRange.max : null,
+                 axisLabel: { color: '#6b7280', fontSize: 8, formatter: v => v + '%' },
                  splitLine: { lineStyle: { color: '#222' } } },
         series: [{ type: 'line', data: v.fwdSeries, smooth: false, symbol: 'circle', symbolSize: 3,
                    lineStyle: { width: 1.3, color: '#e0483f' }, itemStyle: { color: '#e0483f' },
@@ -3005,6 +3028,8 @@ function renderNewhighPctCharts() {
   const fwdKeys = [0, 4, 9];  // +1日, +5日, +10日(fwd数组索引)
   const fwdLabels = ['+1日', '+5日', '+10日'];
   const fwdColors = ['#7f8c8d', '#42a5f5', '#ffd60a'];
+  // 统一涨幅Y轴范围(与概念小图一致)
+  const pctRange = _nhPctYRange();
   const mainBox = document.getElementById('nhPctChart');
   // 销毁旧总图实例
   const oldInst = echarts.getInstanceByDom(mainBox);
@@ -3031,6 +3056,7 @@ function renderNewhighPctCharts() {
     grid: { left: 44, right: 20, top: 28, bottom: 24 },
     xAxis: { type: 'category', data: x, axisLabel: { color: '#9aa0a6', fontSize: 9 }, axisLine: { lineStyle: { color: '#444' } } },
     yAxis: { type: 'value', name: '涨幅%', nameTextStyle: { color: '#9aa0a6', fontSize: 9 },
+             min: pctRange ? pctRange.min : null, max: pctRange ? pctRange.max : null,
              axisLabel: { color: '#9aa0a6', fontSize: 9, formatter: v => v + '%' }, splitLine: { lineStyle: { color: '#333' } } },
     series: mainSeries,
   }, true);
