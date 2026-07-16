@@ -6190,8 +6190,9 @@ _astock_name_cache = {'ts': 0, 'names': {}}
 
 
 def _limit_threshold(code):
-    """涨停判定阈值: 双创(300/301/688)=19.8, 其它主板=9.8"""
-    return 19.8 if code[:3] in ('300', '301', '688') else 9.8
+    """涨停判定阈值: 创业板(30x)/科创板(68x)=19.8, 其它主板=9.8。
+    口径与zt-stats的 code.startswith(('30','68')) 一致, 保证产业链与涨停分布统计可比。"""
+    return 19.8 if code.startswith(('30', '68')) else 9.8
 
 
 @app.route('/api/monitor/chain-board', methods=['GET'])
@@ -6211,7 +6212,24 @@ def api_chain_board():
     for c in ci.values():
         concept_set.update(c['concepts'])
 
+    if not _ts.is_available():
+        return jsonify({'success': False, 'error': '通达信tq接口不可用(请确认量化版客户端已开启并登录)'}), 503
+
+    # 名称表(缓存1小时) - 先取, 供下方成员ST过滤使用(口径与zt-stats一致)
+    if not _astock_name_cache['names'] or now - _astock_name_cache['ts'] > 3600:
+        lst = _ts.stock_list('5', with_name=True) or []
+        _astock_name_cache['names'] = {x['code']: x['name'] for x in lst}
+        _astock_name_cache['ts'] = now
+    names = _astock_name_cache['names']
+    # ST/退市代码集合(名称含ST或退), 与zt-stats排除口径一致
+    excluded_codes = {
+        str(code).zfill(6) for code, nm in names.items()
+        if 'ST' in str(nm).upper() or '退' in str(nm)
+    }
+
     # 概念->成员(缓存1小时, 成员变化慢)
+    # 口径与zt-stats的_load_concept_members一致: 仅沪深主板(60/00)+创业板(30)+科创板(68),
+    # 排除北交所(8/4开头)及ST/退市, 使产业链统计与涨停分布盯盘数值可比。
     if not _chain_members_cache['members'] or now - _chain_members_cache['ts'] > 3600:
         try:
             conn = _db.get_conn()
@@ -6220,9 +6238,12 @@ def api_chain_board():
         con_members = {}
         try:
             with conn.cursor() as cur:
-                cur.execute("SELECT concept, stock_code FROM ths.concept_member WHERE concept = ANY(%s)",
+                cur.execute("SELECT concept, stock_code FROM ths.concept_member "
+                            "WHERE concept = ANY(%s) AND stock_code ~ '^(60|00|30|68)'",
                             (list(concept_set),))
                 for con, code in cur.fetchall():
+                    if code in excluded_codes:
+                        continue
                     con_members.setdefault(con, set()).add(code)
         finally:
             conn.close()
@@ -6235,16 +6256,6 @@ def api_chain_board():
         all_codes |= s
     if not all_codes:
         return jsonify({'success': False, 'error': '概念成员为空(请先同步同花顺概念数据)'}), 404
-
-    if not _ts.is_available():
-        return jsonify({'success': False, 'error': '通达信tq接口不可用(请确认量化版客户端已开启并登录)'}), 503
-
-    # 名称表(缓存1小时)
-    if not _astock_name_cache['names'] or now - _astock_name_cache['ts'] > 3600:
-        lst = _ts.stock_list('5', with_name=True) or []
-        _astock_name_cache['names'] = {x['code']: x['name'] for x in lst}
-        _astock_name_cache['ts'] = now
-    names = _astock_name_cache['names']
 
     # 批量实时报价(分块)
     quotes = {}
