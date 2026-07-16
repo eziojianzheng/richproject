@@ -258,9 +258,13 @@
 
   /* 产业链盯盘 */
   .cb-chain { border: 1px solid var(--border-color); border-radius: 8px; margin-bottom: 8px; overflow: hidden; }
-  .cb-chain-head { display: flex; align-items: center; gap: 10px; padding: 6px 10px; cursor: pointer; background: rgba(255,255,255,0.03); }
+  .cb-chain-head { display: flex; align-items: center; gap: 10px; padding: 6px 10px; cursor: pointer; background: rgba(255,255,255,0.03); flex-wrap: wrap; }
   .cb-chain-head .cb-name { font-weight: 700; font-size: 13px; min-width: 130px; }
   .cb-chain-head .cb-stat { font-size: 11px; color: var(--text-secondary); }
+  .cb-hot-cons { display: flex; flex-wrap: wrap; gap: 3px; flex: 1 1 auto; min-width: 0; }
+  .cb-hot-cons .cb-hot-tag { font-size: 10px; padding: 1px 5px; border-radius: 3px; background: rgba(255,214,10,0.08); color: #ccc; white-space: nowrap; }
+  .cb-hot-cons .cb-hot-tag .cb-hot-rk { color: #ffd60a; font-weight: 600; }
+  .cb-hot-cons .cb-hot-tag .cb-hot-lu { color: #ff6b6b; font-weight: 600; }
   .cb-bar { flex: 1; height: 8px; border-radius: 4px; background: #2c313a; position: relative; overflow: hidden; min-width: 60px; }
   .cb-bar > i { position: absolute; top: 0; bottom: 0; }
   .cb-body { display: none; padding: 4px 10px 8px; }
@@ -3050,6 +3054,20 @@ function renderChainBoard(chains) {
     const validTiers = ch.tiers.filter(t => t.concepts.some(c => c.quoted > 0));
     const totalTiers = validTiers.length;
     let tierSeen = 0;
+    // 收集该链所有概念, 按涨停数降序, 取前10 (涨停数>0)
+    const allCons = [];
+    for (const t of ch.tiers) {
+      for (const c of t.concepts) {
+        if (c.quoted > 0 && c.limitup > 0) allCons.push(c);
+      }
+    }
+    allCons.sort((a, b) => b.limitup - a.limitup || b.avg - a.avg);
+    const hotTop = allCons.slice(0, 10);
+    // 涨停排名: 同涨停数并列同名次(1,1,3)
+    const hotTags = hotTop.map((c, i) => {
+      const rank = i + 1;  // 简单序号排名(同数也递增, 避免并列混淆)
+      return `<span class="cb-hot-tag">${c.concept} <span class="cb-hot-rk">${rank}</span>/<span class="cb-hot-lu">${c.limitup}</span></span>`;
+    }).join('');
     for (const t of ch.tiers) {
       const cons = t.concepts.filter(c => c.quoted > 0);
       if (!cons.length) continue;
@@ -3080,6 +3098,7 @@ function renderChainBoard(chains) {
       <div class="cb-chain-head ${lv.headCls}" onclick="this.parentNode.classList.toggle('open')">
         <span class="cb-chev">▶</span>
         <span class="cb-name ${lv.nameCls}">${ch.name}</span>
+        <span class="cb-hot-cons">${hotTags}</span>
         <span class="cb-con-pct ${_pctCls(s.avg)}">${s.avg >= 0 ? '+' : ''}${s.avg}%</span>
         ${barHtml(s.avg)}
         <span class="cb-stat">涨停 <b class="cb-lu">${s.limitup}</b> · 红 ${s.up}/${s.quoted}</span>
