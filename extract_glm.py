@@ -455,7 +455,9 @@ def extract_sectors_by_red(image_path, layout_details, use_cache=True):
             f"（板块名/数量缺失，相关股票归属可能不准）")
 
     # 2. 提取所有股票（按 y 排序）
-    stocks = _extract_stocks_with_y(layout_details)
+    #    先检测 table block 之间的 gap，补 OCR 漏掉的股票行
+    layout_filled = _fill_table_gaps(image_path, layout_details)
+    stocks = _extract_stocks_with_y(layout_filled)
     if not stocks:
         return None, "未提取到股票", meta
 
@@ -530,6 +532,123 @@ def extract_sectors_by_red(image_path, layout_details, use_cache=True):
             f"有 {leftover} 只股票未分配到板块（数量切分与实际不符）")
 
     return results, None, meta
+
+
+# ============== Gap 补 OCR ==============
+
+def _ocr_gap_region(image_path, y0, y1):
+    """对图片中 [y0, y1) 区域单独做 vision OCR，返回 HTML 表格文本。
+
+    GLM layout_parsing 偶发将一张长图拆成多个 table block，block 之间的 gap
+    可能有整行股票数据被漏掉。此函数裁剪 gap 区域用 glm-4v 补识别。
+    """
+    from PIL import Image
+    import io as _io
+    im = Image.open(image_path).convert('RGB')
+    w, h = im.size
+    y0 = max(0, y0)
+    y1 = min(h, y1)
+    if y1 - y0 < 20:
+        return ''
+    crop = im.crop((0, y0, w, y1))
+    buf = _io.BytesIO()
+    crop.save(buf, format='PNG')
+    b64 = base64.b64encode(buf.getvalue()).decode()
+
+    api_key = get_api_key()
+    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+    payload = {
+        "model": get_vision_model(),
+        "messages": [{"role": "user", "content": [
+            {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}"}},
+            {"type": "text", "text": "请识别图中表格内容，原样输出HTML表格(<table><tr><td>...)，"
+                                     "保留所有行包括表头。不要输出其他内容。"},
+        ]}],
+        "thinking": {"type": "disabled"},
+        "temperature": 0.01,
+        "max_tokens": 2048,
+    }
+    for attempt in range(1, 4):
+        try:
+            resp = requests.post(GLM_CHAT_URL, headers=headers, json=payload, timeout=60)
+            result = resp.json()
+        except Exception:
+            if attempt < 3:
+                time.sleep(2 ** (attempt - 1))
+                continue
+            return ''
+        try:
+            msg = result['choices'][0]['message']
+            content = msg.get('content')
+            if isinstance(content, list):
+                content = ''.join(p.get('text', '') for p in content if isinstance(p, dict))
+            if not content:
+                content = msg.get('reasoning_content', '') or ''
+        except (KeyError, IndexError, TypeError):
+            if result.get('code') in (1302, 429) or '429' in str(result):
+                if attempt < 3:
+                    time.sleep(10 * attempt)
+                    continue
+            return ''
+        # 提取 HTML 表格部分
+        m = re.search(r'<table[\s\S]*?</table>', content, re.IGNORECASE)
+        return m.group(0) if m else ''
+    return ''
+
+
+def _fill_table_gaps(image_path, layout_details):
+    """检测 layout_details 中 table block 之间的 gap，补 OCR 后插入伪 table item。
+
+    返回新的 layout_details（深拷贝），gap 区域的 item label='table'，
+    bbox_2d 覆盖 gap 范围，content 为补 OCR 的 HTML。
+    """
+    # 收集所有 table block 的 bbox
+    table_blocks = []
+    for page in layout_details:
+        for item in page:
+            if item.get('label') == 'table':
+                bbox = item.get('bbox_2d', [0, 0, 0, 0])
+                if len(bbox) >= 4:
+                    table_blocks.append(bbox)
+    if len(table_blocks) < 2:
+        return layout_details
+
+    # 按 y_top 排序
+    table_blocks.sort(key=lambda b: b[1])
+
+    # 找 gap：相邻 block 之间间距 > 阈值(行高估算)的区域
+    # 行高 ≈ block 高度 / 行数，保守取 30px 作为最小有意义 gap
+    GAP_MIN = 50  # 小于此值不补（可能是正常间距）
+    GAP_OVERLAP = 40  # 向下多裁一段(与下一个block重叠), 防止边界行被漏
+    gap_items = []
+    for i in range(len(table_blocks) - 1):
+        prev_bottom = table_blocks[i][3]
+        next_top = table_blocks[i + 1][1]
+        gap = next_top - prev_bottom
+        if gap >= GAP_MIN:
+            # 补 OCR (向下多裁 GAP_OVERLAP px，与下一个 block 重叠，
+            # 重叠区域的重复股票会在去重时被自然跳过)
+            ocr_end = next_top + GAP_OVERLAP
+            html = _ocr_gap_region(image_path, prev_bottom, ocr_end)
+            if html and '<table' in html.lower():
+                gap_items.append({
+                    'label': 'table',
+                    'bbox_2d': [0, prev_bottom, table_blocks[i + 1][2], next_top],
+                    'content': html,
+                })
+                print(f"    gap补OCR: y=[{prev_bottom},{next_top}) gap={gap}px -> {html.count('<tr')}行")
+
+    if not gap_items:
+        return layout_details
+
+    # 将 gap_items 插入第一页的 layout_details 中（按 y 排序混入）
+    import copy
+    new_layout = copy.deepcopy(layout_details)
+    if new_layout:
+        new_layout[0].extend(gap_items)
+        # 按 bbox y_top 排序
+        new_layout[0].sort(key=lambda item: item.get('bbox_2d', [0, 0, 0, 0])[1] if len(item.get('bbox_2d', [])) >= 2 else 0)
+    return new_layout
 
 
 # 字段识别正则
@@ -619,7 +738,14 @@ def _extract_stocks_with_y(layout_details):
     _flush(cur)
 
     stocks.sort(key=lambda s: s['_y'])
-    return stocks
+    # 去重: 仅去除"相邻同代码"的重复(gap补OCR与原block重叠区域)，
+    # 不影响跨板块的正常重复(如连板股同时出现在市场连板股和所属板块)
+    deduped = []
+    for s in stocks:
+        if deduped and deduped[-1]['代码'] == s['代码']:
+            continue
+        deduped.append(s)
+    return deduped
 
 
 # ============== 找 03/04 图片 ==============
