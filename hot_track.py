@@ -558,7 +558,7 @@ def _compute_and_cache_metrics(code, closes, dates, opens=None):
             else:
                 cache[f'{code}_{dstr}_ma10'] = None
                 cache[f'{code}_{dstr}_below_ma10'] = False
-        _save_price_cache()
+        # 注意: 不在此处写磁盘(_save_price_cache), 由调用方(prefetch_prices)批量写入
 
 
 def fetch_range_tqcenter(code, start, end):
@@ -649,9 +649,32 @@ def fetch_range_local_tdx(code, start, end):
         return False
 
 
+def fetch_range_local_day(code, start, end):
+    """直接读本地通达信 .day 日线文件(最快, 纯文件IO无网络无锁)。
+    盘后数据, 不复权。需要通达信已下载日线数据。"""
+    try:
+        import tdx_source as ts
+        offset = _mootdx_offset(start)
+        bars = ts.read_day_file(code, count=offset)
+        if not bars or len(bars) < 5:
+            return False
+        closes = [b['close'] for b in bars]
+        opens = [b['open'] for b in bars]
+        dates = [b['date'].replace('-', '') for b in bars]
+        _compute_and_cache_metrics(code, closes, dates, opens)
+        return True
+    except Exception as e:
+        _ht_logger.debug(f'local_day {code} 失败: {e}')
+        return False
+
+
 def fetch_range(code, start, end):
-    """获取个股涨幅数据: 优先 tqcenter(官方量化接口, 不封IP) -> mootdx -> 本地通达信 -> 失败返回 False"""
+    """获取个股涨幅数据: 优先本地.day直读(最快) -> tqcenter -> mootdx -> 本地通达信 -> 失败返回 False"""
     _ht_logger.debug(f'fetch_range {code} {start}~{end}')
+    # 0. 本地 .day 文件直读 (纯文件IO, 0.3ms/只, 无网络无锁)
+    if fetch_range_local_day(code, start, end):
+        _ht_logger.debug(f'fetch_range {code} local_day成功')
+        return True
     # 1. tqcenter (通达信官方量化接口, 走自己账号不封IP)
     result = fetch_range_tqcenter(code, start, end)
     if result is True:
@@ -795,23 +818,17 @@ def prefetch_prices(codes, start, end, progress=None, check_dates=None):
             ok = False
             failed_list.append({'code': c, 'reason': str(e)})
             time.sleep(0.2)
-        else:
-            time.sleep(0.05)
         if ok:
             success_list.append(c)
-            # fetch 成功但 mootdx 可能未覆盖所有交易日(停牌/未上市/数据源缺失)
+            # fetch 成功但可能未覆盖所有交易日(停牌/未上市/数据源缺失)
             # 对仍缺的日期写 None 占位, 避免下次因 key 不存在而反复重取
             _cache = _load_price_cache()
             with _cache_lock:
-                _filled = False
                 for _d in query_dates:
                     for _sfx in ('', '_ma10', '_below_ma10', '_20d', '_60d'):
                         k = f'{c}_{_d}{_sfx}'
                         if k not in _cache:
                             _cache[k] = None
-                            _filled = True
-                if _filled:
-                    _save_price_cache()
         else:
             # 拉取失败: 写 _no_data 标记避免完整性检查反复重拉, 同时保留在 failed 列表中
             reason = next((f['reason'] for f in failed_list if f['code'] == c), '无数据返回')
@@ -819,19 +836,20 @@ def prefetch_prices(codes, start, end, progress=None, check_dates=None):
             with _cache_lock:
                 _cache[f'{c}_no_data'] = True
                 _cache[f'{c}_no_data_reason'] = reason
-                # 同时写 None 占位避免其他地方的 key-not-in 检查
                 for _d in query_dates:
                     for _sfx in ('', '_ma10', '_below_ma10', '_20d', '_60d'):
                         k = f'{c}_{_d}{_sfx}'
                         if k not in _cache:
                             _cache[k] = None
-                _save_price_cache()
             if not any(f['code'] == c for f in failed_list):
                 failed_list.append({'code': c, 'reason': reason})
         _report('price', f'获取行情 {i + 1}/{len(need_fetch)} (代码 {c})',
                 cached_cnt + i + 1, total_codes)
         if (i + 1) % 20 == 0:
             print(f"已处理 {i + 1}/{len(need_fetch)}，成功 {len(success_list)}")
+    
+    # 批量写入磁盘缓存(循环内不再逐只写, 避免IO瓶颈)
+    _save_price_cache()
     
     print(f"完成: 成功获取 {len(success_list)}/{len(need_fetch)} 只股票数据")
     all_failed = known_no_data + failed_list
