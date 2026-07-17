@@ -5,8 +5,8 @@ ai:
     api_key: "YOUR_API_KEY_HERE"
     # 文本模型
     text_model: "GLM-4-Flash-250414"
-    # 视觉模型 (用于图像识别) - GLM-4.5V MOE架构，OCR效果更好
-    vision_model: "GLM-4.5V"
+    # 视觉模型 (用于识别板块红色标题) - GLM-4V-Plus 快速，识别单条标题足够
+    vision_model: "GLM-4V-Plus"
     base_url: "https://open.bigmodel.cn/api/paas/v4/"
     
   # 默认使用的模型提供商
@@ -45,3 +45,28 @@ ocr:
       - "其他"
       - "涨停炸板"
       - "市场连板股"
+
+# 通达信配置
+tdx:
+  # 通达信量化版安装目录 (留空则自动探测; 探测命中后会自动回写到此, 下次启动直接命中)
+  install_dir: ""
+  # 本地行情端口 (通达信客户端行情端口, 0=不尝试本地直连直接走远程; 客户端开了7709监听才填7709)
+  local_port: 0
+
+# PostgreSQL 数据库配置 (数据入库/热门股追踪)
+database:
+  host: "localhost"
+  port: 15432
+  user: "postgres"
+  password: "mysecretpassword"
+  dbname: "postgres"
+
+# 开发诊断配置（生产环境保持 enabled: false）
+debug:
+  enabled: false
+  playwright:
+    base_url: "http://127.0.0.1:5000"
+    headless: false
+    timeout_ms: 30000
+    watch_seconds: 60
+    output_dir: "artifacts/debug"

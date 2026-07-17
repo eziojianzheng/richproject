@@ -40,6 +40,21 @@ env/
 # Data files (large)
 dataresource/
 excelDataSource/
+output/
+systemOriginalData/
+
+# 同花顺同步产出(CSV)
+ths_concept_members_long.csv
+ths_concept_status.csv
+ths_stock_concept.csv
+
+# 截图/探针图
+*.png
+
+# 杂项文档(非代码)
+复盘文档.xlsx
+涨停复盘数据提取模版.xlsx
+图片转Exceldoubao Prompt/
 
 # Config with sensitive data
 config.yml
@@ -48,6 +63,41 @@ config.yml
 *.log
 logs/
 
+# 运行时生成的缓存
+.price_cache.json
+.hot_last_result.json
+.watchlist.json
+.glmocr.json
+*.glmocr.json
+*.sectors.json
+_tqcenter_init.py
+.concept_day_cache.json
+.exp_picks.json
+.exp_scan.json
+.member_closes.json
+.caizhaomao_labels.json
+.caizhaomao_locks.json
+
+# 测试脚本
+_test_*.py
+
 # OS
 .DS_Store
 Thumbs.db
+_codes_cyb.json
+_codes_kcb.json
+
+# Playwright 调试产物/临时浏览器资料
+artifacts/debug/
+.playwright-profile/
+
+# 探针临时产物 (每次抓取自动重新生成)
+_debug_browser.json
+_debug_browser.png
+_debug_server.log
+_session_cmd.json
+_session_result.json
+_session_alive.flag
+
+# 误创建的乱码文件
+ersADMINDesktopAI*
