@@ -1359,6 +1359,24 @@ def track_hot_stocks(start, end, sort='stock_count', with_price=True,
             by_date.append({'date': d, 'blocks': day_blocks})
         _report('remove', f'{d}: 移除规则处理完成', dates.index(d) + 1, len(dates))
 
+    # 阶段3.5: 累计票数扣除已被移除(跌破10日线第三日未收回)的票, 得到"净累计票数"
+    # block_total / block_total_series 原为"入选去重"口径, 此处同步扣除移除票;
+    # apply_removal=False 时 block_removed_stocks 为空, 净值退化为原值, 行为不变。
+    for blk in selected_blocks:
+        removed = block_removed_stocks.get(blk, {})
+        removed_total = len(removed)
+        # 标量: 区间净累计 = 区间入选去重 - 区间已移除
+        block_total[blk] = max(block_total[blk] - removed_total, 0)
+        # 逐日序列: 截至该日净累计 = 截至该日入选去重 - 截至该日已移除
+        series = block_total_series[blk]
+        for d in dates:
+            removed_upto_d = sum(1 for rd in removed.values() if rd and rd <= d)
+            series[d] = max(series.get(d, 0) - removed_upto_d, 0)
+    # by_date 内 total_count 是阶段2原值(值拷贝), 回填为净标量保持一致
+    for day in by_date:
+        for b in day['blocks']:
+            b['total_count'] = block_total.get(b['block'], b['total_count'])
+
     # === 板块图表汇总数据 ===
     # 每个板块: 逐日平均涨幅 / 逐日累计平均涨幅 / 逐日累计入选票数 / 各入选票逐日涨幅序列
     blocks_summary = []

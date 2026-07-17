@@ -6306,6 +6306,132 @@ def api_chain_board():
     return jsonify(out)
 
 
+# ============== 湖南人盯盘: Top10板块实时涨幅聚合 ==============
+
+# 实时报价缓存(5秒): key=排序后的板块名拼接, value={data, ts, source}
+_hnrlive_quotes_cache = {}
+
+
+@app.route('/api/hot/live/quotes', methods=['POST'])
+def api_hnrlive_quotes():
+    """湖南人盯盘: 对前端给定的Top10板块(及其成员股代码)批量拉实时涨幅并按板块聚合。
+    后端无状态: 不重算 track_hot_stocks, 由前端传入 {blocks:[{block,codes:[...],names:{code:name}}]}。
+    优先 tqcenter batch_pricevol(走DLL不封IP), 回退 mootdx 批量 quotes。
+    结果按板块返回 avg_pct/limitup/stocks。5秒缓存。"""
+    import time as _t
+    import tdx_source as _ts
+    import hot_track as ht
+
+    body = request.get_json(silent=True) or {}
+    blocks = body.get('blocks') or []
+    if not blocks:
+        return jsonify({'success': False, 'error': '缺少 blocks 参数'}), 400
+
+    # 缓存key: 排序后的板块名(忽略codes顺序, 同一组板块5秒内复用)
+    cache_key = '|'.join(sorted(b.get('block', '') for b in blocks))
+    cached = _hnrlive_quotes_cache.get(cache_key)
+    if cached and (_t.time() - cached['ts'] < 5):
+        return jsonify(cached['data'])
+
+    # 汇总所有成员股代码 + 名称表(前端传names, 后端不依赖stock_list名称表)
+    all_codes = []
+    name_map = {}
+    for b in blocks:
+        for c in (b.get('codes') or []):
+            c = str(c).zfill(6)
+            all_codes.append(c)
+        for c, nm in (b.get('names') or {}).items():
+            name_map[str(c).zfill(6)] = nm
+    # 去重保序
+    seen = set()
+    uniq_codes = []
+    for c in all_codes:
+        if c not in seen:
+            seen.add(c)
+            uniq_codes.append(c)
+    if not uniq_codes:
+        return jsonify({'success': False, 'error': '无成员股代码'}), 400
+
+    quotes = {}   # code -> {price, pct, vol}
+    source = 'none'
+    # 优先 tqcenter batch_pricevol
+    try:
+        if _ts.is_available():
+            pv = _ts.batch_pricevol(uniq_codes) or {}
+            if pv:
+                for c, info in pv.items():
+                    quotes[str(c).zfill(6)] = {'pct': info.get('pct', 0), 'price': info.get('price', 0)}
+                source = 'tqcenter'
+    except Exception as e:
+        print(f'[TQ] 湖南人盯盘报价异常: {e}')
+
+    # 回退 mootdx 批量 quotes (80只一批)
+    if not quotes:
+        try:
+            import pandas as pd
+            with ht._get_tdx_lock():
+                client = ht._get_tdx_client()
+                frames = []
+                for i in range(0, len(uniq_codes), 80):
+                    batch = uniq_codes[i:i + 80]
+                    df = ht._tdx_call_with_timeout(client, 'quotes', timeout=8, symbol=batch)
+                    if df is not None and not df.empty:
+                        frames.append(df)
+            if frames:
+                all_q = pd.concat(frames, ignore_index=True)
+                for col in ('last_close', 'price', 'amount', 'vol'):
+                    if col in all_q.columns:
+                        all_q[col] = pd.to_numeric(all_q[col], errors='coerce')
+                valid = all_q.dropna(subset=['last_close'])
+                valid = valid[valid['last_close'] > 0].copy()
+                for _, row in valid.iterrows():
+                    code = str(row.get('code', '')).zfill(6)
+                    price = row['price'] if pd.notna(row['price']) and row['price'] > 0 else row['last_close']
+                    pct = ((price - row['last_close']) / row['last_close'] * 100) if row['last_close'] > 0 else 0.0
+                    quotes[code] = {'pct': round(float(pct), 2), 'price': round(float(price), 2)}
+                source = 'mootdx'
+        except Exception as e:
+            print(f'[mootdx] 湖南人盯盘报价异常: {e}')
+
+    # 按板块聚合
+    out_blocks = []
+    for b in blocks:
+        bname = b.get('block', '')
+        bcodes = [str(c).zfill(6) for c in (b.get('codes') or [])]
+        pcts = []
+        stocks = []
+        lu = 0
+        for c in bcodes:
+            q = quotes.get(c)
+            if not q:
+                continue
+            p = round(float(q.get('pct', 0)), 2)
+            pcts.append(p)
+            if p >= _limit_threshold(c):
+                lu += 1
+            stocks.append({'code': c, 'name': name_map.get(c, ''), 'pct': p})
+        # 按涨幅降序
+        stocks.sort(key=lambda x: -x['pct'])
+        out_blocks.append({
+            'block': bname,
+            'avg_pct': round(sum(pcts) / len(pcts), 2) if pcts else 0,
+            'limitup': lu,
+            'up': sum(1 for p in pcts if p > 0),
+            'quoted': len(pcts),
+            'members': len(bcodes),
+            'stocks': stocks,
+        })
+
+    out = {
+        'success': True,
+        'ts': datetime.now().strftime('%H:%M:%S'),
+        'source': source,
+        'blocks': out_blocks,
+    }
+    _hnrlive_quotes_cache[cache_key] = {'data': out, 'ts': _t.time(), 'source': source}
+    return jsonify(out)
+
+
 # ============== 招财猫复盘: 大涨/大跌个股行为收集 ==============
 
 # 16 种行为分类: 8涨(起涨/续涨) + 8跌(起跌/续跌)
