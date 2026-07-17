@@ -535,10 +535,13 @@ def extract_sectors_by_red(image_path, layout_details, use_cache=True):
 # 字段识别正则
 _TIME_RE = re.compile(r'^\d{1,2}:\d{2}$')          # 末次时间 HH:MM
 _CODE_RE = re.compile(r'^\d{6}$')                  # 6位股票代码
-# 连板列: 纯数字 / "N板" / "X/Y天Z板" / "Y天Z板"（避免误吞含"板"的原因文字）
-_LIANBAN_RE = re.compile(r'^\d+$|^\d+板$|^\d+天\d+板$|\d+/\d+天\d+板')
-# 表头/非数据 token
-_HEADER_TOKENS = {'代码', '名称', '板块', '末次时间', '时间', '连板数', '连扳数', '原因'}
+# 连板列: 纯数字 / "N板" / "X/Y天Z板" / "Y天Z板" / 涨跌幅百分数(如"19.52%")
+#   注: 板块个股表(Schema B)第4列为涨跌幅, 非连板数; "1"=首板, "19.52%"=未涨停大涨股
+#   百分数也纳入匹配, 统一写入连扳数字段(Excel仅有该列, 涨跌幅不单列)
+_LIANBAN_RE = re.compile(r'^\d+$|^\d+板$|^\d+天\d+板$|\d+/\d+天\d+板|^\d+(?:\.\d+)?%$')
+# 表头/非数据 token (含Schema B表头: 首次时间/涨跌幅, 避免泄漏到上一行原因)
+_HEADER_TOKENS = {'代码', '名称', '板块', '末次时间', '时间', '连板数', '连扳数', '原因',
+                  '首次时间', '涨跌幅'}
 
 
 def _extract_stocks_with_y(layout_details):
