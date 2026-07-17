@@ -77,9 +77,12 @@ _tqcenter_init.py
 .member_closes.json
 .caizhaomao_labels.json
 .caizhaomao_locks.json
+.caizhaomao_result.json
+.caizhaomao_result_server.json
 
 # 测试脚本
 _test_*.py
+_check_range_pct.py
 
 # OS
 .DS_Store
