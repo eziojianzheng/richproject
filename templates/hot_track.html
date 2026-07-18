@@ -724,6 +724,9 @@
   .cat-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
   .cat-box { border: 1px solid var(--border-light); border-radius: 8px; overflow: hidden; min-height: 64px; }
   .cat-box.dragover { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(230,57,70,.3); }
+  /* 行为分类框: 右上角=上涨红, 右下角=下跌绿(标题栏着色, 与左侧在涨/在跌配色一致) */
+  .cat-box.up .cat-hd { color: #ff9a9a; background: rgba(255,107,107,0.12); border-left: 3px solid #ff6b6b; }
+  .cat-box.dn .cat-hd { color: #9be3a0; background: rgba(77,208,122,0.12); border-left: 3px solid #4dd07a; }
   .cat-hd { padding: 6px 9px; font-size: 11px; font-weight: 600; background: var(--bg-input);
     display: flex; align-items: center; justify-content: space-between; }
   .cat-hd .cat-n { font-size: 10px; color: var(--text-muted); }
@@ -4793,7 +4796,9 @@ function renderCzmCats(){
         <span class="rm" title="移除" onclick="czmToggleLabel('${it.code}','${it.date}','${escapeHtmlHT(it.concept)}','${escapeHtmlHT(lb)}')">✕</span>
       </div>`;
     }).join('') || '<span class="s-code" style="padding:3px;">-</span>';
-    return `<div class="cat-box" data-label="${escapeHtmlHT(lb)}">
+    // 右上角=上涨(红), 右下角=下跌(绿), 据标签前缀着色标题栏
+    const udCls = lb.startsWith('右下角') ? 'dn' : 'up';
+    return `<div class="cat-box ${udCls}" data-label="${escapeHtmlHT(lb)}">
       <div class="cat-hd"><span>${escapeHtmlHT(lb)}</span><span class="cat-n">${items.length}</span></div>
       <div class="cat-items">${chips}</div>
     </div>`;
