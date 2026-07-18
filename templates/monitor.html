@@ -3318,11 +3318,13 @@ setTimeout(() => loadChainBoard(true), 1500);
 setInterval(() => { if (isTradeTime && isTradeTime()) loadChainBoard(); }, 20000);
 
 // ===== 湖南人盯盘 (mon-view-hnrlive) =====
-// Top10板块(按累计涨停次数排名, 5/10日可切) + 色块/K线切换 + 下方四图(图表区独立区间, 同累计排序)
+// Top10板块(上方5/10日窗口选板块名单) + 色块/K线切换 + 下方四图(画上方选出的板块在下方区间的历史)
+// 上方5/10日 = 短窗口选近期热点Top10(板块名单与顺序); 下方起止日期 = 长区间画这些板块的趋势四图
+// 点5/10日联动: 下方区间自动设为窗口×2(5日->10日, 10日->20日)看更长趋势
 // _hlLoaded 已在 switchMonitorTab 前用 var 声明(避免TDZ)
-let HL_DATA = null;              // Top10候选池DATA(近5/10日复盘, 按累计次数排)
-let HL_DATA_CHARTS = null;       // 图表区DATA(用户选区间, 独立compute)
-let hlWindow = 5;                // Top10候选池窗口: 5 或 10 个交易日
+let HL_DATA = null;              // 上方Top10结果(price:false, 5/10日窗口): 决定板块名单与顺序
+let HL_DATA_CHARTS = null;       // 下方图表结果(price:true, 起止日期区间): 提供四图数据
+let hlWindow = 5;                // 上方5/10日窗口(选Top10板块名单); 点5/10日联动下方区间=窗口×2
 let hlTaskId = null, hlPollTimer = null, hlRefreshTimer = null, hlSince = 0;
 let hlChartTaskId = null, hlChartPollTimer = null, hlChartSince = 0;  // 图表区compute轮询
 let hlQuotes = {};               // {block: {avg_pct, limitup, stocks}}
@@ -3363,8 +3365,8 @@ function hlPctCls(pct){
   return 's-flat';
 }
 
-// 累计metric: 候选池区间内的累计涨停次数(times)/累计票数(total)
-// 候选池已是按hlWindow(5/10日)截取的区间, 直接取该区间times_count/total_count
+// 累计metric: 当前区间内的累计涨停次数(times)/累计票数(total)
+// HL_DATA已是选定区间(下方起止日期)的price:false结果, 直接取该区间times_count/total_count
 function hlMetric(blk, field){
   field = field || 'times';
   for(const day of (HL_DATA.by_date||[])){
@@ -3413,7 +3415,8 @@ function hlLoadState(){
   try{ return JSON.parse(localStorage.getItem(HL_STATE_KEY) || '{}'); }catch(e){ return {}; }
 }
 
-// 初始化: Top10区固定近10日复盘为候选池(无日期筛选); 图表区填日期下拉供独立compute
+// 初始化: 上方5/10日选Top10板块名单(短窗口), 下方起止日期选图表历史范围(默认全区间)
+// 下方图表只画上方选出的10个板块(顺序与上方一致), 用下方区间的数据画四图
 function initHnrlive(){
   fetchWithTimeout('/api/hot/dates', {}, 10000).then(r=>r.json()).then(d=>{
     if(!d.success || !d.dates || !d.dates.length){ document.getElementById('hlStatus').textContent='无数据日期'; return; }
@@ -3424,38 +3427,52 @@ function initHnrlive(){
     let endIdx = endDates.length - 1;
     if(endIdx < 0){ endIdx = dates.length - 1; if(dates[endIdx]===todayStr && dates.length>1) endIdx-=1; }
     const end = (endDates[endIdx] || dates[endIdx]);
-    // 图表区日期下拉(默认近10日, 用户可改); 恢复上次保存的区间(若仍在日期列表内)
     const saved = hlLoadState();
-    const cStartIdx = Math.max(0, endIdx - 9);
-    const cStartDef = endDates[cStartIdx] || dates[cStartIdx];
+    // 恢复5/10日窗口(默认5) -- 决定上方Top10板块名单
+    if(saved.win === 10){ hlWindow = 10; } else { hlWindow = 5; }
+    document.querySelectorAll('#hl-window span').forEach(x => {
+      x.classList.toggle('active', parseInt(x.dataset.win) === hlWindow);
+    });
+    // 下方起止日期下拉: 默认全区间(最早~最新), 用户曾手改则恢复
+    const cStartDef = endDates[0] || dates[0];
     const cStart = (saved.start && endDates.includes(saved.start)) ? saved.start : cStartDef;
     const cEnd = (saved.end && endDates.includes(saved.end)) ? saved.end : end;
     document.getElementById('hlStart').innerHTML = endDates.map(dd=>`<option value="${dd}"${dd===cStart?' selected':''}>${dd}</option>`).join('');
     document.getElementById('hlEnd').innerHTML = endDates.map(dd=>`<option value="${dd}"${dd===cEnd?' selected':''}>${dd}</option>`).join('');
-    // 恢复5/10日窗口(默认5)
-    if(saved.win === 10){ hlWindow = 10; }
-    else { hlWindow = 5; }
-    document.querySelectorAll('#hl-window span').forEach(x => {
-      x.classList.toggle('active', parseInt(x.dataset.win) === hlWindow);
-    });
     // 恢复展开/视图模式(仅作为内存状态, renderHlBlocks时据此渲染)
     if(saved.expanded && typeof saved.expanded === 'object') hlExpanded = saved.expanded;
     if(saved.viewMode && typeof saved.viewMode === 'object') hlViewMode = saved.viewMode;
-    // Top10区: 按hlWindow(5/10日)取候选池区间
+    // 上方: 按hlWindow选Top10板块名单; 下方: 用起止日期区间画图(两者独立, 下方只画上方选出的板块)
     hlLoadTop10();
-    // 图表区: 首次用同区间compute
     loadHlCharts();
   }).catch(e=>{ document.getElementById('hlStatus').textContent='日期加载失败: '+e; });
-  // 5/10日切换
+  // 5/10日切换: 上方按新窗口重选Top10; 下方区间联动设为窗口×2(5日->10日, 10日->20日)看趋势, 再重算下方
   document.querySelectorAll('#hl-window span').forEach(s => s.onclick = () => {
     document.querySelectorAll('#hl-window span').forEach(x => x.classList.remove('active'));
     s.classList.add('active'); hlWindow = parseInt(s.dataset.win)||5;
     hlSaveState();
-    hlLoadTop10();
+    fetchWithTimeout('/api/hot/dates', {}, 10000).then(r=>r.json()).then(d=>{
+      if(!d.success || !d.dates || !d.dates.length) return;
+      const todayStr = hlToday();
+      const endDates = d.dates.filter(dd => dd !== todayStr);
+      let endIdx = endDates.length - 1;
+      if(endIdx < 0){ endIdx = d.dates.length - 1; if(d.dates[endIdx]===todayStr && d.dates.length>1) endIdx-=1; }
+      const end = (endDates[endIdx] || d.dates[endIdx]);
+      // 下方区间 = 上方窗口×2(看更长趋势)
+      const chartWin = hlWindow * 2;
+      const startIdx = Math.max(0, endIdx - (chartWin - 1));
+      const start = endDates[startIdx] || d.dates[startIdx];
+      const sEl = document.getElementById('hlStart'), eEl = document.getElementById('hlEnd');
+      if(sEl) sEl.value = start; if(eEl) eEl.value = end;
+      hlSaveState();
+      // 上方重选Top10(短窗口); 下方重算(长区间). 下方完成时renderHlCharts2会读上方Top10顺序
+      hlLoadTop10();
+      loadHlCharts();
+    });
   });
 }
 
-// Top10区: 按hlWindow取候选池区间并compute(price=false轻量, 按累计次数排)
+// 上方Top10: 按hlWindow(5/10日)取候选池区间, price=false轻量compute, 按累计次数排Top10(只决定板块名单与顺序)
 function hlLoadTop10(){
   fetchWithTimeout('/api/hot/dates', {}, 10000).then(r=>r.json()).then(d=>{
     if(!d.success || !d.dates || !d.dates.length) return;
@@ -3470,7 +3487,7 @@ function hlLoadTop10(){
   });
 }
 
-// Top10区compute: 候选池(近hlWindow日复盘, price=false轻量, 按累计次数排)
+// 上方Top10 compute: price=false轻量, 按累计次数排(顺序稳定, 决定下方图表的板块名单与顺序)
 async function loadHnrlive(start, end){
   if(!start || !end){ document.getElementById('hlStatus').textContent='无日期'; return; }
   const status = document.getElementById('hlStatus');
@@ -3499,9 +3516,11 @@ function hlPollHnrlive(start, end){
         clearInterval(hlPollTimer); hlTaskId = null;
         HL_DATA = s.result;
         document.getElementById('hlMeta').textContent = `候选池 ${HL_DATA.start}~${HL_DATA.end} | ${HL_DATA.dates.length}天 | 按累计次数排Top10`;
-        // 按累计次数排Top10(顺序稳定, 不随报价变化)
+        // 按累计次数排Top10(顺序稳定, 不随报价变化) -- 此顺序决定下方图表的板块名单与顺序
         renderHlBlocks(hlBlockOrder().slice(0,10));
         startHlRefresh();
+        // 若下方图表数据已就绪, 用新Top10名单重渲染(下方区间不变, 只换画的板块)
+        if(HL_DATA_CHARTS) renderHlCharts2();
       } else if(s.status==='awaiting'){
         clearInterval(hlPollTimer);
         fetch('/api/hot/compute/resolve', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({task_id:hlTaskId, action:'skip'})}).then(()=>hlPollHnrlive(start, end));
@@ -3976,12 +3995,18 @@ function renderHlCharts2(){
   const D = HL_DATA_CHARTS;
   const summary = {}; D.blocks_summary.forEach(b => summary[b.block] = b);
   const dates = D.dates;
-  // order: 该区间出现过的全部板块(按累计涨停次数排, 不截断 -- 对齐复盘页globalBlockOrder)
+  // order: 板块名单与顺序 = 上方Top10(读HL_DATA, 由5/10日窗口选出); 图表数据 = 下方区间(HL_DATA_CHARTS)
+  // 即"上方选板块, 下方画这些板块在下方区间的历史". 守卫: HL_DATA未就绪时回退到下方区间自排序Top10
   const metric = {}; const seen = new Set();
   D.by_date.forEach(day => day.blocks.forEach(b => {
     if(!seen.has(b.block)){ seen.add(b.block); metric[b.block] = (b.times_count||0); }
   }));
-  const order = Object.keys(metric).sort((a,b) => (metric[b]-metric[a]) || (a<b?-1:1));
+  let order;
+  if(HL_DATA && HL_DATA.by_date && HL_DATA.by_date.length){
+    order = hlBlockOrder().slice(0, 10);
+  } else {
+    order = Object.keys(metric).sort((a,b) => (metric[b]-metric[a]) || (a<b?-1:1)).slice(0, 10);
+  }
   const dayCounts = {}; let globalMaxCount = 0;
   D.by_date.forEach(day => day.blocks.forEach(b => {
     if(!dayCounts[b.block]) dayCounts[b.block] = {};
