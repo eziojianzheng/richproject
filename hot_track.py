@@ -40,9 +40,21 @@ import openpyxl
 
 
 EXCEL_DIR = 'excelDataSource'
-EXCLUDED_BLOCKS = {'市场连板股'}
+EXCLUDED_BLOCKS = {'市场连板股', '公告', '其热点他'}  # 其热点他=OCR误识别的"其他热点"
 # 04提取 sheet 末尾的校验说明行, 解析时跳过
 _META_FIRST_COL = {'【校验结果】', '问题1', '问题2', '问题3', '问题4', '建议', '说明'}
+
+
+def _is_excluded_block(blk):
+    """板块是否应排除: 市场连板股/公告/其热点他 精确排除, 含"其他"的子串排除
+    (覆盖 其他热点/其他个股/其他题材 等 OCR 变体)。"""
+    if not blk:
+        return True
+    if blk in EXCLUDED_BLOCKS:
+        return True
+    if '其他' in blk:
+        return True
+    return False
 
 
 # ============== Excel 解析 ==============
@@ -1118,7 +1130,7 @@ def track_hot_stocks(start, end, sort='stock_count', with_price=True,
         bmap = {}
         for s in rows:
             blk = s['概念板块']
-            if blk in EXCLUDED_BLOCKS:
+            if _is_excluded_block(blk):
                 continue
             bmap.setdefault(blk, []).append(s)
         daily[d] = bmap

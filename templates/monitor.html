@@ -327,10 +327,12 @@
   /* 色块(从复盘移植) */
   .hl-stock-grid { display:flex; flex-wrap:wrap; gap:4px; padding:6px; }
   .hl-thumb {
-    display:inline-flex; align-items:center; justify-content:center;
-    min-width:62px; height:24px; border-radius:4px; cursor:default;
-    font-size:10px; font-weight:600; position:relative; border:1px solid transparent; padding:0 4px;
+    display:inline-flex; flex-direction:column; align-items:center; justify-content:center;
+    min-width:64px; height:40px; border-radius:4px; cursor:default;
+    font-size:10px; font-weight:600; position:relative; border:1px solid transparent; padding:2px 4px; line-height:1.1;
   }
+  .hl-thumb .hl-thumb-pct { font-size:13px; font-weight:700; }
+  .hl-thumb .hl-thumb-name { font-size:8px; font-weight:400; opacity:0.85; max-width:60px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .hl-thumb .tag { font-size:7px; background:#2563eb; color:#fff; padding:1px 2px; border-radius:2px; margin-left:2px; }
   .hl-thumb.no-pct { opacity:0.6; border:1px dashed #ff4d4d; }
   .thumb-lr { background:rgba(255,154,154,0.25); color:#ff9a9a; }
@@ -343,6 +345,15 @@
   .thumb-limit-down { background:rgba(168,85,247,0.3); color:#a855f7; }
   .thumb-absent { background:rgba(80,80,80,0.3); color:#888; }
   /* K线阵列 */
+  .hl-kline-toolbar { display:flex; align-items:center; gap:8px; padding:4px 8px; margin-bottom:6px; background:var(--bg-card); border:1px solid var(--border-light); border-radius:6px; font-size:10px; }
+  .hl-kline-toolbar .hl-zoom-label { color:var(--text-muted); }
+  .hl-kline-toolbar .hl-zoom-tag { color:var(--text-muted); font-size:9px; }
+  .hl-kline-toolbar .hl-zoom-val { color:var(--text-primary); min-width:90px; }
+  .hl-kline-toolbar .hl-zoom-quick { color:#60a5fa; cursor:pointer; padding:1px 6px; border:1px solid #60a5fa55; border-radius:3px; }
+  .hl-kline-toolbar .hl-zoom-quick:hover { background:#60a5fa22; }
+  .hl-zoom-range { -webkit-appearance:none; appearance:none; width:140px; height:4px; background:#252a33; border-radius:2px; outline:none; }
+  .hl-zoom-range::-webkit-slider-thumb { -webkit-appearance:none; appearance:none; width:12px; height:12px; border-radius:50%; background:#60a5fa; cursor:pointer; border:1px solid #fff5; }
+  .hl-zoom-range::-moz-range-thumb { width:12px; height:12px; border-radius:50%; background:#60a5fa; cursor:pointer; border:1px solid #fff5; }
   .hl-kline-list { display:flex; flex-wrap:wrap; gap:8px; }
   .hl-kline-card { width:320px; background:var(--bg-card); border:1px solid var(--border-light); border-radius:6px; padding:4px; }
   .hl-kline-info { display:flex; align-items:center; gap:6px; padding:2px 4px; font-size:10px; }
@@ -572,7 +583,7 @@
         <div class="chart-card">
           <div class="chart-title">
             📈 曾进Top10概念 · 排名与涨跌分布分时
-            <span style="float:right;font-size:10px;color:var(--text-muted);font-weight:400">左:排名(1在上,出榜断灰) 右:涨跌分布(金涨停/红5-7%/粉3-5% | 浅绿3-5%/绿5-7%/深绿跌停)</span>
+            <span style="float:right;font-size:10px;color:var(--text-muted);font-weight:400">左:排名(1在上,出榜断灰) 中:涨分布30分钟(金涨停/红涨5-7%) 右:跌分布30分钟(深绿跌停/绿跌5-7%)</span>
           </div>
           <div id="everRangeBar" style="display:flex;align-items:center;gap:6px;padding:3px 8px;font-size:11px;color:#9aa0a6;border-bottom:1px solid #2b3038;flex-shrink:0;">
             <span>🔍 高亮范围</span>
@@ -620,27 +631,17 @@
       <div class="grid-stack-item-content">
         <div class="chart-card" style="display:flex;flex-direction:column;">
           <div class="chart-title">
-            🔴 湖南人盯盘 · Top10板块
-            <span class="date-tag" id="hlStatus">选择起始日期后点击「计算」</span>
+            🔴 湖南人盯盘 · 累计Top10
+            <span class="date-tag" id="hlStatus">加载中…</span>
           </div>
           <div class="hl-toolbar">
-            <label>起始</label>
-            <select id="hlStart" class="hl-sel"><option value="">加载中…</option></select>
-            <label>结束</label>
-            <select id="hlEnd" class="hl-sel"><option value="">加载中…</option></select>
-            <label>排序</label>
-            <div class="hl-sort-tabs" id="hl-sort">
-              <span data-sort="times" class="active">累计次数</span>
-              <span data-sort="total">累计票数</span>
+            <label>近</label>
+            <div class="hl-sort-tabs" id="hl-window">
+              <span data-win="5" class="active">5日</span>
+              <span data-win="10">10日</span>
             </div>
-            <select id="hlWindow" class="hl-sel" title="近N交易日增量">
-              <option value="0">全区间</option>
-              <option value="5" selected>近5日</option>
-              <option value="10">近10日</option>
-            </select>
-            <button class="hl-btn" onclick="loadHnrlive()">计算</button>
+            <span class="date-tag" id="hlMeta" style="margin-left:auto"></span>
           </div>
-          <div class="hl-meta" id="hlMeta"></div>
           <div id="hlBlocks" class="hl-blocks" style="flex:1;min-height:0;overflow:auto;"></div>
         </div>
       </div>
@@ -649,7 +650,15 @@
     <div class="grid-stack-item" gs-id="item-hlcharts" gs-x="0" gs-y="20" gs-w="12" gs-h="18" id="item-hlcharts">
       <div class="grid-stack-item-content">
         <div class="chart-card" style="display:flex;flex-direction:column;">
-          <div class="chart-title">📈 板块图表（Top10 · 起始可选 · 结束=当日）</div>
+          <div class="chart-title">📈 板块图表（累计趋势 · 区间可选）</div>
+          <div class="hl-toolbar">
+            <label>起始</label>
+            <select id="hlStart" class="hl-sel"><option value="">加载中…</option></select>
+            <label>结束</label>
+            <select id="hlEnd" class="hl-sel"><option value="">加载中…</option></select>
+            <button class="hl-btn" onclick="loadHlCharts()">计算</button>
+            <span class="date-tag" id="hlChartStatus"></span>
+          </div>
           <div id="hlCharts" style="flex:1;min-height:0;overflow:auto;padding:4px 2px;"></div>
         </div>
       </div>
@@ -720,6 +729,19 @@ function setSrcTag(selector, source) {
   if (!tag) {
     tag = document.createElement('span');
     tag.className = 'src-tag';
+  }
+  // 图表标题栏是 flex 布局, 右侧控件用 margin-left:auto 把自身及之后元素推到最右;
+  // 若角标放在这些控件之后(末尾), 会被挤到标题栏最右边缘(和锁按钮挤成一团, 难以识别)。
+  // 故把角标插在"第一个推右控件"之前, 使其紧跟标题文字。
+  // 注意: flex 容器中 margin-left:auto 经 getComputedStyle 计算后是像素值而非 'auto',
+  // 故用已知推右 class 集合识别(稳定可靠)。列表型 .list-title 无此类控件, 放末尾。
+  const RIGHTFUL = ['indicator-toggle', 'lock-btn'];
+  const anchor = Array.from(title.children).find(
+    c => c !== tag && RIGHTFUL.some(k => c.classList.contains(k))
+  );
+  if (anchor && anchor.previousSibling !== tag) {
+    title.insertBefore(tag, anchor);
+  } else if (!anchor && tag.parentNode !== title) {
     title.appendChild(tag);
   }
   tag.className = 'src-tag ' + cls;
@@ -2572,6 +2594,9 @@ function applyEverRangeHighlight() {
     if (!chart) return;
     const opt = chart.getOption();
     if (!opt.series || !opt.series.length) return;
+    // 仅给"时间轴(value型xAxis)"图表加 markArea; 柱状图(类目轴, 如涨跌分布快照)跳过
+    const xAxisType = opt.xAxis && opt.xAxis[0] && opt.xAxis[0].type;
+    if (xAxisType !== 'value') return;
     // 仅给 series[0] 加 markArea, 不动其他 series 的配置
     opt.series[0].markArea = {
       silent: true,
@@ -2622,16 +2647,6 @@ function initEverRange() {
   }
 }
 
-// 6档配置(涨侧正向, 跌侧负向, 形成以0为轴上下对称面积)
-const _DIST6_SERIES = [
-  { key: 'zt_up',  name: '涨停',   color: '#ffd700', side: 1 },
-  { key: 'g5_7',   name: '涨5-7%', color: '#e0483f', side: 1 },
-  { key: 'g3_5',   name: '涨3-5%', color: '#ff69b4', side: 1 },
-  { key: 'zt_down',name: '跌停',   color: '#0d5c2e', side: -1 },
-  { key: 'd5_7',   name: '跌5-7%', color: '#1f9e63', side: -1 },
-  { key: 'd3_5',   name: '跌3-5%', color: '#8fd9b6', side: -1 },
-];
-
 function monitorEscapeHtml(value) {
   return String(value == null ? '' : value).replace(/[&<>"']/g, ch => ({
     '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;'
@@ -2679,8 +2694,9 @@ function renderEverList(data) {
       + `<span style="color:#e0483f">涨停${ztCount}</span>`
       + `<span style="color:#888">成员${members}只</span></div>`
       + `<div class="ever-row" id="everRow_${idx}">`
-      + `<div class="ever-chart-box" style="flex:1"><div id="rankChart_${idx}" style="height:100%"></div></div>`
-      + `<div class="ever-chart-box" style="flex:1"><div id="distChart_${idx}" style="height:100%"></div></div>`
+      + `<div class="ever-chart-box" style="flex:1.1"><div id="rankChart_${idx}" style="height:100%"></div></div>`
+      + `<div class="ever-chart-box" style="flex:1"><div id="distUpChart_${idx}" style="height:100%"></div></div>`
+      + `<div class="ever-chart-box" style="flex:1"><div id="distDownChart_${idx}" style="height:100%"></div></div>`
       + `</div></div>`;
   });
   container.innerHTML = html;
@@ -2688,20 +2704,30 @@ function renderEverList(data) {
   // 逐概念渲染
   everList.forEach((concept, idx) => {
     const rankEl = document.getElementById('rankChart_' + idx);
-    const distEl = document.getElementById('distChart_' + idx);
+    const upEl = document.getElementById('distUpChart_' + idx);
+    const dnEl = document.getElementById('distDownChart_' + idx);
+    const info = conceptsMap[concept] || {};
+    const members = info.total_members || 0;
     if (rankEl) {
       const ch = echarts.init(rankEl, 'dark');
       _everListCharts.push(ch);
       renderRankChart(ch, concept, ranksTl);
     }
-    if (distEl) {
-      const ch = echarts.init(distEl, 'dark');
+    if (upEl) {
+      const ch = echarts.init(upEl, 'dark');
       _everListCharts.push(ch);
-      renderDistChart6(ch, concept, dist6Tl);
+      renderDistUpChart(ch, concept, dist6Tl, members);
+    }
+    if (dnEl) {
+      const ch = echarts.init(dnEl, 'dark');
+      _everListCharts.push(ch);
+      renderDistDownChart(ch, concept, dist6Tl, members);
     }
   });
 
-  hint.textContent = `${data.ts} · 曾进Top10概念${everList.length}个 · 排名点${ranksTl.length} · 分时点${dist6Tl.length}`;
+  hint.textContent = `${data.ts} · 曾进Top10概念${everList.length}个 · 排名点${ranksTl.length} · 涨跌分布30分钟分段`;
+  // 与概念涨停数Top10同源(共用zt-stats接口数据), 同步显示数据源角标
+  setSrcTag('#item-everlist', data.source);
 
   // 图表渲染完成后, 应用全局高亮范围 + 初始化选择器事件(首次)
   initEverRange();
@@ -2709,7 +2735,8 @@ function renderEverList(data) {
 }
 
 // 排名图: 倒轴(1在上), 出榜(rank=null)断线变灰
-// X轴用trade_min数值(0=9:25, 246=15:00), 保证9:25-15:00全跨度显示
+// X轴用trade_min数值(0=9:25, 246=15:00)。盘中分时回放数据源不可用时只有实时采样点,
+// 此时X轴自适应到数据范围(让点铺满图宽), 避免挤在左侧7%宽度; 有历史回放(从9:25起)则全跨度。
 function renderRankChart(chart, concept, ranksTl) {
   if (!ranksTl.length) {
     chart.setOption({ backgroundColor:'transparent', title:{text:'暂无排名数据',left:'center',top:'center',textStyle:{color:'#666',fontSize:11}} }, true);
@@ -2720,9 +2747,13 @@ function renderRankChart(chart, concept, ranksTl) {
     const r = t.ranks[concept];
     return r ? [t.trade_min, r] : [t.trade_min, null];  // null 断线
   });
-  const tmArr = ranksTl.map(t => t.trade_min);
-  // 标签: 固定时间点(9:25 10:00 10:30 11:00 11:30/13:00 13:30 14:00 14:30 15:00)
-  const labelMins = [0, 35, 65, 95, 125, 126, 156, 186, 216, 246];
+  // X轴范围自适应: 有历史回放(首点trade_min<=5, 覆盖9:30开盘)则全跨度0-246;
+  // 否则(仅实时采样, 首点晚于开盘)收缩到数据范围, 让点铺满图宽。
+  const tmMin = ranksTl[0].trade_min;
+  const tmMax = ranksTl[ranksTl.length - 1].trade_min;
+  const fullSpan = tmMin <= 5;
+  const xMin = fullSpan ? 0 : tmMin;
+  const xMax = fullSpan ? 246 : tmMax;
   const currentRank = [...rankData].reverse().find(v => v != null && v[1] != null);
   const curRankVal = currentRank ? currentRank[1] : null;
   chart.setOption({
@@ -2737,13 +2768,12 @@ function renderRankChart(chart, concept, ranksTl) {
       return tradeMinToTimeLabel(p[0].data[0]) + (v ? ' 第' + v + '名' : ' 出榜');
     }},
     grid: { left: 32, right: 34, top: 18, bottom: 18 },
-    xAxis: { type: 'value', min: 0, max: 246,
+    xAxis: { type: 'value', min: xMin, max: xMax,
       axisLabel: { color:'#9aa0a6', fontSize:8,
-        formatter: v => tradeMinToTimeLabel(v),
-        interval: function(index, value) { return labelMins.includes(value); } },
+        formatter: v => tradeMinToTimeLabel(v) },
       axisLine: { lineStyle:{ color:'#444' } } },
     yAxis: { type: 'value', inverse: true, min: 0.5, max: 10.5,
-      interval: 1, axisLabel: { color:'#9aa0a6', fontSize:9, formatter: v => v<=10 ? v : '' },
+      interval: 1, axisLabel: { color: '#9aa0a6', fontSize: 9, formatter: v => v<=10 ? v : '' },
       splitLine: { lineStyle:{ color:'#333' } } },
     series: [
       { type: 'line', data: rankData, smooth: false, step: 'end', symbol: 'circle', symbolSize: (value, params) => params.dataIndex === rankData.length - 1 ? 7 : 2,
@@ -2751,70 +2781,112 @@ function renderRankChart(chart, concept, ranksTl) {
         lineStyle: { width: 1.2, color: '#42a5f5' },
         itemStyle: { color: params => params.dataIndex === rankData.length - 1 ? '#ffd54f' : '#42a5f5' },
         endLabel: { show: true, formatter: () => curRankVal ? `#${curRankVal}` : '', color: curRankVal === 1 ? '#ffd54f' : '#42a5f5', fontSize: 11, fontWeight: 'bold' } },
-      { type: 'line', data: [[0, 5], [246, 5]], symbol: 'none',
+      { type: 'line', data: [[xMin, 5], [xMax, 5]], symbol: 'none',
         lineStyle: { type: 'dashed', color: '#e0483f', width: 1 },
         silent: true, tooltip: { show: false } },
     ],
   }, true);
 }
 
-// 涨跌分布分时图: 6档折线(涨侧正向/跌侧负向, 各自独立不堆叠)
-// X轴用trade_min数值(0=9:25, 246=15:00), 保证9:25-15:00全跨度显示
-// Y轴上下对称用该概念最大值统一
-function renderDistChart6(chart, concept, dist6Tl) {
+// 涨跌分布30分钟分段柱状图(拆分版): 8个时段, 涨图/跌图各占一栏
+// renderDistUpChart: 只画涨侧(涨停+涨5-7%), 柱子在0轴上方
+// renderDistDownChart: 只画跌侧(跌停+跌5-7%), 柱子在0轴下方
+// 每段取该时段内最后一个采样点的快照。盘后5分钟回放48点齐全; 盘中只有已发生时段。
+// 公共: 8时段定义
+const _DIST6_SEGS = [
+  { label: '9:30',  lo: 5,   hi: 35  },
+  { label: '10:00', lo: 35,  hi: 65  },
+  { label: '10:30', lo: 65,  hi: 95  },
+  { label: '11:00', lo: 95,  hi: 125 },
+  { label: '13:00', lo: 126, hi: 156 },
+  { label: '13:30', lo: 156, hi: 186 },
+  { label: '14:00', lo: 186, hi: 216 },
+  { label: '14:30', lo: 216, hi: 246 },
+];
+function _dist6SegBuckets(dist6Tl, concept) {
+  // 每段取该段内最后一个采样点的 buckets[concept], 无数据则{}
+  return _DIST6_SEGS.map(seg => {
+    let last = null;
+    for (const t of dist6Tl) {
+      const tm = t.trade_min;
+      if (tm >= seg.lo && tm <= seg.hi) last = (t.buckets && t.buckets[concept]) || {};
+    }
+    return last || {};
+  });
+}
+function renderDistUpChart(chart, concept, dist6Tl, members) {
   if (!dist6Tl.length) {
-    chart.setOption({ backgroundColor:'transparent', title:{text:'暂无分时数据',left:'center',top:'center',textStyle:{color:'#666',fontSize:11}} }, true);
+    chart.setOption({ backgroundColor:'transparent', title:{text:'暂无涨分布',left:'center',top:'center',textStyle:{color:'#666',fontSize:11}} }, true);
     return;
   }
-  const tmArr = dist6Tl.map(t => t.trade_min);
-  // 若首个数据点不是从开盘(9:25)开始, 补 [0,0] 起点, 让折线从0连接而非凭空出现
-  const firstTm = dist6Tl.length ? dist6Tl[0].trade_min : 0;
-  const needStartZero = firstTm > 0;
-  const series = _DIST6_SERIES.map(s => ({
-    name: s.name, type: 'line',
-    data: (needStartZero ? [[0, 0]] : []).concat(dist6Tl.map(t => {
-      const b = t.buckets[concept] || {};
-      return [t.trade_min, (b[s.key] || 0) * s.side];
-    })),
-    // 阶梯线(step:'end'): 每个采样点的真实值保持到下一个点, 点间不画斜线过渡, 忠实记录当前数据
-    smooth: false, step: 'end', symbol: 'none',
-    lineStyle: { width: 1.2 },
-    itemStyle: { color: s.color },
-    emphasis: { focus: 'series' },
+  const segBuckets = _dist6SegBuckets(dist6Tl, concept);
+  const cats = [
+    { key: 'zt_up',  name: '涨停',   color: '#ffd700' },
+    { key: 'g5_7',   name: '涨5-7%', color: '#e0483f' },
+  ];
+  const segLabels = _DIST6_SEGS.map(s => s.label);
+  const series = cats.map(c => ({
+    name: c.name, type: 'bar', stack: 'up',
+    data: segBuckets.map(bk => bk[c.key] || 0),
+    itemStyle: { color: c.color }, emphasis: { focus: 'series' },
   }));
-  // Y轴: 算该概念所有时间点6档的最大绝对值, 上下对称统一
-  let maxAbs = 0;
-  dist6Tl.forEach(t => {
-    const b = t.buckets[concept] || {};
-    _DIST6_SERIES.forEach(s => {
-      const v = b[s.key] || 0;
-      if (v > maxAbs) maxAbs = v;
-    });
-  });
-  const yMax = Math.max(maxAbs * 1.15, 5);  // 留15%余量, 最小5
-  // 标签: 固定时间点(9:25 10:00 10:30 11:00 11:30/13:00 13:30 14:00 14:30 15:00)
-  const labelMins = [0, 35, 65, 95, 125, 126, 156, 186, 216, 246];
+  let maxV = 0;
+  segBuckets.forEach(bk => cats.forEach(c => { const v = bk[c.key]||0; if (v>maxV) maxV=v; }));
+  const yMax = Math.max(maxV * 1.15, 5);
   chart.setOption({
     backgroundColor: 'transparent', animation: false,
-    title: { text: '涨跌分布', left: 4, top: 2, textStyle: { color: '#9aa0a6', fontSize: 10 } },
-    tooltip: { trigger: 'axis', formatter: p => {
-      let html = '<b>' + tradeMinToTimeLabel(p[0].data[0]) + '</b><br>';
-      const up = p.filter(x => x.data[1] > 0).sort((a,b)=>b.data[1]-a.data[1]);
-      const dn = p.filter(x => x.data[1] < 0).sort((a,b)=>a.data[1]-b.data[1]);
-      up.forEach(x => html += x.marker + x.seriesName + ': ' + x.data[1] + '<br>');
-      dn.forEach(x => html += x.marker + x.seriesName + ': ' + (-x.data[1]) + '<br>');
+    title: { text: '涨(30分钟)', left: 4, top: 2, textStyle: { color: '#e0483f', fontSize: 10 } },
+    tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' }, formatter: params => {
+      let html = '<b>'+params[0].axisValue+'</b><br>';
+      params.filter(p=>p.value>0).sort((a,b)=>b.value-a.value).forEach(p => html += p.marker+p.seriesName+': '+p.value+'<br>');
       return html;
     }},
     legend: { show: false },
-    grid: { left: 32, right: 10, top: 18, bottom: 18 },
-    xAxis: { type: 'value', min: 0, max: 246,
-      axisLabel: { color:'#9aa0a6', fontSize:8,
-        formatter: v => tradeMinToTimeLabel(v),
-        interval: function(index, value) { return labelMins.includes(value); } },
-      axisLine: { lineStyle:{ color:'#444' } } },
-    yAxis: { type: 'value', min: -yMax, max: yMax,
-      axisLabel: { color:'#9aa0a6', fontSize:9, formatter: v => Math.abs(v) },
-      splitLine: { lineStyle:{ color:'#333' } } },
+    grid: { left: 30, right: 8, top: 18, bottom: 24 },
+    xAxis: { type: 'category', data: segLabels,
+      axisLabel: { color: '#9aa0a6', fontSize: 8, interval: 0 },
+      axisLine: { lineStyle: { color: '#444' } } },
+    yAxis: { type: 'value', min: 0, max: yMax,
+      axisLabel: { color: '#9aa0a6', fontSize: 9 },
+      splitLine: { lineStyle: { color: '#333' } } },
+    series: series,
+  }, true);
+}
+function renderDistDownChart(chart, concept, dist6Tl, members) {
+  if (!dist6Tl.length) {
+    chart.setOption({ backgroundColor:'transparent', title:{text:'暂无跌分布',left:'center',top:'center',textStyle:{color:'#666',fontSize:11}} }, true);
+    return;
+  }
+  const segBuckets = _dist6SegBuckets(dist6Tl, concept);
+  const cats = [
+    { key: 'zt_down',name: '跌停',   color: '#0d5c2e' },
+    { key: 'd5_7',   name: '跌5-7%', color: '#1f9e63' },
+  ];
+  const segLabels = _DIST6_SEGS.map(s => s.label);
+  const series = cats.map(c => ({
+    name: c.name, type: 'bar', stack: 'down',
+    data: segBuckets.map(bk => -(bk[c.key] || 0)),
+    itemStyle: { color: c.color }, emphasis: { focus: 'series' },
+  }));
+  let maxV = 0;
+  segBuckets.forEach(bk => cats.forEach(c => { const v = bk[c.key]||0; if (v>maxV) maxV=v; }));
+  const yMax = Math.max(maxV * 1.15, 5);
+  chart.setOption({
+    backgroundColor: 'transparent', animation: false,
+    title: { text: '跌(30分钟)', left: 4, top: 2, textStyle: { color: '#1f9e63', fontSize: 10 } },
+    tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' }, formatter: params => {
+      let html = '<b>'+params[0].axisValue+'</b><br>';
+      params.filter(p=>p.value<0).sort((a,b)=>a.value-b.value).forEach(p => html += p.marker+p.seriesName+': '+(-p.value)+'<br>');
+      return html;
+    }},
+    legend: { show: false },
+    grid: { left: 30, right: 8, top: 18, bottom: 24 },
+    xAxis: { type: 'category', data: segLabels,
+      axisLabel: { color: '#9aa0a6', fontSize: 8, interval: 0 },
+      axisLine: { lineStyle: { color: '#444' } } },
+    yAxis: { type: 'value', min: -yMax, max: 0,
+      axisLabel: { color: '#9aa0a6', fontSize: 9, formatter: v => Math.abs(v) },
+      splitLine: { lineStyle: { color: '#333' } } },
     series: series,
   }, true);
 }
@@ -3233,16 +3305,18 @@ setTimeout(() => loadChainBoard(true), 1500);
 setInterval(() => { if (isTradeTime && isTradeTime()) loadChainBoard(); }, 20000);
 
 // ===== 湖南人盯盘 (mon-view-hnrlive) =====
-// Top10板块(累计口径, 复用 hot_track track_hot_stocks) + 实时涨幅(/api/hot/live/quotes)
-// + 色块/K线整体切换 + 下方四图(echarts)
+// Top10板块(按累计涨停次数排名, 5/10日可切) + 色块/K线切换 + 下方四图(图表区独立区间, 同累计排序)
 let _hlLoaded = false;
-let HL_DATA = null;              // 盯盘DATA(独立)
-let hlSort = 'times', hlWindow = 5;
+let HL_DATA = null;              // Top10候选池DATA(近5/10日复盘, 按累计次数排)
+let HL_DATA_CHARTS = null;       // 图表区DATA(用户选区间, 独立compute)
+let hlWindow = 5;                // Top10候选池窗口: 5 或 10 个交易日
 let hlTaskId = null, hlPollTimer = null, hlRefreshTimer = null, hlSince = 0;
+let hlChartTaskId = null, hlChartPollTimer = null, hlChartSince = 0;  // 图表区compute轮询
 let hlQuotes = {};               // {block: {avg_pct, limitup, stocks}}
 let hlExpanded = {}, hlViewMode = {};
 const hlStockCharts = {};        // {domId: echarts} K线实例
 const hlFourCharts = {};         // {domId: echarts} 四图实例
+const hlKlineZoom = {start:70, end:100, curBlock:''};  // 全局K线缩放区间 + 当前展开板块(用于group联动)
 const HL_MA_COLORS = {5:'#facc15', 10:'#60a5fa', 20:'#a855f7'};
 
 function hlEsc(s){ return String(s==null?'':s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c]); }
@@ -3276,28 +3350,19 @@ function hlPctCls(pct){
   return 's-flat';
 }
 
-// 累计metric(复用hot_track blockMetric逻辑, 绑定hlSort/hlWindow/HL_DATA)
+// 累计metric: 候选池区间内的累计涨停次数(times)/累计票数(total)
+// 候选池已是按hlWindow(5/10日)截取的区间, 直接取该区间times_count/total_count
 function hlMetric(blk, field){
-  field = field || (hlSort === 'total' ? 'total' : 'times');
-  const dates = (HL_DATA && HL_DATA.dates) || [];
-  if(hlWindow > 0 && dates.length){
-    const winEnd = dates[dates.length-1];
-    const winStartIdx = Math.max(0, dates.length - hlWindow);
-    const winPrev = winStartIdx > 0 ? dates[winStartIdx-1] : null;
-    const sum = (HL_DATA.blocks_summary||[]).find(s=>s.block===blk) || {};
-    const series = (field==='total') ? sum.total_series : sum.times_series;
-    if(series){
-      const end = series[winEnd];
-      if(end != null){ const prev = winPrev ? (series[winPrev]||0) : 0; return end - prev; }
+  field = field || 'times';
+  for(const day of (HL_DATA.by_date||[])){
+    for(const b of day.blocks){
+      if(b.block===blk){ return field==='total' ? (b.total_count||0) : (b.times_count||0); }
     }
   }
-  let v = 0;
-  for(const day of (HL_DATA.by_date||[])){ for(const b of day.blocks){ if(b.block===blk){ v = (field==='total')?b.total_count:b.times_count; break; } } }
-  return v;
+  return 0;
 }
 function hlStatLabel(blk){
   const t = hlMetric(blk,'times'), tot = hlMetric(blk,'total');
-  if(hlWindow > 0) return `近${hlWindow}日 +${t}次 +${tot}票`;
   return `累计${t}次 ${tot}票`;
 }
 function hlBlockOrder(){
@@ -3317,49 +3382,65 @@ function hlGetMembers(blk){
   return members;
 }
 
-// 初始化: 填日期下拉 + 绑定事件 + 默认计算
+// 初始化: Top10区固定近10日复盘为候选池(无日期筛选); 图表区填日期下拉供独立compute
 function initHnrlive(){
   fetchWithTimeout('/api/hot/dates', {}, 10000).then(r=>r.json()).then(d=>{
     if(!d.success || !d.dates || !d.dates.length){ document.getElementById('hlStatus').textContent='无数据日期'; return; }
     const dates = d.dates;
-    // 结束默认取"最新已入库日期": dates会追加今天(若工作日), 但zt_stocks今天可能未入库,
-    // compute要求end在已入库范围内, 故取倒数第二个(排除今天)或最后一个(非今天)
-    let endIdx = dates.length - 1;
+    // 结束默认取"最新已入库日期"(排除今天, 今天zt_stocks未入库)
     const todayStr = hlToday();
-    if (dates[endIdx] === todayStr && dates.length > 1) endIdx -= 1;
-    const end = dates[endIdx];
-    const start = dates[Math.max(0, endIdx - 9)];   // 近10个交易日
-    document.getElementById('hlStart').innerHTML = dates.map(dd=>`<option value="${dd}"${dd===start?' selected':''}>${dd}</option>`).join('');
-    // 结束下拉排除今天(今天zt_stocks未入库, compute会报"超出范围")
     const endDates = dates.filter(dd => dd !== todayStr);
+    let endIdx = endDates.length - 1;
+    if(endIdx < 0){ endIdx = dates.length - 1; if(dates[endIdx]===todayStr && dates.length>1) endIdx-=1; }
+    const end = (endDates[endIdx] || dates[endIdx]);
+    // 图表区日期下拉(默认近10日, 用户可改)
+    const cStartIdx = Math.max(0, endIdx - 9);
+    const cStart = endDates[cStartIdx] || dates[cStartIdx];
+    document.getElementById('hlStart').innerHTML = endDates.map(dd=>`<option value="${dd}"${dd===cStart?' selected':''}>${dd}</option>`).join('');
     document.getElementById('hlEnd').innerHTML = endDates.map(dd=>`<option value="${dd}"${dd===end?' selected':''}>${dd}</option>`).join('');
-    loadHnrlive();
+    // Top10区: 按hlWindow(5/10日)取候选池区间
+    hlLoadTop10();
+    // 图表区: 首次用同区间compute
+    loadHlCharts();
   }).catch(e=>{ document.getElementById('hlStatus').textContent='日期加载失败: '+e; });
-  document.querySelectorAll('#hl-sort span').forEach(s => s.onclick = () => {
-    document.querySelectorAll('#hl-sort span').forEach(x => x.classList.remove('active'));
-    s.classList.add('active'); hlSort = s.dataset.sort;
-    if(HL_DATA) renderHlAll();
+  // 5/10日切换
+  document.querySelectorAll('#hl-window span').forEach(s => s.onclick = () => {
+    document.querySelectorAll('#hl-window span').forEach(x => x.classList.remove('active'));
+    s.classList.add('active'); hlWindow = parseInt(s.dataset.win)||5;
+    hlLoadTop10();
   });
-  document.getElementById('hlWindow').onchange = function(){ hlWindow = parseInt(this.value)||0; if(HL_DATA) renderHlAll(); };
 }
 
-// 计算流程: 复用 /api/hot/compute (price=false, 不弹框, 轻量轮询)
-async function loadHnrlive(){
-  const start = document.getElementById('hlStart').value, end = document.getElementById('hlEnd').value;
-  if(!start || !end){ alert('请先选择日期范围'); return; }
+// Top10区: 按hlWindow取候选池区间并compute(price=false轻量, 按累计次数排)
+function hlLoadTop10(){
+  fetchWithTimeout('/api/hot/dates', {}, 10000).then(r=>r.json()).then(d=>{
+    if(!d.success || !d.dates || !d.dates.length) return;
+    const todayStr = hlToday();
+    const endDates = d.dates.filter(dd => dd !== todayStr);
+    let endIdx = endDates.length - 1;
+    if(endIdx < 0){ endIdx = d.dates.length - 1; if(d.dates[endIdx]===todayStr && d.dates.length>1) endIdx-=1; }
+    const end = (endDates[endIdx] || d.dates[endIdx]);
+    const startIdx = Math.max(0, endIdx - (hlWindow - 1));
+    const start = endDates[startIdx] || d.dates[startIdx];
+    loadHnrlive(start, end);
+  });
+}
+
+// Top10区compute: 候选池(近hlWindow日复盘, price=false轻量, 按累计次数排)
+async function loadHnrlive(start, end){
+  if(!start || !end){ document.getElementById('hlStatus').textContent='无日期'; return; }
   const status = document.getElementById('hlStatus');
-  status.textContent = '计算中…';
+  status.textContent = '复盘计算中…';
   document.getElementById('hlBlocks').innerHTML = '<div class="hl-empty">计算中, 请稍候…</div>';
-  document.getElementById('hlCharts').innerHTML = '';
   stopHlRefresh();
   try{
     const r = await fetch('/api/hot/compute', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({start, end, price:false})});
     const d = await r.json();
     if(!d.success){ status.textContent = '失败: '+(d.error||''); return; }
-    hlTaskId = d.task_id; hlPollHnrlive();
+    hlTaskId = d.task_id; hlPollHnrlive(start, end);
   }catch(e){ status.textContent = '请求异常: '+e; }
 }
-function hlPollHnrlive(){
+function hlPollHnrlive(start, end){
   if(hlPollTimer) clearInterval(hlPollTimer);
   hlSince = 0;
   hlPollTimer = setInterval(async()=>{
@@ -3369,28 +3450,69 @@ function hlPollHnrlive(){
       if(!s.success) return;
       if(s.logs && s.logs.length) hlSince = s.log_count;
       const stageMap = {build:'载入',price:'行情',await:'等待',remove:'移除规则',done:'完成'};
-      document.getElementById('hlStatus').textContent = (stageMap[s.stage]||s.stage||'') + ' ' + (s.progress||0) + '%';
+      document.getElementById('hlStatus').textContent = '复盘' + (stageMap[s.stage]||s.stage||'') + ' ' + (s.progress||0) + '%';
       if(s.status==='completed'){
         clearInterval(hlPollTimer); hlTaskId = null;
-        HL_DATA = s.result; renderHlAll(); startHlRefresh();
+        HL_DATA = s.result;
+        document.getElementById('hlMeta').textContent = `候选池 ${HL_DATA.start}~${HL_DATA.end} | ${HL_DATA.dates.length}天 | 按累计次数排Top10`;
+        // 按累计次数排Top10(顺序稳定, 不随报价变化)
+        renderHlBlocks(hlBlockOrder().slice(0,10));
+        startHlRefresh();
       } else if(s.status==='awaiting'){
-        // price=false理论上不await; 兜底自动skip
         clearInterval(hlPollTimer);
-        fetch('/api/hot/compute/resolve', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({task_id:hlTaskId, action:'skip'})}).then(()=>hlPollHnrlive());
+        fetch('/api/hot/compute/resolve', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({task_id:hlTaskId, action:'skip'})}).then(()=>hlPollHnrlive(start, end));
       }
     }catch(e){ document.getElementById('hlStatus').textContent='轮询异常: '+e; }
   }, 1000);
 }
 
-// 全量渲染
+// 图表区独立compute: 用户选区间, 结果存HL_DATA_CHARTS, 画4图
+async function loadHlCharts(){
+  const start = document.getElementById('hlStart').value, end = document.getElementById('hlEnd').value;
+  if(!start || !end){ document.getElementById('hlChartStatus').textContent='请选日期'; return; }
+  const status = document.getElementById('hlChartStatus');
+  status.textContent = '计算中…';
+  document.getElementById('hlCharts').innerHTML = '<div class="hl-empty">计算中(取涨幅, 稍候)…</div>';
+  try{
+    const r = await fetch('/api/hot/compute', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({start, end, price:true})});
+    const d = await r.json();
+    if(!d.success){ status.textContent = '失败: '+(d.error||''); return; }
+    hlChartTaskId = d.task_id; hlPollHlCharts();
+  }catch(e){ status.textContent = '请求异常: '+e; }
+}
+function hlPollHlCharts(){
+  if(hlChartPollTimer) clearInterval(hlChartPollTimer);
+  hlChartSince = 0;
+  hlChartPollTimer = setInterval(async()=>{
+    if(!hlChartTaskId){ clearInterval(hlChartPollTimer); return; }
+    try{
+      const s = await (await fetch(`/api/hot/compute/status/${hlChartTaskId}?since=${hlChartSince}`)).json();
+      if(!s.success) return;
+      if(s.logs && s.logs.length) hlChartSince = s.log_count;
+      document.getElementById('hlChartStatus').textContent = '计算' + (s.progress||0) + '%';
+      if(s.status==='completed'){
+        clearInterval(hlChartPollTimer); hlChartTaskId = null;
+        HL_DATA_CHARTS = s.result;
+        document.getElementById('hlChartStatus').textContent = `${HL_DATA_CHARTS.start}~${HL_DATA_CHARTS.end} ${HL_DATA_CHARTS.dates.length}天`;
+        renderHlCharts2();
+      } else if(s.status==='awaiting'){
+        clearInterval(hlChartPollTimer);
+        fetch('/api/hot/compute/resolve', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({task_id:hlChartTaskId, action:'skip'})}).then(()=>hlPollHlCharts());
+      }
+    }catch(e){ document.getElementById('hlChartStatus').textContent='轮询异常: '+e; }
+  }, 1000);
+}
+
+// 按累计次数排Top10(顺序稳定, 不随实时涨幅变化)
+function hlOrderTop10(){
+  return hlBlockOrder().slice(0, 10);
+}
+
+// 全量渲染(Top10区; 图表区由renderHlCharts2独立渲染)
 function renderHlAll(){
   if(!HL_DATA) return;
-  const order = hlBlockOrder().slice(0, 10);
-  const sortName = hlSort==='total' ? '累计票数' : '累计次数';
-  const winName = hlWindow > 0 ? ` · 近${hlWindow}日` : ' · 全区间';
-  document.getElementById('hlMeta').textContent = `区间 ${HL_DATA.start} ~ ${HL_DATA.end} | 交易日 ${HL_DATA.dates.length}天 | Top10 排序: ${sortName}${winName}`;
+  const order = hlOrderTop10();  // 按累计次数排Top10
   renderHlBlocks(order);
-  renderHlCharts(order);
 }
 
 // 板块列表(默认收起)
@@ -3426,7 +3548,7 @@ function hlToggleBlock(blk){
 function renderHlBody(idx, blk, members){
   const body = document.getElementById('hlBody_'+idx);
   if(!body) return;
-  const mode = hlViewMode[blk] || 'thumb';
+  const mode = hlViewMode[blk] || 'kline';
   body.innerHTML = `<div class="hl-view-toggle">
       <span class="${mode==='thumb'?'active':''}" onclick="hlSwitchView('${hlEsc(blk)}','thumb')">色块</span>
       <span class="${mode==='kline'?'active':''}" onclick="hlSwitchView('${hlEsc(blk)}','kline')">K线</span>
@@ -3435,7 +3557,7 @@ function renderHlBody(idx, blk, members){
   if(mode === 'thumb') renderHlThumbs(idx, blk, members);
   else renderHlKlines(idx, blk, members);
 }
-// 色块视图(实时涨幅)
+// 色块视图(实时涨幅: 涨幅数字为主, 按颜色标注档位)
 function renderHlThumbs(idx, blk, members){
   const wrap = document.getElementById('hlStockWrap_'+idx);
   if(!wrap) return;
@@ -3446,9 +3568,13 @@ function renderHlThumbs(idx, blk, members){
     const pct = qMap[s.code]; const hasPct = (pct !== undefined && pct !== null);
     let cls = hlThumbClass(hasPct ? pct : null, s.is_kcb_cyb);
     if(!hasPct) cls += ' no-pct';
-    const pctTxt = hasPct ? (pct>=0?'+':'')+pct+'%' : '';
+    const pctTxt = hasPct ? (pct>=0?'+':'')+pct+'%' : '--';
     const kcbTag = s.is_kcb_cyb ? '<span class="tag">创</span>' : '';
-    return `<div class="hl-thumb ${cls}" title="${hlEsc(s.name)} ${pctTxt}">${s.code}${kcbTag}<span style="margin-left:3px;font-size:8px">${pctTxt}</span></div>`;
+    // 涨幅数字为主(大字), 股票名小字在下
+    return `<div class="hl-thumb ${cls}" title="${hlEsc(s.name)} ${pctTxt}">
+      <span class="hl-thumb-pct">${pctTxt}</span>
+      <span class="hl-thumb-name">${hlEsc(s.name)}</span>${kcbTag}
+    </div>`;
   }).join('')}</div>`;
 }
 // K线视图(整体切换阵列, 复用 /api/monitor/stock/daily)
@@ -3458,15 +3584,58 @@ function renderHlKlines(idx, blk, members){
   if(!members.length){ wrap.innerHTML = '<div class="hl-empty">无成员股</div>'; return; }
   const q = hlQuotes[blk] || {}; const qMap = {}; (q.stocks||[]).forEach(s => qMap[s.code] = s.pct);
   const sorted = members.slice().sort((a,b) => (qMap[b.code] ?? -99) - (qMap[a.code] ?? -99));
-  wrap.innerHTML = `<div class="hl-kline-list">${sorted.map(s => {
+  // 全局缩放工具条: range滑块 + 快捷按钮, 联动本板块所有K线
+  hlKlineZoom.curBlock = blk;
+  wrap.innerHTML = `<div class="hl-kline-toolbar">
+      <span class="hl-zoom-label">缩放</span>
+      <span class="hl-zoom-tag">起</span><input type="range" class="hl-zoom-range" id="hlZoomRange_${idx}" min="0" max="100" value="${hlKlineZoom.start}" oninput="hlZoomDrag(${idx}, this.value, 'start')">
+      <span class="hl-zoom-tag">止</span><input type="range" class="hl-zoom-range" id="hlZoomRangeEnd_${idx}" min="0" max="100" value="${hlKlineZoom.end}" oninput="hlZoomDrag(${idx}, this.value, 'end')">
+      <span class="hl-zoom-val" id="hlZoomVal_${idx}">${hlKlineZoom.start}% - ${hlKlineZoom.end}%</span>
+      <span class="hl-zoom-quick" onclick="hlZoomQuick(${idx},0,100)">全部</span>
+      <span class="hl-zoom-quick" onclick="hlZoomQuick(${idx},40,100)">近60</span>
+      <span class="hl-zoom-quick" onclick="hlZoomQuick(${idx},70,100)">近30</span>
+    </div>
+    <div class="hl-kline-list">${sorted.map(s => {
     const domId = `hlk_${idx}_${s.code}`;
     const pct = qMap[s.code]; const pctTxt = pct !== undefined ? (pct>=0?'+':'')+pct+'%' : '--';
-    return `<div class="hl-kline-card">
-      <div class="hl-kline-info"><span class="ki-name">${hlEsc(s.name)}</span><span class="s-code">${s.code}</span><span class="${hlPctCls(pct)}">${pctTxt}</span></div>
+    return `<div class="hl-kline-card" data-code="${s.code}">
+      <div class="hl-kline-info"><span class="ki-name">${hlEsc(s.name)}</span><span class="s-code">${s.code}</span><span class="hl-brk" id="hlbrk_${domId}"></span><span class="hl-kpct ${hlPctCls(pct)}">${pctTxt}</span></div>
       <div class="hl-kline-chart" id="${domId}"></div>
     </div>`;
   }).join('')}</div>`;
   sorted.forEach(s => { const dom = document.getElementById(`hlk_${idx}_${s.code}`); if(dom) hlLoadKline(dom, `hlk_${idx}_${s.code}`, s); });
+}
+// 全局缩放: 拖动range -> 更新hlKlineZoom + 同步所有本板块K线实例的dataZoom
+function hlZoomDrag(idx, val, which){
+  val = parseInt(val) || 0;
+  if(which === 'start'){
+    hlKlineZoom.start = Math.min(val, hlKlineZoom.end - 5);
+  } else {
+    hlKlineZoom.end = Math.max(val, hlKlineZoom.start + 5);
+  }
+  const sIdx = document.getElementById('hlZoomRange_'+idx), eIdx = document.getElementById('hlZoomRangeEnd_'+idx);
+  if(sIdx) sIdx.value = hlKlineZoom.start;
+  if(eIdx) eIdx.value = hlKlineZoom.end;
+  const vEl = document.getElementById('hlZoomVal_'+idx);
+  if(vEl) vEl.textContent = hlKlineZoom.start+'% - '+hlKlineZoom.end+'%';
+  hlApplyZoom();
+}
+function hlZoomQuick(idx, s, e){
+  hlKlineZoom.start = s; hlKlineZoom.end = e;
+  const sIdx = document.getElementById('hlZoomRange_'+idx), eIdx = document.getElementById('hlZoomRangeEnd_'+idx);
+  if(sIdx) sIdx.value = s;
+  if(eIdx) eIdx.value = e;
+  const vEl = document.getElementById('hlZoomVal_'+idx);
+  if(vEl) vEl.textContent = s+'% - '+e+'%';
+  hlApplyZoom();
+}
+// 把当前zoom区间应用到所有K线实例
+function hlApplyZoom(){
+  for(const domId in hlStockCharts){
+    const c = hlStockCharts[domId];
+    if(!c) continue;
+    c.setOption({dataZoom:[{type:'inside', xAxisIndex:[0,1], start:hlKlineZoom.start, end:hlKlineZoom.end}]});
+  }
 }
 async function hlLoadKline(dom, domId, s){
   try{
@@ -3484,6 +3653,16 @@ function hlRenderKline(dom, domId, bars){
   const dates = bars.map(b=>b.date), ohlc = bars.map(b=>[b.open,b.close,b.low,b.high]);
   const vols = bars.map(b=>({value:b.vol, itemStyle:{color: b.close>=b.open ? 'rgba(239,83,80,0.6)':'rgba(38,166,154,0.6)'}}));
   const ma = n => { const r=[]; for(let i=0;i<bars.length;i++){ if(i<n-1){r.push('-');continue;} let x=0; for(let j=i-n+1;j<=i;j++) x+=bars[j].close; r.push(+(x/n).toFixed(2)); } return r; };
+  // 跌破10日线判断: 最新收盘 < MA10 -> 名称旁标红"破10"
+  const ma10Arr = ma(10);
+  const lastMa10 = ma10Arr[ma10Arr.length-1];
+  const lastClose = bars.length ? bars[bars.length-1].close : 0;
+  const brkEl = document.getElementById('hlbrk_'+domId);
+  if(brkEl){
+    if(typeof lastMa10 === 'number' && lastClose > 0 && lastClose < lastMa10){
+      brkEl.textContent = '破10'; brkEl.style.cssText = 'color:#ff4d4d;font-size:9px;font-weight:700;border:1px solid #ff4d4d;border-radius:2px;padding:0 2px;margin-left:2px';
+    } else { brkEl.textContent=''; brkEl.style.cssText=''; }
+  }
   const maSeries = [5,10,20].map(n=>({name:'MA'+n, type:'line', data:ma(n), symbol:'none', smooth:true, lineStyle:{color:HL_MA_COLORS[n]||'#cbd5e1', width:1}}));
   const today = hlToday();
   const endDash = bars.length ? `${bars[bars.length-1].date}` : '';
@@ -3491,17 +3670,18 @@ function hlRenderKline(dom, domId, bars){
     backgroundColor:'transparent', animation:false,
     tooltip:{trigger:'axis', axisPointer:{type:'cross'}},
     legend:{show:true, top:0, right:4, itemWidth:10, itemHeight:6, textStyle:{color:'#9aa0a6', fontSize:8}},
-    grid:[{left:34, right:8, top:14, height:'58%'},{left:34, right:8, top:'76%', height:'20%'}],
+    grid:[{left:34, right:8, top:14, height:'62%'},{left:34, right:8, top:'80%', height:'16%'}],
     xAxis:[{type:'category', data:dates, axisLabel:{color:'#9aa0a6', fontSize:8}},
            {type:'category', gridIndex:1, data:dates, axisLabel:{show:false}}],
     yAxis:[{scale:true, splitLine:{lineStyle:{color:'#252a33'}}, axisLabel:{color:'#9aa0a6', fontSize:8}},
            {gridIndex:1, splitNumber:2, axisLabel:{show:false}, splitLine:{show:false}}],
-    dataZoom:[{type:'inside', xAxisIndex:[0,1], start:0, end:100}],
+    dataZoom:[{type:'inside', xAxisIndex:[0,1], start:hlKlineZoom.start, end:hlKlineZoom.end}],  // 单图滚轮缩放; 全局slider在renderHlKlines里, 联动所有图
     series:[{name:'日K', type:'candlestick', data:ohlc,
              itemStyle:{color:'#ef5350', color0:'#26a69a', borderColor:'#ef5350', borderColor0:'#26a69a'},
              markLine:{symbol:'none', silent:true, data: endDash ? [{xAxis:endDash, lineStyle:{color:'#ffd166', type:'dashed', width:1}, label:{formatter:'今', color:'#ffd166', fontSize:8}}] : []}}
     ].concat(maSeries).concat([{name:'成交量', type:'bar', xAxisIndex:1, yAxisIndex:1, data:vols}]),
   }, true);
+  // 全局缩放由hlApplyZoom统一setOption同步, 不用echarts.connect(避免tooltip反向同步干扰)
 }
 function hlSwitchView(blk, mode){
   hlViewMode[blk] = mode;
@@ -3511,12 +3691,12 @@ function hlSwitchView(blk, mode){
   renderHlBody(idx, blk, hlGetMembers(blk));
 }
 
-// 拉实时报价
+// 拉实时报价(全量候选池, 非仅Top10), 拿回后只更新头部涨幅数字与色块(不重排 -- 累计次数稳定)
 async function fetchHlQuotes(){
   if(!HL_DATA) return;
-  const order = hlBlockOrder().slice(0, 10);
-  if(!order.length) return;
-  const blocks = order.map(blk => {
+  const allBlocks = hlBlockOrder();  // 全量候选板块(已排除公告/其他)
+  if(!allBlocks.length) return;
+  const blocks = allBlocks.map(blk => {
     const members = hlGetMembers(blk); const names = {};
     members.forEach(m => names[m.code] = m.name);
     return {block: blk, codes: members.map(m=>m.code), names};
@@ -3527,48 +3707,96 @@ async function fetchHlQuotes(){
     if(!d.success){ document.getElementById('hlStatus').textContent = '报价: '+(d.error||'失败'); return; }
     hlQuotes = {};
     d.blocks.forEach(b => hlQuotes[b.block] = b);
+    // 累计次数稳定, Top10顺序不变 -> 不重建DOM, 仅更新头部涨幅/涨停数
+    const order = hlOrderTop10();
     order.forEach((blk, idx) => {
       const q = hlQuotes[blk];
       const pctEl = document.getElementById('hlPct_'+idx), luEl = document.getElementById('hlLu_'+idx);
-      if(pctEl && q){ const pct = q.avg_pct; pctEl.textContent = (pct>=0?'+':'')+pct+'%'; pctEl.style.color = pct>0?'#ef5350':(pct<0?'#26a69a':'#9aa0a6'); }
+      // 头部涨幅 = 当日板块平均涨幅(avg_pct: 成员股当日涨幅算术平均)
+      if(pctEl && q && typeof q.avg_pct === 'number'){ const pct = q.avg_pct; pctEl.textContent = (pct>=0?'+':'')+pct.toFixed(2)+'%'; pctEl.style.color = pct>0?'#ef5350':(pct<0?'#26a69a':'#9aa0a6'); }
+      else if(pctEl){ pctEl.textContent='--'; pctEl.style.color='#9aa0a6'; }
       if(luEl && q && q.limitup) luEl.textContent = ' ⚡'+q.limitup+'板'; else if(luEl) luEl.textContent = '';
     });
+    // 已展开的色块视图刷新涨幅数字(K线视图的涨幅数字也更新)
     order.forEach((blk, idx) => {
-      if(hlExpanded[blk] && (hlViewMode[blk]||'thumb') === 'thumb') renderHlThumbs(idx, blk, hlGetMembers(blk));
+      if(hlExpanded[blk]){
+        const mode = hlViewMode[blk]||'kline';
+        if(mode === 'thumb') renderHlThumbs(idx, blk, hlGetMembers(blk));
+        else updateHlKlinePcts(idx, blk);
+      }
     });
-    document.getElementById('hlStatus').textContent = `实时 ${d.ts} · ${d.source}`;
+    document.getElementById('hlStatus').textContent = `${hlIsTradeTime()?'实时':'收盘'} ${d.ts} · ${d.source} · 按累计次数排`;
   }catch(e){ document.getElementById('hlStatus').textContent = '报价异常: '+e; }
+}
+// 仅更新K线视图里各股的当日涨幅数字(不重载K线, 避免闪烁)
+function updateHlKlinePcts(idx, blk){
+  const card = document.querySelector(`.hl-block[data-block="${hlCssEscape(blk)}"]`);
+  if(!card) return;
+  const q = hlQuotes[blk] || {}; const qMap = {}; (q.stocks||[]).forEach(s => qMap[s.code] = s.pct);
+  card.querySelectorAll('.hl-kline-card').forEach(el => {
+    const code = el.dataset.code;
+    const pct = qMap[code];
+    const pctEl = el.querySelector('.hl-kpct');
+    if(pctEl && pct !== undefined){
+      pctEl.textContent = (pct>=0?'+':'')+pct+'%';
+      pctEl.className = 'hl-kpct ' + hlPctCls(pct);
+    } else if(pctEl){
+      pctEl.textContent = '--';
+      pctEl.className = 'hl-kpct s-flat';
+    }
+  });
 }
 function startHlRefresh(){
   stopHlRefresh();
-  if(hlIsTradeTime()) fetchHlQuotes(); else { document.getElementById('hlStatus').textContent='非交易时段(显示历史累计)'; }
-  hlRefreshTimer = setInterval(()=>{ if(hlIsTradeTime()) fetchHlQuotes(); }, 8000);
+  // 非交易时段tqcenter仍能返回收盘涨幅, 拉一次显示; 交易时段8秒轮询实时刷新
+  fetchHlQuotes();
+  if(hlIsTradeTime()){
+    hlRefreshTimer = setInterval(()=>{ fetchHlQuotes(); }, 8000);
+  }
 }
 function stopHlRefresh(){ if(hlRefreshTimer){ clearInterval(hlRefreshTimer); hlRefreshTimer = null; } }
 
-// 下方四图(echarts: 平均涨幅/活跃数/跌破警告/收回)
-function renderHlCharts(order){
+// 下方四图(基于HL_DATA_CHARTS独立区间: 平均涨幅/活跃数/跌破警告/收回)
+function renderHlCharts2(){
   const wrap = document.getElementById('hlCharts');
-  if(!HL_DATA || !HL_DATA.blocks_summary.length){ wrap.innerHTML='<div class="hl-empty">无数据</div>'; return; }
+  if(!HL_DATA_CHARTS || !HL_DATA_CHARTS.blocks_summary || !HL_DATA_CHARTS.blocks_summary.length){ wrap.innerHTML='<div class="hl-empty">无数据</div>'; return; }
   // 销毁旧实例
   Object.values(hlFourCharts).forEach(c => { try{c.dispose();}catch(_){} });
   for(const k in hlFourCharts) delete hlFourCharts[k];
-  const summary = {}; HL_DATA.blocks_summary.forEach(b => summary[b.block] = b);
-  const dates = HL_DATA.dates;
+  const D = HL_DATA_CHARTS;
+  const summary = {}; D.blocks_summary.forEach(b => summary[b.block] = b);
+  const dates = D.dates;
+  // order: 该区间出现过的全部板块(按累计涨停次数排, 不截断 -- 对齐复盘页globalBlockOrder)
+  const metric = {}; const seen = new Set();
+  D.by_date.forEach(day => day.blocks.forEach(b => {
+    if(!seen.has(b.block)){ seen.add(b.block); metric[b.block] = (b.times_count||0); }
+  }));
+  const order = Object.keys(metric).sort((a,b) => (metric[b]-metric[a]) || (a<b?-1:1));
   const dayCounts = {}; let globalMaxCount = 0;
-  HL_DATA.by_date.forEach(day => day.blocks.forEach(b => {
+  D.by_date.forEach(day => day.blocks.forEach(b => {
     if(!dayCounts[b.block]) dayCounts[b.block] = {};
     const c = b.active_count || 0; dayCounts[b.block][day.date] = c;
     if(c > globalMaxCount) globalMaxCount = c;
   }));
   let globalMaxWarn = 0;
-  HL_DATA.blocks_summary.forEach(b => Object.values(b.warn_count||{}).forEach(v => { if(typeof v==='number'&&v>globalMaxWarn) globalMaxWarn=v; }));
+  D.blocks_summary.forEach(b => Object.values(b.warn_count||{}).forEach(v => { if(typeof v==='number'&&v>globalMaxWarn) globalMaxWarn=v; }));
+  // 全局avg yRange(跨板块统一上下界, 对齐复盘页avgChart使波动可比)
+  let avgLo = Infinity, avgHi = -Infinity;
+  D.blocks_summary.forEach(b => Object.values(b.avg_pct||{}).forEach(v => { if(typeof v==='number'){ if(v<avgLo) avgLo=v; if(v>avgHi) avgHi=v; } }));
+  const avgRange = (avgLo===Infinity) ? null : {lo:avgLo, hi:avgHi};
 
   wrap.innerHTML = order.map(blk => {
     const b = summary[blk];
-    if(!b) return '';
+    const tot = metric[blk]||0;
+    // summary缺失(后端roster空跳过)时渲染placeholder, 不丢板块 -- 对齐复盘页
+    if(!b){
+      return `<div class="hl-chart-card placeholder" data-block="${hlEsc(blk)}">
+        <h4>${hlEsc(blk)}</h4><div class="csub">累计${tot}次 · 无个股明细</div>
+        <div class="hl-empty" style="height:120px;display:flex;align-items:center;justify-content:center">该板块个股未入选跟踪, 无累计趋势</div>
+      </div>`;
+    }
     return `<div class="hl-chart-card" data-block="${hlEsc(blk)}">
-      <h4>${hlEsc(blk)}</h4><div class="csub">${hlStatLabel(blk)}</div>
+      <h4>${hlEsc(blk)}</h4><div class="csub">累计${tot}次</div>
       <h5>① 累计平均涨幅</h5><div class="hl-chart-zoom" id="hl4_avg_${hlEsc(blk)}" style="height:120px"></div>
       <h5>② 每日活跃个股数</h5><div class="hl-chart-zoom" id="hl4_count_${hlEsc(blk)}" style="height:100px"></div>
       <h5>③ 每日跌破10日线警告</h5><div class="hl-chart-zoom" id="hl4_warn_${hlEsc(blk)}" style="height:100px"></div>
@@ -3577,43 +3805,107 @@ function renderHlCharts(order){
   }).join('');
 
   order.forEach(blk => {
-    const b = summary[blk]; if(!b) return;
+    const b = summary[blk]; if(!b) return;  // placeholder板块跳过绘图
     const counts = dayCounts[blk] || {};
-    hlRenderAvgLine(`hl4_avg_${blk}`, dates, b.avg_pct||{});
-    hlRenderBar(`hl4_count_${blk}`, dates, counts, globalMaxCount, '#60a5fa');
-    hlRenderBar(`hl4_warn_${blk}`, dates, b.warn_count||{}, globalMaxWarn, '#ef5350');
+    hlRenderAvgLine(`hl4_avg_${blk}`, dates, b.avg_pct||{}, avgRange);
+    hlRenderBar(`hl4_count_${blk}`, dates, counts, globalMaxCount, '#60a5fa', true);  // 三色: 按比值 红≥80%/橙50-80%/青<50%
+    hlRenderBar(`hl4_warn_${blk}`, dates, b.warn_count||{}, globalMaxWarn, '#ef5350', false);
     hlRenderRecover(`hl4_recover_${blk}`, dates, b.recover_rate||{});
   });
 }
-// 累计平均涨幅折线
-function hlRenderAvgLine(domId, dates, series){
+// 累计平均涨幅折线(SVG手绘逐段变色: 相邻日变化±5为界, 对齐复盘页avgChart配色; 比echarts拆N段series轻量得多)
+function hlRenderAvgLine(domId, dates, series, yRange){
   const dom = document.getElementById(domId); if(!dom) return;
-  const chart = echarts.init(dom, 'dark'); hlFourCharts[domId] = chart;
-  const vals = dates.map(d => { const v = series[d]; return (typeof v==='number') ? v : null; });
-  chart.setOption({
-    backgroundColor:'transparent', animation:false,
-    tooltip:{trigger:'axis'},
-    grid:{left:36, right:8, top:8, bottom:18},
-    xAxis:{type:'category', data:dates, axisLabel:{color:'#9aa0a6', fontSize:8, interval: Math.max(0, Math.floor(dates.length/6)-1)}},
-    yAxis:{type:'value', scale:true, axisLabel:{color:'#9aa0a6', fontSize:8}, splitLine:{lineStyle:{color:'#252a33'}}},
-    series:[{type:'line', data:vals, smooth:false, symbol:'none', lineStyle:{width:1.2, color:'#facc15'},
-      areaStyle:{color:{type:'linear',x:0,y:0,x2:0,y2:1,colorStops:[{offset:0,color:'rgba(250,204,21,0.15)'},{offset:1,color:'rgba(250,204,21,0)'}]}},
-      markLine:{symbol:'none', silent:true, data:[{yAxis:0, lineStyle:{color:'#666', type:'dashed', width:1}}]}}],
-  }, true);
+  // 释放同名echarts实例(若有)
+  if(hlFourCharts[domId]){ try{hlFourCharts[domId].dispose();}catch(_){} delete hlFourCharts[domId]; }
+  const pts0 = dates.map((d,i)=>({i,d,v:series[d]}));
+  const vals = pts0.filter(p=>typeof p.v==='number').map(p=>p.v);
+  if(!vals.length){ dom.innerHTML='<div class="hl-empty" style="height:60px;display:flex;align-items:center;justify-content:center">无涨幅数据</div>'; return; }
+  const W = dom.clientWidth || 1100, H = 120, padL = 36, padR = 10, padT = 12, padB = 20;
+  const iw = W - padL - padR, ih = H - padT - padB;
+  // yRange(全局统一)时适度向0收缩15%让波动显眼, 超出截断; 否则用本板块min/max
+  let dmin, dmax;
+  if(yRange){
+    dmin = yRange.lo; dmax = yRange.hi;
+    if(dmin === dmax){ dmin -= 1; dmax += 1; }
+    const span0 = dmax - dmin, shrink = span0 * 0.15;
+    dmin += shrink; dmax -= shrink;
+  } else {
+    dmin = Math.min(...vals); dmax = Math.max(...vals);
+    if(dmin === dmax){ dmin -= 1; dmax += 1; }
+  }
+  const pad = (dmax - dmin) * 0.08;
+  const lo = dmin - pad, hi = dmax + pad, span = hi - lo;
+  const clamp = v => Math.max(lo, Math.min(hi, v));
+  const x = i => padL + (dates.length <= 1 ? iw/2 : iw*i/(dates.length-1));
+  const y = v => padT + ih - ((clamp(v) - lo)/span)*ih;
+  const pts = pts0.map(p => ({i:p.i, d:p.d, v:p.v, x:x(p.i), y: typeof p.v==='number' ? y(p.v) : null}));
+  const valid = pts.filter(p => p.y !== null);
+  // 段色(相邻日变化): 黄#ffd60a(涨≥5)/红#ff4d4f(涨<5)/紫#b15cff(跌≥5)/绿#52c41a(跌<5)/灰#9aa0a6(=0)
+  const segCol = delta => {
+    const mag = Math.abs(delta);
+    if(delta > 0) return mag >= 5 ? '#ffd60a' : '#ff4d4f';
+    if(delta < 0) return mag >= 5 ? '#b15cff' : '#52c41a';
+    return '#9aa0a6';
+  };
+  // 点色(绝对值): 同样的黄/红/紫/绿/灰
+  const dotCol = v => {
+    const mag = Math.abs(v);
+    if(v > 0) return mag >= 5 ? '#ffd60a' : '#ff4d4f';
+    if(v < 0) return mag >= 5 ? '#b15cff' : '#52c41a';
+    return '#9aa0a6';
+  };
+  const lp = arr => arr.map((p,i) => (i?'L':'M') + p.x.toFixed(1) + ' ' + p.y.toFixed(1)).join(' ');
+  let segs = '';
+  for(let k=1;k<valid.length;k++){
+    const a = valid[k-1], b = valid[k];
+    segs += `<path d="${lp([a,b])}" stroke="${segCol(b.v - a.v)}" stroke-width="1.6" fill="none"/>`;
+  }
+  const dots = valid.map(p => `<circle cx="${p.x.toFixed(1)}" cy="${p.y.toFixed(1)}" r="2.5" fill="${dotCol(p.v)}"/>
+    <text x="${p.x.toFixed(1)}" y="${(p.y-5).toFixed(1)}" font-size="8" text-anchor="middle" fill="#cbd5e1">${p.v.toFixed(1)}</text>`).join('');
+  let zeroLine = '';
+  if(lo < 0 && hi > 0){
+    const zy = y(0).toFixed(1);
+    zeroLine = `<line x1="${padL}" y1="${zy}" x2="${W-padR}" y2="${zy}" stroke="#666" stroke-dasharray="3 3"/>
+      <text x="4" y="${(zy-3).toFixed(1)}" font-size="8" fill="#9aa0a6">0</text>`;
+  }
+  const xlabels = dates.map((d,i) => `<text x="${x(i).toFixed(1)}" y="${H-6}" font-size="8" text-anchor="middle" fill="#9aa0a6">${(d.slice(4,6))+'/'+(d.slice(6,8))}</text>`).join('');
+  const yTop = `<text x="4" y="${padT+4}" font-size="8" fill="#9aa0a6">${hi.toFixed(1)}</text>`;
+  const yBot = `<text x="4" y="${H-padB}" font-size="8" fill="#9aa0a6">${lo.toFixed(1)}</text>`;
+  dom.innerHTML = `<svg width="100%" viewBox="0 0 ${W} ${H}" style="overflow:visible">${yTop}${yBot}${zeroLine}${segs}${dots}${xlabels}</svg>`;
 }
-// 柱状图(活跃数/警告)
-function hlRenderBar(domId, dates, series, maxVal, color){
+// 柱状图(SVG手绘); threeColor=true时按比值三色(对齐复盘页countBarChart: 红#e63946≥80%/橙#ff8a3d 50-80%/青#4dd0e1<50%); 否则单色
+function hlRenderBar(domId, dates, series, maxVal, color, threeColor){
   const dom = document.getElementById(domId); if(!dom) return;
-  const chart = echarts.init(dom, 'dark'); hlFourCharts[domId] = chart;
+  if(hlFourCharts[domId]){ try{hlFourCharts[domId].dispose();}catch(_){} delete hlFourCharts[domId]; }
   const vals = dates.map(d => { const v = series[d]; return (typeof v==='number') ? v : 0; });
-  chart.setOption({
-    backgroundColor:'transparent', animation:false,
-    tooltip:{trigger:'axis'},
-    grid:{left:36, right:8, top:8, bottom:18},
-    xAxis:{type:'category', data:dates, axisLabel:{color:'#9aa0a6', fontSize:8, interval: Math.max(0, Math.floor(dates.length/6)-1)}},
-    yAxis:{type:'value', max: maxVal||undefined, axisLabel:{color:'#9aa0a6', fontSize:8}, splitLine:{lineStyle:{color:'#252a33'}}},
-    series:[{type:'bar', data:vals, itemStyle:{color}, barWidth:'60%'}],
-  }, true);
+  const maxNum = (maxVal && maxVal>0) ? maxVal : Math.max(...vals, 1);
+  const W = dom.clientWidth || 1100, H = 100, padL = 36, padR = 10, padT = 10, padB = 20;
+  const iw = W - padL - padR, ih = H - padT - padB;
+  const n = dates.length, gap = 2;
+  const bw = n > 1 ? Math.max(4, (iw - gap*(n-1))/n) : Math.min(iw, 40);
+  const slot = n > 1 ? iw/n : iw;
+  const cx = i => padL + slot/2 + i*slot;
+  const y = v => padT + ih - (v/maxNum)*ih;
+  // 网格线: 0/中/顶
+  let grid = '';
+  [0, Math.round(maxNum/2), maxNum].forEach(t => {
+    const gy = y(t).toFixed(1);
+    grid += `<line x1="${padL}" y1="${gy}" x2="${W-padR}" y2="${gy}" stroke="#252a33" stroke-width="0.5"/>
+      <text x="4" y="${(parseFloat(gy)+3).toFixed(1)}" font-size="8" fill="#9aa0a6">${t}</text>`;
+  });
+  let bars = '';
+  dates.forEach((d,i) => {
+    const c = vals[i];
+    if(typeof c !== 'number' || c <= 0) return;
+    const bx = cx(i), by = y(c), bh = padT + ih - by;
+    const ratio = c/maxNum;
+    const col = threeColor ? (ratio >= 0.8 ? '#e63946' : (ratio >= 0.5 ? '#ff8a3d' : '#4dd0e1')) : color;
+    bars += `<rect x="${(bx - bw/2).toFixed(1)}" y="${by.toFixed(1)}" width="${bw.toFixed(1)}" height="${Math.max(bh,1).toFixed(1)}" rx="1.5" fill="${col}" opacity="0.9"/>
+      <text x="${bx.toFixed(1)}" y="${(by-2).toFixed(1)}" font-size="8" text-anchor="middle" fill="#cbd5e1">${c}</text>`;
+  });
+  const xlabels = dates.map((d,i) => `<text x="${cx(i).toFixed(1)}" y="${H-6}" font-size="8" text-anchor="middle" fill="#9aa0a6">${d.slice(4,6)+'/'+d.slice(6,8)}</text>`).join('');
+  dom.innerHTML = `<svg width="100%" viewBox="0 0 ${W} ${H}" style="overflow:visible">${grid}${bars}${xlabels}</svg>`;
 }
 // 跌破/收回双柱
 function hlRenderRecover(domId, dates, series){

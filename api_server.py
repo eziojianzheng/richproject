@@ -2877,6 +2877,7 @@ _concept_dist_timelines = {}     # {concept: [{ts, trade_min, buckets:{...}}]}, 
 _concept_dist_cache = {}         # {concept: {'data':..., 'ts':...}}, 5秒缓存
 _concept_dist6_timeline = []     # [{ts, trade_min, buckets:{concept:{g3_5,g5_7,zt_up,d3_5,d5_7,zt_down}}}], 最多200点
 _concept_zt_session_date = None  # 当前排名时间线所属交易日, 跨日自动清空
+_dist6_hist_cache = {}           # {date_int: {'data':[...], 'ts':float, 'loading':bool}} 5分钟分时回放缓存(后台拉取, 当天只算一次)
 
 # 排除的宽泛概念(成分股过多, 无实际板块意义)
 _EXCLUDED_CONCEPTS = {'国企改革', '深股通', '沪股通', '融资融券', '市场连板股', 'ST板块'}
@@ -2911,8 +2912,13 @@ def _load_concept_members():
         print(_report_log)
         return result
     except Exception as e:
-        print(f'[概念] 加载成分股失败: {e}')
-        return _concept_members_cache or {}
+        # DB 抖动(连接超时/不可达)时优先返回过期缓存, 避免 zt-stats 间歇性报
+        # "无概念成分股数据"。仅在从未成功加载过时才返回空。
+        if _concept_members_cache:
+            print(f'[概念] 加载成分股失败, 降级使用过期缓存: {e}')
+            return _concept_members_cache
+        print(f'[概念] 加载成分股失败且无缓存可用: {e}')
+        return {}
 
 
 def _time_to_trade_min(time_str):
@@ -3025,8 +3031,9 @@ def _build_historical_timeline(realtime_zt_codes=None, date_str=None, zt_codes_o
             date_int = int(date_str)
             query_date = date_str
         elif realtime_zt_codes:
-            date_int = int(_dt.now().strftime('%Y%m%d'))
-            query_date = _dt.now().strftime('%Y-%m-%d')
+            # monitor场景: 周末/节假日查看时, 用最近交易日命中真实有分时数据的日期
+            date_int = _latest_trade_date()
+            query_date = str(date_int)[:4] + '-' + str(date_int)[4:6] + '-' + str(date_int)[6:8]
         else:
             conn = _db.get_conn()
             with conn.cursor() as cur:
@@ -3124,6 +3131,155 @@ def _build_historical_timeline(realtime_zt_codes=None, date_str=None, zt_codes_o
     except Exception as e:
         print(f'[概念] 历史回放失败: {e}')
         return [], set()
+
+
+def _latest_trade_date(today_int=None):
+    """返回 ≤ today_int 的最近交易日(YYYYMMDD int)。
+    优先用 tqcenter trading_dates(实时交易日历, 最准);
+    失败则从已加载的 _member_closes 日线缓存取 ≤ today 的最大日期;
+    都失败回退到 today_int。周末/节假日 today_int 会被修正到最近交易日,
+    使盘后/周末查看时, 分时回放命中真实有数据的交易日(.lc1/mootdx)。"""
+    if today_int is None:
+        from datetime import datetime as _dt
+        today_int = int(_dt.now().strftime('%Y%m%d'))
+    today_str = str(today_int)
+    # 1. tqcenter 交易日历(最准)
+    try:
+        import tdx_source as _ts
+        dates = _ts.trading_dates(market='SH', count=10)
+        if dates:
+            cand = [int(d) for d in dates if str(d) <= today_str]
+            if cand:
+                return max(cand)
+    except Exception:
+        pass
+    # 2. _member_closes 日线缓存兜底
+    try:
+        for _code, m in _member_closes.items():
+            if not m:
+                continue
+            cand = [d for d in m.keys() if d <= today_str]
+            if cand:
+                return int(max(cand))
+            break
+    except Exception:
+        pass
+    return today_int
+
+
+def _build_dist6_historical_timeline(ever_concepts, date_int):
+    """按5分钟间隔回放曾进Top10概念的涨跌分布(6档)。
+    盘后mootdx minutes可取全天分时, 每5分钟(idx 0,5,...,235, 共48点)统计每个概念
+    所有成员股的涨幅分布。涨幅=(5分钟价-昨收)/昨收*100, 昨收取_member_closes中
+    <date_int的最近日期收盘。返回 [{ts, trade_min, buckets:{concept:{6档}}}] 或 []。"""
+    try:
+        from datetime import datetime as _dt
+        concept_map = _load_concept_members()
+        if not concept_map or not ever_concepts:
+            return []
+        # 收集这些概念的成员股(去重)
+        all_codes = set()
+        concept_codes = {}  # {concept: set(code)}
+        for con in ever_concepts:
+            codes = concept_map.get(con)
+            if codes:
+                concept_codes[con] = set(codes)
+                all_codes.update(codes)
+        if not all_codes:
+            return []
+        all_codes = sorted(all_codes)
+
+        # 拉全天分时(复用按日期缓存, 当天只拉一次)
+        minute_map = _fetch_zt_minutes(all_codes, date_int)
+        if not minute_map:
+            return []
+
+        # 昨收: 每只股在 _member_closes 中 < date_int 的最近日期收盘
+        date_str = str(date_int)
+        prev_close_map = {}  # {code: prev_close}
+        for code in all_codes:
+            m = _member_closes.get(code)
+            if not m:
+                continue
+            # 找 < date_str 的最大日期
+            prev_dates = [d for d in m.keys() if d < date_str]
+            if prev_dates:
+                pd = max(prev_dates)
+                pc = m[pd]
+                if pc and pc > 0:
+                    prev_close_map[code] = float(pc)
+
+        # 5分钟采样点: idx 0,5,10,...,235 (48点)
+        sample_idxs = list(range(0, 240, 5))
+        # idx -> trade_min (9:30=5, 13:00=126)
+        def _idx_to_tm(idx):
+            return idx + 5 if idx < 120 else idx + 6
+
+        timeline = []
+        for idx in sample_idxs:
+            tm = _idx_to_tm(idx)
+            # 逐概念统计6档
+            buckets = {}
+            for con, codes in concept_codes.items():
+                dist6 = {'g3_5': 0, 'g5_7': 0, 'zt_up': 0, 'd3_5': 0, 'd5_7': 0, 'zt_down': 0}
+                for code in codes:
+                    prices = minute_map.get(code)
+                    if not prices or idx >= len(prices):
+                        continue
+                    pc = prev_close_map.get(code)
+                    if not pc or pc <= 0:
+                        continue
+                    p = prices[idx]
+                    if p <= 0:
+                        continue
+                    pct = (p - pc) / pc * 100
+                    thresh = 19.8 if code.startswith(('30', '68')) else 9.8
+                    if pct >= thresh:
+                        dist6['zt_up'] += 1
+                    elif pct >= 5:
+                        dist6['g5_7'] += 1
+                    elif pct >= 3:
+                        dist6['g3_5'] += 1
+                    elif pct <= -thresh:
+                        dist6['zt_down'] += 1
+                    elif pct <= -5:
+                        dist6['d5_7'] += 1
+                    elif pct <= -3:
+                        dist6['d3_5'] += 1
+                buckets[con] = dist6
+            timeline.append({
+                'ts': _time_to_label(tm),
+                'trade_min': tm,
+                'buckets': buckets,
+            })
+        return timeline
+    except Exception as e:
+        print(f'[概念] dist6历史回放失败: {e}')
+        return []
+
+
+def _get_dist6_hist(ever_concepts, date_int):
+    """获取dist6历史回放缓存: 有则直接返回, 无则触发后台拉取(降级返回None)。
+    盘后mootdx拉3300只分时约85秒, 不能阻塞zt-stats请求, 故后台异步 + 当天缓存。"""
+    global _dist6_hist_cache
+    cache = _dist6_hist_cache.get(date_int)
+    if cache and cache.get('data') is not None:
+        return cache['data']
+    # 无缓存: 触发后台拉取(幂等, loading标志防重复)
+    if not cache or (not cache.get('loading') and cache.get('data') is None):
+        _dist6_hist_cache[date_int] = {'data': None, 'ts': time.time(), 'loading': True}
+        def _bg():
+            try:
+                t0 = time.time()
+                tl = _build_dist6_historical_timeline(ever_concepts, date_int)
+                _dist6_hist_cache[date_int] = {'data': tl, 'ts': time.time(), 'loading': False}
+                print(f'[概念] dist6回放后台完成 date={date_int}: {len(tl)}点 耗时{time.time()-t0:.0f}s')
+            except Exception as e:
+                _dist6_hist_cache[date_int] = {'data': [], 'ts': time.time(), 'loading': False}
+                print(f'[概念] dist6回放后台失败: {e}')
+        import threading
+        threading.Thread(target=_bg, daemon=True).start()
+    return None  # 首次降级, 后续请求(拉完后)才有数据
 
 
 def _time_to_label(trade_min):
@@ -3419,6 +3575,26 @@ def monitor_concept_zt_stats():
                     'trade_min': entry.get('trade_min', 0),
                     'ranks': {c: rank_map.get(c) for c in ever_list},
                 })
+
+            # dist6 涨跌分布历史回放: 5分钟间隔补全全天(盘后mootdx分时可用)。
+            # 后台异步拉取(约85秒), 首次降级用实时点, 拉完后缓存供后续请求。
+            # 历史段取首个实时点之前的5分钟采样; 实时段保留实时采样点。
+            dist6_hist = _get_dist6_hist(ever_list, _latest_trade_date())
+            if dist6_hist:
+                dist6_out = []
+                for entry in dist6_hist:
+                    if entry.get('trade_min', 0) < first_real_min:
+                        dist6_out.append({
+                            'ts': entry['ts'],
+                            'trade_min': entry.get('trade_min', 0),
+                            'buckets': {c: entry['buckets'].get(c, {}) for c in ever_list},
+                        })
+                for entry in _concept_dist6_timeline:
+                    dist6_out.append({
+                        'ts': entry['ts'],
+                        'trade_min': entry.get('trade_min', 0),
+                        'buckets': {c: entry['buckets'].get(c, {}) for c in ever_list},
+                    })
 
         # 追加当前实时数据作为最后一个点, 确保排名/涨停数与concepts完全一致
         # (历史回放的分时封板判断 与 实时报价的pct判断 可能不一致)
