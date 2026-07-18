@@ -1451,6 +1451,7 @@ function initGridStack() {
 try { initGridStack(); } catch(e) { console.error('[initGridStack] 异常:', e); window._errlog.push('[initGridStack] ' + e.message); }
 
 // ===== 盯盘分区 tab 切换 =====
+var _hlLoaded = false;   // 湖南人盯盘是否已初始化(var提升, 避免switchMonitorTab在let声明前调用时TDZ报错被吞)
 function switchMonitorTab(tab) {
   document.querySelectorAll('.mon-tab').forEach(el => el.classList.toggle('active', el.dataset.mtab === tab));
   document.getElementById('mon-view-board').style.display = tab === 'board' ? '' : 'none';
@@ -3306,7 +3307,7 @@ setInterval(() => { if (isTradeTime && isTradeTime()) loadChainBoard(); }, 20000
 
 // ===== 湖南人盯盘 (mon-view-hnrlive) =====
 // Top10板块(按累计涨停次数排名, 5/10日可切) + 色块/K线切换 + 下方四图(图表区独立区间, 同累计排序)
-let _hlLoaded = false;
+// _hlLoaded 已在 switchMonitorTab 前用 var 声明(避免TDZ)
 let HL_DATA = null;              // Top10候选池DATA(近5/10日复盘, 按累计次数排)
 let HL_DATA_CHARTS = null;       // 图表区DATA(用户选区间, 独立compute)
 let hlWindow = 5;                // Top10候选池窗口: 5 或 10 个交易日
