@@ -4770,13 +4770,14 @@ function czmRenderKline(dom, domId, bars, s, source, fq){
   chart.resize();
 }
 
-// ---- 右侧行为分类(按当前概念, 按side显示对应8项) ----
+// ---- 右侧行为分类(选概念时按side显示对应8项; 未选概念时显示全部16项, 跨概念归档已打标签) ----
 function renderCzmCats(){
   const grid=document.getElementById('czmCatGrid');
   if(!grid) return;
   const concept = czmCurConcept ? czmCurConcept.concept : null;
-  const side = czmCurConcept ? czmCurConcept.side : 'rise';
-  const catLabels = (side==='fall') ? CZM_LABELS_DN : CZM_LABELS_UP;
+  const side = czmCurConcept ? czmCurConcept.side : null;
+  // 未选概念: 显示全部16项(上涨8+下跌8); 选了概念: 只显示该side的8项
+  const catLabels = side ? ((side==='fall') ? CZM_LABELS_DN : CZM_LABELS_UP) : CZM_LABELS;
   grid.innerHTML = catLabels.map(lb=>{
     // 只显示当前概念下的分类项; 匹配多选(labels数组)与旧格式(单label)
     const items = Object.values(czmLabelMap).filter(x=>{
