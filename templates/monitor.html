@@ -360,12 +360,24 @@
   .hl-kline-info .ki-name { font-weight:600; color:var(--text-primary); }
   .hl-kline-info .s-code { color:var(--text-muted); }
   .hl-kline-chart { height:160px; width:100%; }
-  /* 下方四图卡片 */
-  .hl-chart-card { background:var(--bg-card); border:1px solid var(--border-light); border-radius:8px; padding:6px 8px; margin-bottom:8px; }
-  .hl-chart-card h4 { font-size:12px; color:var(--text-primary); margin:2px 0; }
-  .hl-chart-card .csub { font-size:9px; color:var(--text-muted); margin-bottom:4px; }
-  .hl-chart-card h5 { font-size:10px; color:var(--text-muted); margin:6px 0 2px; }
-  .hl-chart-zoom { cursor:zoom-in; }
+  /* 下方四图卡片 -- 对齐复盘页 .chart-card 规格(横向220px + 四图SVG同款) */
+  .hl-charts-scroll { display:flex; gap:12px; overflow-x:auto; padding-bottom:10px; align-items:flex-start; }
+  .hl-charts-scroll::-webkit-scrollbar { height:9px; }
+  .hl-charts-scroll::-webkit-scrollbar-thumb { background:var(--scrollbar-bg, #2a2f3a); border-radius:5px; }
+  .hl-chart-card {
+    flex:0 0 auto; width:220px; background:var(--chart-bg, var(--bg-card));
+    border:1px solid var(--border-light); border-radius:9px; padding:8px 10px;
+  }
+  .hl-chart-card.placeholder { background:transparent; border:1px dashed var(--border-color); }
+  .hl-chart-card h4 { font-size:13px; color:var(--text-primary); margin-bottom:2px; }
+  .hl-chart-card .csub { font-size:10px; color:var(--text-muted); margin-bottom:6px; }
+  .hl-chart-card h5 { font-size:11px; color:var(--text-secondary); margin:8px 0 2px; display:flex; justify-content:space-between; align-items:center; }
+  .hl-chart-card h5 .zoom-hint { font-size:9px; color:var(--text-muted); font-weight:normal; }
+  .hl-chart-zoom { cursor:pointer; border-radius:6px; transition:background .15s; padding:2px; }
+  .hl-chart-zoom:hover { background:var(--bg-hover, rgba(255,255,255,.06)); }
+  /* 四图点击放大 modal (对齐复盘页 .compute-modal 行为) */
+  .hl-zoom-modal { position:fixed; inset:0; background:rgba(0,0,0,.6); display:none; align-items:center; justify-content:center; z-index:300; }
+  .hl-zoom-modal.show { display:flex; }
 </style>
 </head>
 <body>
@@ -3383,6 +3395,24 @@ function hlGetMembers(blk){
   return members;
 }
 
+// 湖南人盯盘用户状态持久化(monitor_hnrlive_state): 窗口/区间/展开/视图模式
+// 沿用本页 monitor_ 命名规范; 全部状态合并到一个 JSON key, 避免散落
+const HL_STATE_KEY = 'monitor_hnrlive_state';
+function hlSaveState(){
+  try{
+    localStorage.setItem(HL_STATE_KEY, JSON.stringify({
+      win: hlWindow,
+      start: document.getElementById('hlStart').value,
+      end: document.getElementById('hlEnd').value,
+      expanded: hlExpanded,
+      viewMode: hlViewMode
+    }));
+  }catch(e){}
+}
+function hlLoadState(){
+  try{ return JSON.parse(localStorage.getItem(HL_STATE_KEY) || '{}'); }catch(e){ return {}; }
+}
+
 // 初始化: Top10区固定近10日复盘为候选池(无日期筛选); 图表区填日期下拉供独立compute
 function initHnrlive(){
   fetchWithTimeout('/api/hot/dates', {}, 10000).then(r=>r.json()).then(d=>{
@@ -3394,11 +3424,23 @@ function initHnrlive(){
     let endIdx = endDates.length - 1;
     if(endIdx < 0){ endIdx = dates.length - 1; if(dates[endIdx]===todayStr && dates.length>1) endIdx-=1; }
     const end = (endDates[endIdx] || dates[endIdx]);
-    // 图表区日期下拉(默认近10日, 用户可改)
+    // 图表区日期下拉(默认近10日, 用户可改); 恢复上次保存的区间(若仍在日期列表内)
+    const saved = hlLoadState();
     const cStartIdx = Math.max(0, endIdx - 9);
-    const cStart = endDates[cStartIdx] || dates[cStartIdx];
+    const cStartDef = endDates[cStartIdx] || dates[cStartIdx];
+    const cStart = (saved.start && endDates.includes(saved.start)) ? saved.start : cStartDef;
+    const cEnd = (saved.end && endDates.includes(saved.end)) ? saved.end : end;
     document.getElementById('hlStart').innerHTML = endDates.map(dd=>`<option value="${dd}"${dd===cStart?' selected':''}>${dd}</option>`).join('');
-    document.getElementById('hlEnd').innerHTML = endDates.map(dd=>`<option value="${dd}"${dd===end?' selected':''}>${dd}</option>`).join('');
+    document.getElementById('hlEnd').innerHTML = endDates.map(dd=>`<option value="${dd}"${dd===cEnd?' selected':''}>${dd}</option>`).join('');
+    // 恢复5/10日窗口(默认5)
+    if(saved.win === 10){ hlWindow = 10; }
+    else { hlWindow = 5; }
+    document.querySelectorAll('#hl-window span').forEach(x => {
+      x.classList.toggle('active', parseInt(x.dataset.win) === hlWindow);
+    });
+    // 恢复展开/视图模式(仅作为内存状态, renderHlBlocks时据此渲染)
+    if(saved.expanded && typeof saved.expanded === 'object') hlExpanded = saved.expanded;
+    if(saved.viewMode && typeof saved.viewMode === 'object') hlViewMode = saved.viewMode;
     // Top10区: 按hlWindow(5/10日)取候选池区间
     hlLoadTop10();
     // 图表区: 首次用同区间compute
@@ -3408,6 +3450,7 @@ function initHnrlive(){
   document.querySelectorAll('#hl-window span').forEach(s => s.onclick = () => {
     document.querySelectorAll('#hl-window span').forEach(x => x.classList.remove('active'));
     s.classList.add('active'); hlWindow = parseInt(s.dataset.win)||5;
+    hlSaveState();
     hlLoadTop10();
   });
 }
@@ -3479,6 +3522,7 @@ async function loadHlCharts(){
     const d = await r.json();
     if(!d.success){ status.textContent = '失败: '+(d.error||''); return; }
     hlChartTaskId = d.task_id; hlPollHlCharts();
+    hlSaveState();   // 保存用户选定的图表区间(下次进入自动恢复并重算)
   }catch(e){ status.textContent = '请求异常: '+e; }
 }
 function hlPollHlCharts(){
@@ -3545,6 +3589,7 @@ function hlToggleBlock(blk){
     renderHlBody(idx, blk, hlGetMembers(blk));
     if(hlIsTradeTime()) fetchHlQuotes();
   }
+  hlSaveState();
 }
 function renderHlBody(idx, blk, members){
   const body = document.getElementById('hlBody_'+idx);
@@ -3690,6 +3735,7 @@ function hlSwitchView(blk, mode){
   if(!card) return;
   const body = card.querySelector('.hl-body'); const idx = body.dataset.idx;
   renderHlBody(idx, blk, hlGetMembers(blk));
+  hlSaveState();
 }
 
 // 拉实时报价(全量候选池, 非仅Top10), 拿回后只更新头部涨幅数字与色块(不重排 -- 累计次数稳定)
@@ -3757,6 +3803,169 @@ function startHlRefresh(){
 }
 function stopHlRefresh(){ if(hlRefreshTimer){ clearInterval(hlRefreshTimer); hlRefreshTimer = null; } }
 
+// ===== 复盘页同款四图绘制函数(原样复制自 hot_track.html, 保证规格一致) =====
+// avgChart/countBarChart/recoverLineChart: big=false 为卡片缩略图(W=440), big=true 为放大modal(W=900)
+function linePath(points){
+  return points.map((p,i)=>(i?'L':'M')+p.x.toFixed(1)+' '+p.y.toFixed(1)).join(' ');
+}
+function avgChart(dates, avg, big, yRange){
+  const W=big?900:440, H=big?360:160, padL=big?44:34, padR=12, padT=14, padB=22;
+  const iw=W-padL-padR, ih=H-padT-padB;
+  const pts0=dates.map((d,i)=>({i,d,v:avg[d]}));
+  const vals=pts0.filter(p=>typeof p.v==='number').map(p=>p.v);
+  if(!vals.length) return '<div class="hl-empty">无涨幅数据</div>';
+
+  // Y轴: 传入yRange(全局统一)时用它做基准并适度放大保持陡峭; 否则用本板块min/max
+  let dmin, dmax;
+  if(yRange){
+    dmin=yRange.lo; dmax=yRange.hi;
+    if(dmin===dmax){ dmin-=1; dmax+=1; }
+    const span0=dmax-dmin;
+    const shrink=span0*0.15;
+    dmin+=shrink; dmax-=shrink;
+  }else{
+    dmin=Math.min(...vals); dmax=Math.max(...vals);
+    if(dmin===dmax){ dmin-=1; dmax+=1; }
+  }
+  const pad=(dmax-dmin)*0.08;
+  const lo=dmin-pad, hi=dmax+pad;
+  const span=hi-lo;
+  const clamp=v=>Math.max(lo, Math.min(hi, v));
+  const x=i=>padL+(dates.length<=1?iw/2:iw*i/(dates.length-1));
+  const y=v=>padT+ih-((clamp(v)-lo)/span)*ih;
+  const pts=pts0.map(p=>({i:p.i, d:p.d, v:p.v, x:x(p.i), y:typeof p.v==='number'?y(p.v):null}));
+  const valid=pts.filter(p=>p.y!==null);
+  let segs='';
+  for(let k=1;k<valid.length;k++){
+    const a=valid[k-1],b=valid[k];
+    const change = b.v - a.v;
+    const mag = Math.abs(change);
+    let col;
+    if(change > 0){
+      col = mag >= 5 ? '#ffd60a' : '#ff4d4f';
+    } else if(change < 0){
+      col = mag >= 5 ? '#b15cff' : '#52c41a';
+    } else {
+      col = '#9aa0a6';
+    }
+    segs+=`<path d="${linePath([a,b])}" stroke="${col}" stroke-width="${big?2.6:2}" fill="none"/>`;
+  }
+  const dots=valid.map(p=>{
+    const mag=Math.abs(p.v);
+    let col;
+    if(p.v > 0){
+      col = mag >= 5 ? '#ffd60a' : '#ff4d4f';
+    } else if(p.v < 0){
+      col = mag >= 5 ? '#b15cff' : '#52c41a';
+    } else {
+      col = '#9aa0a6';
+    }
+    return `<circle cx="${p.x}" cy="${p.y}" r="${big?3.5:2.5}" fill="${col}"/>
+            <text x="${p.x}" y="${p.y-6}" font-size="${big?11:9}" text-anchor="middle">${p.v.toFixed(1)}</text>`;
+  }).join('');
+  let zeroLine='';
+  if(lo<0 && hi>0){
+    const zy=y(0);
+    zeroLine=`<line x1="${padL}" y1="${zy}" x2="${W-padR}" y2="${zy}" stroke="var(--border-color)" stroke-dasharray="3 3"/>
+              <text x="4" y="${zy-3}" font-size="9">0</text>`;
+  }
+  const xlabels=dates.map((d,i)=>`<text x="${x(i)}" y="${H-6}" font-size="${big?11:9}" text-anchor="middle">${d.slice(4,6)}/${d.slice(6,8)}</text>`).join('');
+  const yTop=`<text x="4" y="${padT+4}" font-size="9">${hi.toFixed(1)}</text>`;
+  const yBot=`<text x="4" y="${H-padB}" font-size="9">${lo.toFixed(1)}</text>`;
+  return `<svg width="100%" viewBox="0 0 ${W} ${H}">
+    ${yTop}${yBot}${zeroLine}${segs}${dots}${xlabels}
+  </svg>`;
+}
+function countBarChart(dates, counts, big, yMax){
+  const W=big?900:440, H=big?300:140, padL=big?34:28, padR=12, padT=14, padB=22;
+  const iw=W-padL-padR, ih=H-padT-padB;
+  const vals=dates.map(d=>counts[d]).filter(v=>typeof v==='number');
+  if(!vals.length) return '<div class="hl-empty">无个股数据</div>';
+  const maxVal=Math.max(yMax||0, ...vals, 1);
+  const n=dates.length;
+  const gap=big?4:2;
+  const bw=n>1 ? Math.max(big?10:6, (iw-gap*(n-1))/n) : Math.min(iw, big?60:40);
+  const slot=n>1 ? (iw/n) : iw;
+  const x=i=>padL+slot/2+i*slot;
+  const y=v=>padT+ih-(v/maxVal)*ih;
+  let grid='';
+  const ticks=[0, Math.round(maxVal/2), maxVal];
+  [...new Set(ticks)].forEach(t=>{
+    const gy=y(t);
+    grid+=`<line x1="${padL}" y1="${gy}" x2="${W-padR}" y2="${gy}" stroke="var(--border-color)" stroke-width="0.5" opacity="0.5"/>`;
+    grid+=`<text x="4" y="${gy+3}" font-size="9">${t}</text>`;
+  });
+  let bars='';
+  dates.forEach((d,i)=>{
+    const c=counts[d];
+    if(typeof c!=='number'||c<=0) return;
+    const cx=x(i), by=y(c), bh=padT+ih-by;
+    const ratio=c/maxVal;
+    const col=ratio>=0.8?'#e63946':(ratio>=0.5?'#ff8a3d':'#4dd0e1');
+    bars+=`<rect x="${cx-bw/2}" y="${by}" width="${bw}" height="${Math.max(bh,1)}" rx="2" fill="${col}" opacity="0.9"/>`;
+    bars+=`<text x="${cx}" y="${by-3}" font-size="${big?11:8}" text-anchor="middle">${c}</text>`;
+  });
+  const xlabels=dates.map((d,i)=>`<text x="${x(i)}" y="${H-6}" font-size="${big?11:9}" text-anchor="middle">${d.slice(4,6)}/${d.slice(6,8)}</text>`).join('');
+  return `<svg width="100%" viewBox="0 0 ${W} ${H}">
+    ${grid}${bars}${xlabels}
+  </svg>`;
+}
+// 跌破10日线 vs 第三日收回 双柱图: data={date:{broke,recovered}|null}; warn=warn_count 作跌破可靠来源
+function recoverLineChart(dates, data, big, warn){
+  const W=big?900:440, H=big?300:140, padL=big?34:28, padR=12, padT=16, padB=22;
+  const iw=W-padL-padR, ih=H-padT-padB;
+  warn = warn || {};
+  const entries=dates.map(d=>{
+    const v=data[d];
+    let broke=(typeof warn[d]==='number')?warn[d]:0;
+    let recovered=null;
+    if(v && typeof v==='object'){
+      if(typeof v.broke==='number') broke=v.broke;
+      recovered=(typeof v.recovered==='number')?v.recovered:null;
+    }
+    return (broke>0 || recovered!==null) ? {d, broke, recovered} : null;
+  });
+  const hasAny=entries.some(e=>e && e.broke>0);
+  if(!hasAny) return '<div class="hl-empty">无跌破数据</div>';
+  const n=dates.length;
+  let maxVal=1;
+  entries.forEach(e=>{ if(e){ maxVal=Math.max(maxVal, e.broke, e.recovered||0); } });
+  const slot=n>1 ? (iw/n) : iw;
+  const groupCenter=i=>padL+slot/2+i*slot;
+  const bw=Math.max(big?7:4, Math.min(big?24:14, slot/2.6));
+  const y=v=>padT+ih-(v/maxVal)*ih;
+  let grid='';
+  [...new Set([0, Math.round(maxVal/2), maxVal])].forEach(t=>{
+    const gy=y(t);
+    grid+=`<line x1="${padL}" y1="${gy}" x2="${W-padR}" y2="${gy}" stroke="var(--border-color)" stroke-width="0.5" opacity="0.5"/>`;
+    grid+=`<text x="4" y="${gy+3}" font-size="9">${t}</text>`;
+  });
+  let bars='';
+  entries.forEach((e,i)=>{
+    if(!e || e.broke<=0) return;
+    const cx=groupCenter(i);
+    const lx=cx-bw-1, lby=y(e.broke), lbh=padT+ih-lby;
+    bars+=`<rect x="${lx}" y="${lby}" width="${bw}" height="${Math.max(lbh,1)}" rx="2" fill="#ff4d4f" opacity="0.9"/>`;
+    bars+=`<text x="${lx+bw/2}" y="${lby-3}" font-size="${big?11:8}" text-anchor="middle" fill="#ff6b6b">${e.broke}</text>`;
+    const rx=cx+1;
+    if(e.recovered===null){
+      bars+=`<text x="${rx+bw/2}" y="${padT+ih-2}" font-size="${big?10:8}" text-anchor="middle" fill="var(--text-muted)">-</text>`;
+    } else {
+      const rby=y(e.recovered), rbh=padT+ih-rby;
+      bars+=`<rect x="${rx}" y="${rby}" width="${bw}" height="${Math.max(rbh,1)}" rx="2" fill="#52c41a" opacity="0.9"/>`;
+      bars+=`<text x="${rx+bw/2}" y="${rby-3}" font-size="${big?11:8}" text-anchor="middle" fill="#4dd07a">${e.recovered}</text>`;
+    }
+  });
+  const xlabels=dates.map((d,i)=>`<text x="${groupCenter(i)}" y="${H-6}" font-size="${big?11:9}" text-anchor="middle">${d.slice(4,6)}/${d.slice(6,8)}</text>`).join('');
+  const legend=`<g>
+    <rect x="${padL}" y="2" width="9" height="9" rx="2" fill="#ff4d4f"/><text x="${padL+13}" y="10" font-size="9">跌破</text>
+    <rect x="${padL+52}" y="2" width="9" height="9" rx="2" fill="#52c41a"/><text x="${padL+65}" y="10" font-size="9">收回</text>
+  </g>`;
+  return `<svg width="100%" viewBox="0 0 ${W} ${H}">
+    ${grid}${bars}${xlabels}${legend}
+  </svg>`;
+}
+
 // 下方四图(基于HL_DATA_CHARTS独立区间: 平均涨幅/活跃数/跌破警告/收回)
 function renderHlCharts2(){
   const wrap = document.getElementById('hlCharts');
@@ -3786,33 +3995,67 @@ function renderHlCharts2(){
   D.blocks_summary.forEach(b => Object.values(b.avg_pct||{}).forEach(v => { if(typeof v==='number'){ if(v<avgLo) avgLo=v; if(v>avgHi) avgHi=v; } }));
   const avgRange = (avgLo===Infinity) ? null : {lo:avgLo, hi:avgHi};
 
-  wrap.innerHTML = order.map(blk => {
+  const cards = order.map(blk => {
     const b = summary[blk];
     const tot = metric[blk]||0;
     // summary缺失(后端roster空跳过)时渲染placeholder, 不丢板块 -- 对齐复盘页
     if(!b){
-      return `<div class="hl-chart-card placeholder" data-block="${hlEsc(blk)}">
-        <h4>${hlEsc(blk)}</h4><div class="csub">累计${tot}次 · 无个股明细</div>
-        <div class="hl-empty" style="height:120px;display:flex;align-items:center;justify-content:center">该板块个股未入选跟踪, 无累计趋势</div>
-      </div>`;
+      return `<div class="hl-chart-card placeholder" data-block="${hlEsc(blk)}"><h4>${hlEsc(blk)}</h4></div>`;
     }
+    const counts = dayCounts[blk] || {};
+    const avg = b.avg_pct || {};
+    const warn = b.warn_count || {};
+    const recover = b.recover_rate || {};
     return `<div class="hl-chart-card" data-block="${hlEsc(blk)}">
-      <h4>${hlEsc(blk)}</h4><div class="csub">累计${tot}次</div>
-      <h5>① 累计平均涨幅</h5><div class="hl-chart-zoom" id="hl4_avg_${hlEsc(blk)}" style="height:120px"></div>
-      <h5>② 每日活跃个股数</h5><div class="hl-chart-zoom" id="hl4_count_${hlEsc(blk)}" style="height:100px"></div>
-      <h5>③ 每日跌破10日线警告</h5><div class="hl-chart-zoom" id="hl4_warn_${hlEsc(blk)}" style="height:100px"></div>
-      <h5>④ 跌破/第三日收回(个数)</h5><div class="hl-chart-zoom" id="hl4_recover_${hlEsc(blk)}" style="height:100px"></div>
+      <h4>${hlEsc(blk)}</h4>
+      <div class="csub">累计${tot}次</div>
+      <h5>① 累计平均涨幅 <span class="zoom-hint">🔍点击放大</span></h5>
+      <div class="hl-chart-zoom" onclick="hlZoomChart('avg','${hlCssEscape(blk)}')">${avgChart(dates, avg, false, avgRange)}</div>
+      <h5>② 每日活跃个股数 <span class="zoom-hint">🔍点击放大</span></h5>
+      <div class="hl-chart-zoom" onclick="hlZoomChart('count','${hlCssEscape(blk)}')">${countBarChart(dates, counts, false, globalMaxCount)}</div>
+      <h5>③ 每日跌破10日线警告 <span class="zoom-hint">🔍点击放大</span></h5>
+      <div class="hl-chart-zoom" onclick="hlZoomChart('warn','${hlCssEscape(blk)}')">${countBarChart(dates, warn, false, globalMaxWarn)}</div>
+      <h5>④ 跌破/第三日收回(个数) <span class="zoom-hint">🔍点击放大</span></h5>
+      <div class="hl-chart-zoom" onclick="hlZoomChart('recover','${hlCssEscape(blk)}')">${recoverLineChart(dates, recover, false, warn)}</div>
     </div>`;
   }).join('');
 
-  order.forEach(blk => {
-    const b = summary[blk]; if(!b) return;  // placeholder板块跳过绘图
-    const counts = dayCounts[blk] || {};
-    hlRenderAvgLine(`hl4_avg_${blk}`, dates, b.avg_pct||{}, avgRange);
-    hlRenderBar(`hl4_count_${blk}`, dates, counts, globalMaxCount, '#60a5fa', true);  // 三色: 按比值 红≥80%/橙50-80%/青<50%
-    hlRenderBar(`hl4_warn_${blk}`, dates, b.warn_count||{}, globalMaxWarn, '#ef5350', false);
-    hlRenderRecover(`hl4_recover_${blk}`, dates, b.recover_rate||{});
-  });
+  wrap.innerHTML = `<div class="hl-charts-scroll">${cards}</div>`;
+}
+// 点击放大单板块单图: 弹出大图modal (对齐复盘页 zoomChart, 数据源改 HL_DATA_CHARTS)
+function hlZoomChart(kind, blk){
+  let modal=document.getElementById('hlChartZoomModal');
+  if(!modal){
+    modal=document.createElement('div');
+    modal.id='hlChartZoomModal';
+    modal.className='hl-zoom-modal';
+    modal.innerHTML=`<div class="compute-box" style="width:min(960px,94vw);max-height:92vh;overflow:auto;background:var(--bg-card);border:1px solid var(--border-color);border-radius:12px;padding:18px 20px;display:flex;flex-direction:column;">
+      <div class="compute-head" style="display:flex;align-items:center;justify-content:space-between;font-size:15px;font-weight:600;margin-bottom:12px;color:var(--text-primary);"><span id="hlChartZoomTitle"></span><button class="compute-close" onclick="document.getElementById('hlChartZoomModal').classList.remove('show')" style="display:inline-block;background:var(--border-color);color:var(--text-primary);border:none;padding:6px 14px;border-radius:6px;cursor:pointer;font-size:13px;">关闭</button></div>
+      <div id="hlChartZoomBody" style="padding:8px 4px;"></div>
+    </div>`;
+    document.body.appendChild(modal);
+  }
+  const D = HL_DATA_CHARTS; if(!D) return;
+  const summary={}; (D.blocks_summary||[]).forEach(b=>summary[b.block]=b);
+  const b=summary[blk]; if(!b) return;
+  const dates=D.dates;
+  const dayCounts={};
+  let gmax=0;
+  (D.by_date||[]).forEach(day=>{ day.blocks.forEach(x=>{ if(!dayCounts[x.block])dayCounts[x.block]={}; const c=x.active_count||0; dayCounts[x.block][day.date]=c; if(c>gmax)gmax=c; }); });
+  const counts=dayCounts[blk]||{};
+  let gLo=1e9,gHi=-1e9;
+  (D.blocks_summary||[]).forEach(x=>{ Object.values(x.avg_pct||{}).forEach(v=>{ if(typeof v==='number'){ if(v<gLo)gLo=v; if(v>gHi)gHi=v; } }); });
+  const gRange=(gLo<1e9)?{lo:gLo,hi:gHi}:null;
+  let gWarnMax=0;
+  (D.blocks_summary||[]).forEach(x=>{ Object.values(x.warn_count||{}).forEach(v=>{ if(typeof v==='number'&&v>gWarnMax)gWarnMax=v; }); });
+  let title, body;
+  if(kind==='avg'){ title=`${blk} · 累计平均涨幅`; body=avgChart(dates, b.avg_pct||{}, true, gRange); }
+  else if(kind==='count'){ title=`${blk} · 每日活跃个股数`; body=countBarChart(dates, counts, true, gmax); }
+  else if(kind==='warn'){ title=`${blk} · 每日跌破10日线警告`; body=countBarChart(dates, b.warn_count||{}, true, gWarnMax); }
+  else if(kind==='recover'){ title=`${blk} · 跌破/第三日收回(个数)`; body=recoverLineChart(dates, b.recover_rate||{}, true, b.warn_count||{}); }
+  document.getElementById('hlChartZoomTitle').textContent=title;
+  document.getElementById('hlChartZoomBody').innerHTML=body;
+  modal.classList.add('show');
 }
 // 累计平均涨幅折线(SVG手绘逐段变色: 相邻日变化±5为界, 对齐复盘页avgChart配色; 比echarts拆N段series轻量得多)
 function hlRenderAvgLine(domId, dates, series, yRange){
