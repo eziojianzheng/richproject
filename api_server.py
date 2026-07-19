@@ -64,6 +64,8 @@ import os
 import re
 import json
 import time
+import gzip
+import io
 from datetime import datetime, timedelta
 import threading
 
@@ -80,6 +82,28 @@ def _debug_no_cache(response):
         response.headers['Pragma'] = 'no-cache'
         response.headers['Expires'] = '0'
         response.headers['X-AI-Kanpan-Instance'] = SERVER_INSTANCE_ID
+    # gzip 压缩大响应: 招财猫 /load 等接口返回 30MB+ JSON, 未压缩时 Ctrl+F5 并发拉资源易超时/解析失败
+    # 仅对声明支持 gzip 的客户端、且响应体 >10KB 的非流式 JSON/文本响应压缩
+    try:
+        ae = request.headers.get('Accept-Encoding', '') if request else ''
+        if 'gzip' in ae.lower() and response.content_length is None:
+            # 直接用 get_data() 取完整响应体(流式响应 direct_passthrough 不取)
+            if getattr(response, 'direct_passthrough', False):
+                return response
+            data = response.get_data()
+            if len(data) > 10240:
+                buf = io.BytesIO()
+                with gzip.GzipFile(fileobj=buf, mode='wb', compresslevel=5) as gz:
+                    gz.write(data)
+                gz_data = buf.getvalue()
+                # 只在确实压缩更小时才替换(已压缩数据再 gzip 反而变大)
+                if len(gz_data) < len(data):
+                    response.set_data(gz_data)
+                    response.headers['Content-Encoding'] = 'gzip'
+                    response.headers['Content-Length'] = len(gz_data)
+                    response.headers['Vary'] = 'Accept-Encoding'
+    except Exception:
+        pass   # 压缩失败不影响原响应返回
     return response
 
 # 导入热门股追踪模块
@@ -7025,20 +7049,23 @@ def api_caizhaomao_labels():
 
 @app.route('/api/hot/caizhaomao/lock', methods=['POST'])
 def api_caizhaomao_lock():
-    """锁定/解锁某个概念板块(按 日期+概念)。用于标记该板块是否已操作过。
-    参数: date(YYYYMMDD), concept, locked(bool)。持久化到磁盘。"""
+    """锁定/解锁某个概念板块(按 日期+side+榜单桶+概念)。用于标记该板块是否已操作过。
+    参数: date(YYYYMMDD), concept, side(rise/fall), bucket(by_limitup/by_up5/by_limitdown/by_down5), locked(bool)。持久化到磁盘。
+    兼容旧 key: 当 side/bucket 为空时回退为 "日期_概念"(仅旧数据)。"""
     data = request.get_json() or {}
     date = str(data.get('date', '')).strip()
     concept = str(data.get('concept', '')).strip()
+    side = str(data.get('side', '')).strip()
+    bucket = str(data.get('bucket', '')).strip()
     locked = bool(data.get('locked', False))
     if not re.match(r'^\d{8}$', date):
         return jsonify({'success': False, 'error': 'date 格式错误'}), 400
     if not concept:
         return jsonify({'success': False, 'error': '缺少 concept'}), 400
-    key = f'{date}_{concept}'
+    key = f'{date}_{side}_{bucket}_{concept}' if (side and bucket) else f'{date}_{concept}'
     with _caizhaomao_locks_lock:
         if locked:
-            _caizhaomao_locks[key] = {'date': date, 'concept': concept, 'ts': time.time()}
+            _caizhaomao_locks[key] = {'date': date, 'concept': concept, 'side': side, 'bucket': bucket, 'ts': time.time()}
         else:
             _caizhaomao_locks.pop(key, None)
     _save_caizhaomao_locks()
