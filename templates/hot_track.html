@@ -727,6 +727,52 @@
   .czm-cb.up:has(input:checked) { color: #ff6b6b; }
   .czm-cb.dn:has(input:checked) { color: #4dd07a; }
   .czm-kline-chart { height: 240px; width: 100%; }
+  /* ===== 胜率统计 ===== */
+  .wr-stats-bar { padding: 6px 10px; font-size: 13px; font-weight: 600; color: var(--text-primary);
+    background: var(--bg-input); border: 1px solid var(--border-light); border-radius: 6px; margin: 8px 0; }
+  .wr-stats-bar .wr-wr { color: #ffd166; }
+  .wr-daybar { display: flex; gap: 4px; padding: 4px 0 8px; overflow-x: auto; flex-wrap: wrap; }
+  .wr-daybar .wr-day { padding: 3px 9px; font-size: 11px; border: 1px solid var(--border-light); border-radius: 4px;
+    background: var(--bg-input); color: var(--text-muted); cursor: pointer; white-space: nowrap; }
+  .wr-daybar .wr-day:hover { color: var(--text-primary); border-color: var(--accent); }
+  .wr-daybar .wr-day.active { background: #e63946; color: #fff; border-color: #e63946; }
+  .wr-layout { display: flex; gap: 8px; align-items: flex-start; }
+  .wr-col { border: 1px solid var(--border-light); border-radius: 8px; background: var(--bg-card); overflow: hidden; }
+  .wr-cands { flex: 1.4; }
+  .wr-picks { flex: 1; }
+  .wr-col-hd { padding: 7px 10px; font-size: 13px; font-weight: 600; background: var(--bg-input);
+    border-bottom: 1px solid var(--border-light); display: flex; align-items: center; gap: 6px; }
+  .wr-col-hd .wr-n { font-size: 11px; color: var(--text-muted); font-weight: 400; }
+  .wr-list { padding: 6px; display: flex; flex-direction: column; gap: 6px; max-height: 70vh; overflow-y: auto; }
+  .wr-card { border: 1px solid var(--border-light); border-radius: 6px; padding: 6px 8px; background: var(--bg-input); }
+  .wr-card-hd { display: flex; align-items: center; gap: 6px; font-size: 12px; margin-bottom: 4px; flex-wrap: wrap; }
+  .wr-card-hd .wr-name { font-weight: 700; color: var(--text-primary); }
+  .wr-card-hd .wr-code { font-size: 10px; color: var(--text-muted); }
+  .wr-card-hd .wr-pct { font-size: 11px; font-weight: 700; padding: 1px 5px; border-radius: 3px; }
+  .wr-card-hd .wr-pct.up { color: #ff6b6b; background: rgba(255,107,107,0.12); }
+  .wr-card-hd .wr-pct.dn { color: #4dd07a; background: rgba(77,208,122,0.12); }
+  .wr-card-hd .wr-buy { font-size: 10px; color: #ffd166; }
+  .wr-card-hd .wr-act { margin-left: auto; cursor: pointer; font-size: 11px; padding: 2px 8px; border-radius: 4px;
+    border: 1px solid var(--border-light); background: var(--bg-card); color: var(--text-primary); }
+  .wr-card-hd .wr-act:hover { border-color: var(--accent); color: var(--accent); }
+  .wr-card-hd .wr-act.sell { color: #ff9a9a; border-color: rgba(255,107,107,0.4); }
+  .wr-card-hd .wr-act.sell:hover { background: rgba(255,107,107,0.15); }
+  .wr-card-hd input[type=checkbox] { cursor: pointer; accent-color: var(--accent); }
+  .wr-kline { height: 200px; width: 100%; }
+  .wr-card.empty { text-align: center; color: var(--text-muted); font-size: 12px; padding: 20px; }
+  /* ===== 招财猫量化复盘(复用 .czm-* 样式, 以下为翻转按钮与急态专属) ===== */
+  .czmq-flip { display: inline-flex; gap: 4px; margin-left: auto; }
+  .czmq-flip button { font-size: 10px; padding: 2px 8px; border-radius: 4px; cursor: pointer;
+    background: var(--bg-card); border: 1px solid var(--border-light); color: var(--text-primary); }
+  .czmq-flip button:hover { border-color: var(--accent); color: var(--accent); }
+  .czmq-flip button.on { background: rgba(255,209,102,0.18); border-color: #ffd166; color: #ffd166; font-weight: 700; }
+  .czmq-flip button.on.up { background: rgba(255,107,107,0.18); border-color: #ff6b6b; color: #ff6b6b; }
+  .czmq-flip button.on.dn { background: rgba(77,208,122,0.18); border-color: #4dd07a; color: #4dd07a; }
+  .czmq-tag { font-size: 10px; font-weight: 700; padding: 2px 7px; border-radius: 3px; }
+  .czmq-tag.up { color: #ff6b6b; background: rgba(255,107,107,0.14); border: 1px solid rgba(255,107,107,0.3); }
+  .czmq-tag.dn { color: #4dd07a; background: rgba(77,208,122,0.14); border: 1px solid rgba(77,208,122,0.3); }
+  .czmq-tag.urgent { box-shadow: 0 0 0 2px rgba(255,209,102,0.4); }
+  .cat-box.czmq-urgent .cat-hd { box-shadow: inset 3px 0 0 #ffd166; }
   .czm-cats-hd { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; font-size: 14px; font-weight: 600; }
   .cat-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
   .cat-box { border: 1px solid var(--border-light); border-radius: 8px; overflow: hidden; min-height: 64px; }
@@ -840,6 +886,8 @@
     <span class="main-tab" data-tab="breakout" onclick="switchTab('breakout')">🚀 起爆扫描</span>
     <span class="main-tab" data-tab="caizhaomao" onclick="switchTab('caizhaomao')">🐱 招财猫复盘</span>
     <span class="main-tab" data-tab="newhigh" onclick="switchTab('newhigh')">📈 新高追踪</span>
+    <span class="main-tab" data-tab="winrate" onclick="switchTab('winrate')">🎯 胜率统计</span>
+    <span class="main-tab" data-tab="czmq" onclick="switchTab('czmq')">🐱 招财猫量化复盘</span>
   </div>
 
   <div class="meta" id="meta"></div>
@@ -1076,6 +1124,55 @@
     <div id="nhRangeStocks"></div>
     <div id="nhResult"></div>
   </div><!-- /view-newhigh -->
+
+  <!-- Tab 9: 胜率统计 -->
+  <div class="tab-view" id="view-winrate" style="display:none">
+    <div class="exp-toolbar" style="flex-wrap:wrap;">
+      <label>基准日</label><input type="date" id="wrDate" title="筛选的基准日 D: K线显示到这一天; 该日收盘价为买入价">
+      <button id="wrGenBtn" onclick="genWrCandidates()">生成候选</button>
+      <span id="wrStatus" class="exp-status"></span>
+    </div>
+    <div id="wrStatsBar" class="wr-stats-bar">已平仓 0 笔 · 胜 0 · 负 0 · 胜率 0.0% · 均盈 0.00%</div>
+    <div id="wrDayBar" class="wr-daybar"></div>
+    <div class="exp-charts-head">左=候选池(过去一月有涨停的主板非ST, 当日不涨停; 勾选加入自选) · 右=自选持仓(切日期看K线延后与浮盈, 卖出锁定盈亏计入胜率)</div>
+    <div class="wr-layout">
+      <div class="wr-col wr-cands">
+        <div class="wr-col-hd">候选池 <span id="wrCandN" class="wr-n">0</span></div>
+        <div id="wrCandList" class="wr-list"></div>
+      </div>
+      <div class="wr-col wr-picks">
+        <div class="wr-col-hd">自选持仓 <span id="wrPickN" class="wr-n">0</span></div>
+        <div id="wrPickList" class="wr-list"></div>
+      </div>
+    </div>
+  </div><!-- /view-winrate -->
+
+  <!-- Tab 10: 招财猫量化复盘 -->
+  <div class="tab-view" id="view-czmq" style="display:none">
+    <div class="exp-toolbar" style="flex-wrap:wrap;">
+      <label>开始</label><input type="date" id="czmqStart">
+      <label>结束</label><input type="date" id="czmqEnd">
+      <button id="czmqScan" onclick="startCzmq()">开始</button>
+      <button id="czmqCancel" onclick="cancelCzmq()" style="display:none;background:#555;border-color:#666;">中断</button>
+      <span id="czmqStatus" class="exp-status"></span>
+    </div>
+    <div class="exp-progress-wrap" id="czmqProgressWrap" style="display:none;">
+      <div class="exp-progress-bar"><div class="exp-progress-fill" id="czmqProgressFill"></div></div>
+    </div>
+    <div class="exp-charts-head">招财猫量化复盘 - 仅主板非ST, 4榜(涨停/大涨/跌停/大跌)Top10概念。
+      8项分类: 右上角涨/急涨 · 右下角涨/急涨 · 右上角跌/急跌 · 右下角跌/急跌。
+      涨跌看当日涨跌幅; 右上/右下看当日收盘(涨)或开盘(跌) vs 100%线(近一年首日收盘×2); 态与角位可点按钮翻转。</div>
+    <div id="czmqDayBar" class="czm-daybar"></div>
+    <div class="czm-layout">
+      <div class="czm-col">
+        <div id="czmqDayContent"></div>
+      </div>
+      <div class="czm-col czm-cats">
+        <div class="czm-cats-hd"><span id="czmqCatConcept">行为分类(8项)</span></div>
+        <div id="czmqCatGrid" class="cat-grid"></div>
+      </div>
+    </div>
+  </div><!-- /view-czmq -->
 
 <script src="https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"></script>
 <script>
@@ -2728,6 +2825,8 @@ function switchTab(tab) {
   document.getElementById('view-breakout').style.display = tab === 'breakout' ? '' : 'none';
   document.getElementById('view-caizhaomao').style.display = tab === 'caizhaomao' ? '' : 'none';
   document.getElementById('view-newhigh').style.display = tab === 'newhigh' ? '' : 'none';
+  document.getElementById('view-winrate').style.display = tab === 'winrate' ? '' : 'none';
+  document.getElementById('view-czmq').style.display = tab === 'czmq' ? '' : 'none';
   try { localStorage.setItem('hot_view', tab); } catch(e) {}
   if (tab === 'caizhaomao') { initCzm(); }
   if (tab === 'ths') {
@@ -2778,6 +2877,12 @@ function switchTab(tab) {
       _nhPctCharts.forEach(c => { try { c.resize(); } catch(e){} });
       _nhStockCharts.forEach(c => { try { c.resize(); } catch(e){} });
     }, 50);
+  } else if (tab === 'winrate') {
+    if (!_wrLoaded) { _wrLoaded = true; initWinrate(); }
+    else setTimeout(() => { Object.values(_wrCharts).forEach(c => { try { c.resize(); } catch(e){} }); }, 50);
+  } else if (tab === 'czmq') {
+    if (!_czmqLoaded) { _czmqLoaded = true; initCzmq(); }
+    else setTimeout(() => { Object.values(czmqStockCharts).forEach(c => { try { c.resize(); } catch(e){} }); }, 50);
   }
 }
 
@@ -4865,10 +4970,33 @@ async function czmToggleLabel(code, date, concept, label){
   } else {
     delete czmLabelMap[k];
   }
-  renderCzmStocks(); renderCzmCats();
+  // 局部更新: 只刷新该卡的「已选标签」角标 + 右侧行为分类面板。
+  // 不调 renderCzmStocks()——它会 dispose 全部K线并 innerHTML 重建,
+  // 导致 echarts 容器高度短暂塌陷、整页滚动位置跳动(点checkbox整页滚动的根因)。
+  // checkbox 勾选态浏览器原生 onchange 已自动切换, 无需重渲。
+  _czmUpdateLabBadge(code, date, labels);
+  renderCzmCats();
   try{ await fetch('/api/hot/caizhaomao/label',{method:'POST',headers:{'Content-Type':'application/json'},
     body:JSON.stringify({code,date,concept,labels,name:(cur&&cur.name)||'',type:(cur&&cur.type)||'',pct:(cur&&cur.pct)})}); }
   catch(e){}
+}
+// 局部刷新单只股票卡片顶部的「已选行为分类」角标(▸xxx、yyy), 不触碰K线, 避免整页滚动跳动
+function _czmUpdateLabBadge(code, date, labels){
+  // 通过 K线容器 id 反查所在卡片(每张卡 .czm-kline-chart id = czmk_{code}_{date})
+  const chartDom = document.getElementById(`czmk_${code}_${date}`);
+  if(!chartDom) return;
+  const infoEl = chartDom.closest('.czm-kline-card')?.querySelector('.czm-kline-info');
+  if(!infoEl) return;
+  // 移除旧角标
+  const old = infoEl.querySelector('.czm-lab');
+  if(old) old.remove();
+  // 追加新角标(若有) -- 用 textContent 安全写入, 避免注入
+  if(labels && labels.length){
+    const span = document.createElement('span');
+    span.className = 'czm-lab';
+    span.textContent = '▸' + labels.join('、');
+    infoEl.appendChild(span);
+  }
 }
 // 兼容旧调用名
 const czmRemoveLabel=(code,date,concept)=>{ czmLabelMap[czmKey(code,date,concept)] && (czmLabelMap[czmKey(code,date,concept)].labels||[]).forEach(lb=>czmToggleLabel(code,date,concept,lb)); };
@@ -4893,6 +5021,600 @@ async function czmImport(ev){
     renderCzmCats();
     alert(`导入完成: 标签${m.labels||0}条, 锁定${m.locks||0}个, 扫描结果${m.result?'已更新':'未包含'}`);
   }catch(e){ alert('导入异常: '+e.message); }
+}
+
+// ============================== 胜率统计(winrate) ==============================
+let _wrLoaded = false;             // tab 懒加载守卫
+let _wrCharts = {};                // domId -> echarts 实例(切tab resize 用)
+let wrCandidates = [];             // 当前候选池 [{code,name,buy_date,buy_price,pct_on_d}]
+let wrBaseDay = null;              // 基准日 D (YYYYMMDD), 候选池买入日
+let wrNextDay = null;              // D 的下一交易日
+let wrCurDay = null;               // 当前所选日 (K线显示到这一天, 浮盈按这一天算)
+let wrDayList = [];                // 日期推进条: [D, D+1, ...] (从 D 到终止日的交易日)
+let wrPicks = [];                  // 持仓+已平仓记录(已平仓仅用于计数, 不渲染卡片)
+
+// 日期 input 值(YYYY-MM-DD) <-> YYYYMMDD 互转
+function wrToDate8(s){ return (s||'').replace(/-/g,''); }
+function wrFromDate8(d8){ return d8 ? `${d8.slice(0,4)}-${d8.slice(4,6)}-${d8.slice(6,8)}` : ''; }
+
+function initWinrate(){
+  // 默认基准日 = 上一交易日(避免当天数据未更新)
+  const today = new Date();
+  const f = d => { const p=n=>String(n).padStart(2,'0'); return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}`; };
+  try{
+    const saved = localStorage.getItem('wr_date');
+    document.getElementById('wrDate').value = saved || f(new Date(today.getTime()-86400000));
+  }catch(_){ document.getElementById('wrDate').value = f(new Date(today.getTime()-86400000)); }
+  // 先拉持仓 + 胜率, 再渲染(候选池待用户点"生成候选")
+  wrLoadPicks().then(()=>{ wrRenderStats(); });
+}
+
+// 生成候选池
+async function genWrCandidates(){
+  const date8 = wrToDate8(document.getElementById('wrDate').value);
+  if(!/^\d{8}$/.test(date8)){ alert('请选择基准日'); return; }
+  const st = document.getElementById('wrStatus');
+  st.textContent = '正在扫描候选(读本地.day文件, 约2-5秒)…';
+  try{
+    const r = await (await fetch('/api/hot/winrate/candidates',{
+      method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({date:date8})
+    })).json();
+    if(!r.success){ st.innerHTML = `<span style="color:#ff9a9a;">失败: ${escapeHtmlHT(r.error||'')}</span>`; return; }
+    wrCandidates = r.candidates || [];
+    wrBaseDay = r.date;            // 后端校正后的实际基准日(D 可能非交易日)
+    wrNextDay = r.next_day;
+    // 日期推进条: D 往后取 30 自然日的交易日窗口(够回测一段时间)
+    const end8 = wrBaseDay && new Date(parseInt(wrBaseDay.slice(0,4)), parseInt(wrBaseDay.slice(4,6))-1, parseInt(wrBaseDay.slice(6,8))+30).toISOString().slice(0,8).replace(/-/g,'');
+    // 上面用 Date 算 end8 不直观, 直接字符串拼接
+    wrDayList = [];   // 由后端交易日历决定, 这里先前端粗算(后端 picks 接口不依赖此列表)
+    // 实际交易日列表用 fetch 一个轻量接口较重, 这里用 candidates 返回的 next_day 起逐日推算(用 .day 数据自然过滤: 渲染K线时 end=该日, 若该日无数据则K线停在最近的前一交易日)
+    // 生成 D 起 25 个自然日的候选日期按钮(非交易日会自然落到最近交易日K线)
+    const base = new Date(`${wrBaseDay.slice(0,4)}-${wrBaseDay.slice(4,6)}-${wrBaseDay.slice(6,8)}`);
+    for(let i=0;i<=25;i++){
+      const dt = new Date(base.getTime()+i*86400000);
+      const p=n=>String(n).padStart(2,'0');
+      wrDayList.push(`${dt.getFullYear()}${p(dt.getMonth()+1)}${p(dt.getDate())}`);
+    }
+    wrCurDay = wrBaseDay;
+    st.innerHTML = `候选 <b>${wrCandidates.length}</b> 只 · 基准日 ${wrFromDate8(wrBaseDay)}`;
+    document.getElementById('wrCandN').textContent = wrCandidates.length;
+    renderWrDayBar();
+    renderWrCands();
+    wrLoadPicks();   // 刷新右栏(新买入的持仓会显示)
+  }catch(e){ st.innerHTML = `<span style="color:#ff9a9a;">请求异常: ${escapeHtmlHT(e.message)}</span>`; }
+}
+
+// 日期推进条
+function renderWrDayBar(){
+  const bar = document.getElementById('wrDayBar');
+  if(!wrDayList.length){ bar.innerHTML=''; return; }
+  bar.innerHTML = wrDayList.map(d=>{
+    const cls = (d===wrCurDay) ? 'wr-day active' : 'wr-day';
+    return `<span class="${cls}" onclick="selectWrDay('${d}')">${wrFromDate8(d).slice(5)}</span>`;
+  }).join('');
+}
+
+function selectWrDay(d){
+  wrCurDay = d;
+  renderWrDayBar();
+  renderWrCands();      // 候选K线延后到 d
+  wrLoadPicks();        // 持仓浮盈按 d 重算
+}
+
+// 渲染候选池
+function renderWrCands(){
+  const box = document.getElementById('wrCandList');
+  if(!wrCandidates.length){ box.innerHTML = '<div class="wr-card empty">无候选, 请选择基准日后点「生成候选」</div>'; return; }
+  // 已买入的候选 code 集合(勾选状态)
+  const picked = new Set(wrPicks.filter(p=>p.status==='holding').map(p=>p.code));
+  box.innerHTML = wrCandidates.map(c=>{
+    const checked = picked.has(c.code) ? 'checked' : '';
+    const pctCls = (c.pct_on_d==null) ? '' : (c.pct_on_d>=0?'up':'dn');
+    const pctTxt = (c.pct_on_d==null) ? '-' : (c.pct_on_d>=0?'+':'')+c.pct_on_d+'%';
+    return `<div class="wr-card">
+      <div class="wr-card-hd">
+        <input type="checkbox" ${checked} onchange="wrTogglePick('${c.code}','${c.name}','${c.buy_date}',${c.buy_price},this.checked)">
+        <span class="wr-name">${escapeHtmlHT(c.name)}</span>
+        <span class="wr-code">${c.code}</span>
+        <span class="wr-pct ${pctCls}">D日 ${pctTxt}</span>
+        <span class="wr-buy">买 ${c.buy_price}</span>
+      </div>
+      <div class="wr-kline" id="wrk_${c.code}"></div>
+    </div>`;
+  }).join('');
+  // 逐只懒加载K线(end = wrCurDay)
+  wrCandidates.forEach(c=>wrLoadKline(c.code, `wrk_${c.code}`, wrCurDay));
+}
+
+// 渲染持仓右栏
+function renderWrPicks(){
+  const box = document.getElementById('wrPickList');
+  document.getElementById('wrPickN').textContent = wrPicks.filter(p=>p.status==='holding').length;
+  const holding = wrPicks.filter(p=>p.status==='holding');
+  if(!holding.length){
+    box.innerHTML = '<div class="wr-card empty">无持仓, 在左侧候选勾选股票即可买入</div>';
+    return;
+  }
+  box.innerHTML = holding.map(p=>{
+    const pnl = p.pnl_pct;
+    const cls = (pnl==null)?'' : (pnl>=0?'up':'dn');
+    const pnlTxt = (pnl==null) ? '无数据' : (pnl>=0?'+':'')+pnl+'%';
+    return `<div class="wr-card">
+      <div class="wr-card-hd">
+        <span class="wr-name">${escapeHtmlHT(p.name)}</span>
+        <span class="wr-code">${p.code}</span>
+        <span class="wr-buy">买 ${p.buy_price}(${wrFromDate8(p.buy_date).slice(5)})</span>
+        <span class="wr-pct ${cls}">${pnlTxt}</span>
+        <span class="wr-act sell" onclick="wrSell('${p.code}','${p.buy_date}')">卖出</span>
+      </div>
+      <div class="wr-kline" id="wrpk_${p.code}"></div>
+    </div>`;
+  }).join('');
+  // 懒加载K线(end = wrCurDay), 买入价水平线 + 当天竖线
+  holding.forEach(p=>wrLoadKline(p.code, `wrpk_${p.code}`, wrCurDay, p.buy_price));
+}
+
+// 勾选/取消勾选候选 -> 买入/移除持仓
+async function wrTogglePick(code, name, buyDate, buyPrice, checked){
+  if(checked){
+    // 买入
+    try{
+      const r = await (await fetch('/api/hot/winrate/pick',{
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({code, name, buy_date:buyDate, buy_price:buyPrice})
+      })).json();
+      if(!r.success){ alert('买入失败: '+(r.error||'')); return; }
+      await wrLoadPicks();
+    }catch(e){ alert('买入异常: '+e.message); }
+  }else{
+    // 取消勾选 = 移除持仓(仅 holding 可移除)
+    if(!confirm(`移除 ${name} 的持仓? (已卖出记录不受影响)`)) return;
+    try{
+      await fetch('/api/hot/winrate/remove',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({code, buy_date:buyDate})});
+      await wrLoadPicks();
+    }catch(e){ alert('移除异常: '+e.message); }
+  }
+}
+
+// 卖出
+async function wrSell(code, buyDate){
+  if(!wrCurDay){ alert('请先选择日期'); return; }
+  if(!confirm(`以 ${wrFromDate8(wrCurDay)} 收盘价卖出 ${code}? 卖出后锁定盈亏并计入胜率, 从持仓移除。`)) return;
+  try{
+    const r = await (await fetch('/api/hot/winrate/sell',{
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({code, buy_date:buyDate, sell_date:wrCurDay})
+    })).json();
+    if(!r.success){ alert('卖出失败: '+(r.error||'')); return; }
+    await wrLoadPicks();
+    wrRenderStats();
+  }catch(e){ alert('卖出异常: '+e.message); }
+}
+
+// 拉持仓(带 as_of 浮盈)
+async function wrLoadPicks(){
+  try{
+    const url = '/api/hot/winrate/picks' + (wrCurDay ? `?as_of=${wrCurDay}` : '');
+    const r = await (await fetch(url)).json();
+    if(r.success){ wrPicks = r.picks || []; renderWrPicks(); }
+  }catch(e){ /* 忽略, 不阻塞 */ }
+}
+
+// 胜率概览
+async function wrRenderStats(){
+  try{
+    const r = await (await fetch('/api/hot/winrate/stats')).json();
+    if(!r.success) return;
+    const wrCls = r.win_rate>=50 ? 'wr-wr' : '';
+    document.getElementById('wrStatsBar').innerHTML =
+      `已平仓 <b>${r.total_closed}</b> 笔 · 胜 <b style="color:#ff6b6b">${r.wins}</b> · `+
+      `负 <b style="color:#4dd07a">${r.losses}</b> · `+
+      `胜率 <b class="${wrCls}">${r.win_rate}%</b> · 均盈 <b>${r.avg_pnl>=0?'+':''}${r.avg_pnl}%</b> · `+
+      `持仓中 <b>${r.holding}</b> 只`;
+  }catch(e){ /* 忽略 */ }
+}
+
+// 拉个股K线并渲染到 domId; markDate=当天竖线, buyPrice=买入价水平线(持仓用)
+async function wrLoadKline(code, domId, end8, buyPrice){
+  const dom = document.getElementById(domId);
+  if(!dom) return;
+  try{
+    const data = await (await fetch(`/api/hot/explosive/kline?code=${code}&end=${end8}&count=120&fq=front`)).json();
+    if(!data.success || !data.bars || !data.bars.length){
+      dom.innerHTML = `<div style="text-align:center;color:#6b7280;font-size:11px;padding:20px;">K线无数据${data.error?(' ('+escapeHtmlHT(data.error)+')'):''}</div>`;
+      return;
+    }
+    wrRenderKline(dom, domId, data.bars, end8, buyPrice);
+  }catch(e){
+    dom.innerHTML = `<div style="text-align:center;color:#ff9a9a;font-size:11px;padding:20px;">请求异常: ${escapeHtmlHT(e.message)}</div>`;
+  }
+}
+
+// K线渲染(参考 czmRenderKline, 简化: candlestick + 量 + 当天竖线 + 买入价水平线)
+function wrRenderKline(dom, domId, bars, markDate8, buyPrice){
+  let chart = _wrCharts[domId];
+  if(chart){ try{ chart.dispose(); }catch(_){} }
+  dom.style.height = '200px';
+  chart = echarts.init(dom,'dark'); _wrCharts[domId]=chart;
+  const dates = bars.map(b=>b.date);
+  const ohlc = bars.map(b=>[b.open,b.close,b.low,b.high]);
+  const vols = bars.map(b=>({value:b.vol, itemStyle:{color: b.close>=b.open ? 'rgba(239,83,80,0.6)':'rgba(38,166,154,0.6)'}}));
+  // 当天竖线(markDate8)
+  const markDash = markDate8 ? `${markDate8.slice(0,4)}-${markDate8.slice(4,6)}-${markDate8.slice(6,8)}` : null;
+  const markLines = [];
+  if(markDash){
+    markLines.push({xAxis:markDash, lineStyle:{color:'#ffd166',type:'dashed',width:1}, label:{formatter:'当天',color:'#ffd166',fontSize:9}});
+  }
+  // 买入价水平线(持仓用)
+  if(buyPrice){
+    markLines.push({yAxis:buyPrice, lineStyle:{color:'#60a5fa',type:'dashed',width:1}, label:{formatter:'买 '+buyPrice, color:'#60a5fa', fontSize:9, position:'insideEndTop'}});
+  }
+  chart.setOption({
+    backgroundColor:'transparent', animation:false,
+    tooltip:{trigger:'axis',axisPointer:{type:'cross'}},
+    grid:[{left:42,right:8,top:6,height:'62%'},{left:42,right:8,top:'74%',height:'22%'}],
+    xAxis:[
+      {type:'category',data:dates,boundaryGap:true,axisLabel:{color:'#9aa0a6',fontSize:9}},
+      {type:'category',gridIndex:1,data:dates,axisLabel:{show:false}}
+    ],
+    yAxis:[
+      {scale:true,splitLine:{lineStyle:{color:'#252a33'}},axisLabel:{color:'#9aa0a6',fontSize:9}},
+      {gridIndex:1,splitNumber:2,axisLabel:{show:false},splitLine:{show:false}}
+    ],
+    dataZoom:[{type:'inside',xAxisIndex:[0,1],start:0,end:100}],
+    series:[
+      {name:'日K',type:'candlestick',data:ohlc,
+       itemStyle:{color:'#ef5350',color0:'#26a69a',borderColor:'#ef5350',borderColor0:'#26a69a'},
+       markLine:{symbol:'none',silent:true,data:markLines}},
+      {name:'成交量',type:'bar',xAxisIndex:1,yAxisIndex:1,data:vols}
+    ]
+  },true);
+  chart.resize();
+}
+
+// ============================== 招财猫量化复盘(czmq) ==============================
+let _czmqLoaded = false;
+let czmqTaskId = null, czmqPollTimer = null;
+let czmqResult = null;            // {days, by_day:[...], event_count}
+let czmqTagMap = {};             // "code_date_concept" -> {urgent, corner_override,...}
+let czmqCurDay = null;           // 当前选中交易日 YYYYMMDD
+let czmqCurConcept = null;       // {concept, side, bucket, stocks}
+const czmqStockCharts = {};      // domId -> echarts 实例
+const CZMQ_LABELS = ['右上角涨','右上角急涨','右下角涨','右下角急涨','右上角跌','右上角急跌','右下角跌','右下角急跌'];
+
+function czmqKey(code,date,concept){ return `${code}_${date}_${concept}`; }
+
+// 核心: 分类判定。返回 {side:'rise'/'fall', corner:'up'/'dn', urgent:bool, label:'右上角涨'...}
+// side: 涨跌看 pct; corner: 涨看收盘 vs 100%线, 跌看开盘 vs 100%线; urgent/corner 可被 tag 覆盖
+function czmqClassify(s){
+  if(!s) return null;
+  const side = (s.pct>=0) ? 'rise' : 'fall';
+  const line100 = (s.base_close||0) * 2;
+  let corner;
+  if(side==='rise'){
+    // 涨: 看当日收盘 vs 100%线
+    corner = (line100>0 && (s.close_d||0) < line100) ? 'dn' : 'up';
+  } else {
+    // 跌: 看当日开盘 vs 100%线
+    corner = (line100>0 && (s.open_d||0) < line100) ? 'dn' : 'up';
+  }
+  let urgent = false;
+  const tag = czmqTagMap[czmqKey(s.code, s.date, czmqCurConcept ? czmqCurConcept.concept : '')];
+  if(tag){
+    if(tag.urgent) urgent = true;
+    if(tag.corner_override==='up' || tag.corner_override==='dn') corner = tag.corner_override;
+  }
+  const label = (corner==='up'?'右上角':'右下角') + (urgent?'急':'') + (side==='rise'?'涨':'跌');
+  return {side, corner, urgent, label};
+}
+
+function initCzmq(){
+  const end=new Date(), start=new Date(); start.setDate(start.getDate()-7);
+  const f=d=>{const p=n=>String(n).padStart(2,'0');return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}`;};
+  try{
+    document.getElementById('czmqStart').value = localStorage.getItem('czmq_start') || f(start);
+    document.getElementById('czmqEnd').value = localStorage.getItem('czmq_end') || f(end);
+  }catch(_){ document.getElementById('czmqStart').value=f(start); document.getElementById('czmqEnd').value=f(end); }
+  czmqLoadPersisted().then(async ()=>{
+    if(await czmqRestoreResult()){
+      renderCzmqDayBar(); renderCzmqDay();
+    }
+    renderCzmqCats();
+  });
+}
+
+function czmqSetBusy(busy){
+  document.getElementById('czmqScan').disabled = busy;
+  document.getElementById('czmqCancel').style.display = busy ? '' : 'none';
+}
+function czmqSetProgress(pct, txt){
+  document.getElementById('czmqProgressFill').style.width = pct + '%';
+  document.getElementById('czmqStatus').textContent = txt || '';
+}
+
+async function startCzmq(){
+  const start=document.getElementById('czmqStart').value;
+  const end=document.getElementById('czmqEnd').value;
+  if(!start||!end){ alert('请选择起止日期'); return; }
+  try{ localStorage.setItem('czmq_start', start); localStorage.setItem('czmq_end', end); }catch(_){}
+  czmqSetBusy(true);
+  document.getElementById('czmqProgressWrap').style.display='';
+  czmqSetProgress(0, '正在创建扫描任务…');
+  document.getElementById('czmqDayContent').innerHTML='<div class="czm-sub">扫描中…</div>';
+  try{
+    const r=await(await fetch('/api/hot/czmq/scan',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({start,end})})).json();
+    if(!r.success){ czmqSetBusy(false); document.getElementById('czmqProgressWrap').style.display='none'; alert('启动失败: '+(r.error||'')); return; }
+    czmqTaskId=r.task_id; pollCzmq();
+  }catch(e){ czmqSetBusy(false); alert('请求异常: '+e.message); }
+}
+
+function pollCzmq(){
+  if(czmqPollTimer) clearInterval(czmqPollTimer);
+  czmqPollTimer=setInterval(async ()=>{
+    try{
+      const s=await (await fetch(`/api/hot/czmq/status/${czmqTaskId}`)).json();
+      if(!s.success) return;
+      czmqSetProgress(s.progress, `扫描中 · ${s.processed||0}/${s.total||0} · 已收集 ${(s.result&&s.event_count)||0}条`);
+      if(s.status==='completed'||s.status==='cancelled'||s.status==='failed'){
+        clearInterval(czmqPollTimer); czmqPollTimer=null; czmqSetBusy(false);
+        if(s.status==='failed'){ czmqSetProgress(0,'失败: '+(s.error||'')); return; }
+        czmqResult=s.result; czmqTagMap=s.tags||{};
+        czmqSetProgress(100, `${s.status==='cancelled'?'已中断':'完成'} · 收集 ${s.result.event_count} 条`);
+        document.getElementById('czmqProgressWrap').style.display='none';
+        czmqPersistResult();
+        renderCzmqDayBar();
+        if(czmqResult.days.length) selectCzmqDay(czmqResult.days[czmqResult.days.length-1]);
+        renderCzmqCats();
+      }
+    }catch(e){}
+  },1000);
+}
+
+async function cancelCzmq(){
+  if(!czmqTaskId) return;
+  document.getElementById('czmqCancel').textContent='中断中…';
+  try{ await fetch(`/api/hot/czmq/cancel/${czmqTaskId}`,{method:'POST'}); }catch(e){}
+}
+
+function renderCzmqDayBar(){
+  const bar=document.getElementById('czmqDayBar');
+  if(!czmqResult||!czmqResult.days||!czmqResult.days.length){ bar.innerHTML=''; return; }
+  bar.innerHTML=czmqResult.days.map(d=>{
+    const cls=(d===czmqCurDay)?'czm-day-btn active':'czm-day-btn';
+    return `<span class="${cls}" onclick="selectCzmqDay('${d}')">${d.slice(0,4)}-${fmtDay(d)}</span>`;
+  }).join('');
+}
+
+function selectCzmqDay(d){
+  czmqCurDay=d; czmqCurConcept=null;
+  czmqPersistResult();
+  renderCzmqDayBar();
+  renderCzmqDay();
+  const hd=document.getElementById('czmqCatConcept');
+  if(hd) hd.textContent=`当前日期: ${d.slice(0,4)}-${fmtDay(d)} - 选择左侧概念后, 点翻转按钮归类`;
+  renderCzmqCats();
+}
+
+function czmqDayData(){
+  if(!czmqResult||!czmqResult.by_day) return null;
+  return czmqResult.by_day.find(x=>x.date===czmqCurDay);
+}
+
+function renderCzmqDay(){
+  const box=document.getElementById('czmqDayContent');
+  if(!czmqResult||!czmqResult.days||!czmqResult.days.length){ box.innerHTML='<div class="czm-sub">请选择日期范围后点「开始」扫描</div>'; return; }
+  const day=czmqDayData();
+  if(!day){ box.innerHTML='<div class="czm-sub">该日无数据</div>'; return; }
+  const conceptChips=(list, side, bucket)=> (list && list.length)
+    ? `<div class="czm-concepts">` + list.map(c=>{
+        const arg=JSON.stringify({concept:c.concept,side,bucket}).replace(/'/g,"&#39;");
+        return `<span class="czm-concept ${side}" onclick='selectCzmqConcept(${arg})'>`
+          + `${escapeHtmlHT(c.concept)} <span class="cc-n">${c.count}</span></span>`;
+      }).join('') + `</div>`
+    : `<div class="czm-sub">无</div>`;
+  box.innerHTML = `
+    <div class="czm-section"><div class="czm-sec-hd">📈 在涨什么</div>
+      <div class="czm-sub">涨停数 Top10</div>${conceptChips(day.rising.by_limitup,'rise','by_limitup')}
+      <div class="czm-sub">涨幅≥5% 数 Top10</div>${conceptChips(day.rising.by_up5,'rise','by_up5')}
+    </div>
+    <div class="czm-section"><div class="czm-sec-hd">📉 在跌什么</div>
+      <div class="czm-sub">跌停数 Top10</div>${conceptChips(day.falling.by_limitdown,'fall','by_limitdown')}
+      <div class="czm-sub">跌幅≤-5% 数 Top10</div>${conceptChips(day.falling.by_down5,'fall','by_down5')}
+    </div>
+    <div id="czmqStockPanel"></div>`;
+  if(czmqCurConcept) renderCzmqStocks();
+}
+
+function selectCzmqConcept(opts){
+  const {concept, side, bucket} = opts;
+  const day=czmqDayData(); if(!day) return;
+  const bucketMap={by_limitup:day.rising.by_limitup,by_up5:day.rising.by_up5,by_limitdown:day.falling.by_limitdown,by_down5:day.falling.by_down5};
+  const found=(bucketMap[bucket]||[]).find(c=>c.concept===concept);
+  if(!found) return;
+  czmqCurConcept={concept, side, bucket, stocks:found.stocks};
+  const hd=document.getElementById('czmqCatConcept');
+  if(hd) hd.textContent=`${concept} · ${side==='rise'?'涨':'跌'} · ${found.stocks.length}只`;
+  renderCzmqDay();
+  renderCzmqStocks();
+  renderCzmqCats();
+}
+
+// 渲染个股卡片: K线 + 当前分类标签 + 两个翻转按钮(态/角位)
+function renderCzmqStocks(){
+  const panel=document.getElementById('czmqStockPanel');
+  if(!panel) return;
+  Object.values(czmqStockCharts).forEach(c=>{ try{c.dispose();}catch(_){} });
+  for(const k in czmqStockCharts) delete czmqStockCharts[k];
+  const c=czmqCurConcept;
+  if(!c){ panel.innerHTML=''; return; }
+  const cards=c.stocks.map((s,i)=>{
+    const pctCls=s.pct>=0?'up':'down';
+    const badge=({limitup:'<span class="czm-badge lu">涨停</span>',up5:'<span class="czm-badge u5">≥5%</span>',
+                  limitdown:'<span class="czm-badge ld">跌停</span>',down5:'<span class="czm-badge d5">≤-5%</span>'})[s.type]||'';
+    const cls=czmqClassify(s);
+    const tagCls = cls.corner==='up' ? 'up' : 'dn';
+    const urgentCls = cls.urgent ? ' urgent' : '';
+    const domId=`czmqk_${s.code}_${s.date}`;
+    // 翻转按钮当前态: 态按钮 urgent 时高亮; 角位按钮显示当前角位
+    const arg=JSON.stringify({code:s.code,date:s.date,concept:c.concept,name:s.name}).replace(/'/g,"&#39;");
+    return `<div class="czm-kline-card">
+      <div class="czm-kline-info">
+        <span class="ki-name">${escapeHtmlHT(s.name)}</span>
+        <span class="s-code">${s.code}</span>
+        <span class="s-pct ${pctCls}">${s.pct>=0?'+':''}${s.pct}%</span>
+        ${badge}
+        <span class="czmq-tag ${tagCls}${urgentCls}">${escapeHtmlHT(cls.label)}</span>
+        <span class="czmq-flip">
+          <button class="${cls.urgent?'on':''}" onclick='czmqFlipUrgent(${arg})' title="翻转 急/非急">${cls.urgent?'急':'非急'}</button>
+          <button class="${cls.corner==='up'?'on up':'on dn'}" onclick='czmqFlipCorner(${arg})' title="翻转 右上角/右下角">${cls.corner==='up'?'右上':'右下'}</button>
+        </span>
+      </div>
+      <div class="czm-kline-chart" id="${domId}"></div>
+    </div>`;
+  }).join('');
+  panel.innerHTML = `<div class="czm-stocks">
+    <div class="czm-sub">「${escapeHtmlHT(c.concept)}」符合条件个股 · K线截止 ${czmqCurDay.slice(0,4)}-${fmtDay(czmqCurDay)} · 100%线=近一年首日收盘×2</div>
+    <div class="czm-kline-list">${cards}</div></div>`;
+  c.stocks.forEach(s=>czmqLoadKline(s));
+}
+
+// 翻转急态
+async function czmqFlipUrgent(opts){
+  const {code, date, concept, name} = opts||{};
+  const k=czmqKey(code,date,concept);
+  const cur=czmqTagMap[k]||{};
+  const newUrgent = !cur.urgent;
+  const tag={code,date,concept,name,urgent:newUrgent,corner_override:cur.corner_override||null};
+  czmqTagMap[k]=tag;
+  renderCzmqStocks();   // 重渲卡片更新标签+按钮态(K线会重画, 但用户主动点翻转可接受)
+  renderCzmqCats();
+  try{ await fetch('/api/hot/czmq/tag',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(tag)}); }catch(e){}
+}
+
+// 翻转角位
+async function czmqFlipCorner(opts){
+  const {code, date, concept, name} = opts||{};
+  const k=czmqKey(code,date,concept);
+  const cur=czmqTagMap[k]||{};
+  // 当前角位(含自动判定): 若有 override 用 override, 否则用自动算的
+  const s = czmqCurConcept.stocks.find(x=>x.code===code && x.date===date);
+  const autoCls = czmqClassify(s);
+  const curCorner = cur.corner_override || autoCls.corner;
+  const newCorner = (curCorner==='up') ? 'dn' : 'up';
+  const tag={code,date,concept,name,urgent:cur.urgent||false,corner_override:newCorner};
+  czmqTagMap[k]=tag;
+  renderCzmqStocks();
+  renderCzmqCats();
+  try{ await fetch('/api/hot/czmq/tag',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(tag)}); }catch(e){}
+}
+
+// 右侧8个分类框: 遍历当前概念+日期的股票, 用 czmqClassify 算 label 归类
+function renderCzmqCats(){
+  const grid=document.getElementById('czmqCatGrid');
+  if(!grid) return;
+  const concept = czmqCurConcept ? czmqCurConcept.concept : null;
+  const stocks = czmqCurConcept ? czmqCurConcept.stocks : [];
+  // 8框: 每框收集匹配的股票
+  const boxes = CZMQ_LABELS.map(lb=>{
+    const items = stocks.filter(s=>{
+      const cls=czmqClassify(s);
+      return cls && cls.label===lb;
+    }).sort((a,b)=> (b.pct||0)-(a.pct||0));
+    return {label:lb, items};
+  });
+  grid.innerHTML = boxes.map(b=>{
+    const isUp = b.label.includes('涨');
+    const isUrgent = b.label.includes('急');
+    const udCls = isUp ? 'up' : 'dn';
+    const urgCls = isUrgent ? ' czmq-urgent' : '';
+    const chips = b.items.map(s=>{
+      const pctCls=(s.pct>=0)?'up':'down';
+      return `<div class="cat-chip">
+        <span class="cp s-pct ${pctCls}">${escapeHtmlHT(s.name||s.code)}</span>
+        <span class="s-code">${s.code} · ${s.pct>=0?'+':''}${s.pct}%</span>
+      </div>`;
+    }).join('') || '<span class="s-code" style="padding:3px;">-</span>';
+    return `<div class="cat-box ${udCls}${urgCls}" data-label="${escapeHtmlHT(b.label)}">
+      <div class="cat-hd"><span>${escapeHtmlHT(b.label)}</span><span class="cat-n">${b.items.length}</span></div>
+      <div class="cat-items">${chips}</div>
+    </div>`;
+  }).join('');
+}
+
+// K线加载与渲染(参考 czmRenderKline, 画 100%线 + 当天竖线)
+async function czmqLoadKline(s){
+  const domId=`czmqk_${s.code}_${s.date}`;
+  const dom=document.getElementById(domId);
+  if(!dom) return;
+  try{
+    const maxMa=20;
+    const cnt=Math.min(500, 250 + maxMa);
+    const data=await (await fetch(`/api/hot/explosive/kline?code=${s.code}&end=${s.date}&count=${cnt}&fq=front`)).json();
+    if(!data.success||!data.bars||!data.bars.length){ dom.innerHTML=`<div class="chart-empty">K线加载失败</div>`; return; }
+    czmqRenderKline(dom, domId, data.bars, s, data.source, data.fq);
+  }catch(e){ dom.innerHTML=`<div class="chart-empty">请求异常: ${escapeHtmlHT(e.message)}</div>`; }
+}
+
+function czmqRenderKline(dom, domId, bars, s, source, fq){
+  let chart=czmqStockCharts[domId];
+  if(chart){ try{chart.dispose();}catch(_){} }
+  dom.style.height = '280px';
+  chart=echarts.init(dom,'dark'); czmqStockCharts[domId]=chart;
+  const dates=bars.map(b=>b.date), ohlc=bars.map(b=>[b.open,b.close,b.low,b.high]);
+  const vols=bars.map(b=>({value:b.vol, itemStyle:{color: b.close>=b.open ? 'rgba(239,83,80,0.6)':'rgba(38,166,154,0.6)'}}));
+  const ma=n=>{const r=[];for(let i=0;i<bars.length;i++){if(i<n-1){r.push('-');continue;}let x=0;for(let j=i-n+1;j<=i;j++)x+=bars[j].close;r.push(+(x/n).toFixed(2));}return r;};
+  const endDash=`${s.date.slice(0,4)}-${s.date.slice(4,6)}-${s.date.slice(6,8)}`;
+  const maSeries=[5,10,20].map(n=>({name:'MA'+n,type:'line',data:ma(n),symbol:'none',smooth:true,lineStyle:{color:{5:'#facc15',10:'#60a5fa',20:'#a855f7'}[n],width:1}}));
+  // 涨幅横线: 相对首日收盘 +50%/+100%/+200%/+300% (与原招财猫一致, 100%线即判断右上/右下的基准)
+  const baseClose = bars[0].close;
+  const pctMarks = [
+    {pct:50,color:'#ff9800',label:'+50%'}, {pct:100,color:'#ef5350',label:'+100%'},
+    {pct:200,color:'#a855f7',label:'+200%'}, {pct:300,color:'#ffd700',label:'+300%'}
+  ].map(m=>({yAxis:baseClose*(1+m.pct/100),lineStyle:{color:m.color,width:1,type:'dashed'},label:{color:m.color,formatter:m.label,fontSize:9,position:'insideEndTop'}}));
+  chart.setOption({
+    backgroundColor:'transparent', animation:false,
+    tooltip:{trigger:'axis',axisPointer:{type:'cross'}},
+    legend:{show:true,top:0,right:8,itemWidth:14,itemHeight:8,textStyle:{color:'#9aa0a6',fontSize:9},data:['日K'].concat(maSeries.map(x=>x.name))},
+    grid:[{left:48,right:12,top:6,height:'68%'},{left:48,right:12,top:'78%',height:'16%'}],
+    xAxis:[{type:'category',data:dates,boundaryGap:true,axisLabel:{color:'#9aa0a6',fontSize:9}},{type:'category',gridIndex:1,data:dates,axisLabel:{show:false}}],
+    yAxis:[{scale:true,splitLine:{lineStyle:{color:'#252a33'}},axisLabel:{color:'#9aa0a6',fontSize:9}},{gridIndex:1,splitNumber:2,axisLabel:{show:false},splitLine:{show:false}}],
+    dataZoom:[{type:'inside',xAxisIndex:[0,1],start:0,end:100}],
+    series:[
+      {name:'日K',type:'candlestick',data:ohlc,itemStyle:{color:'#ef5350',color0:'#26a69a',borderColor:'#ef5350',borderColor0:'#26a69a'},
+        markLine:{symbol:'none',silent:true,data:[{xAxis:endDash,lineStyle:{color:'#ffd166',type:'dashed',width:1},label:{formatter:'当天',color:'#ffd166',fontSize:9}}].concat(pctMarks)}}
+    ].concat(maSeries).concat([{name:'成交量',type:'bar',xAxisIndex:1,yAxisIndex:1,data:vols}])
+  },true);
+  chart.resize();
+}
+
+// 持久化
+async function czmqLoadPersisted(){
+  try{
+    const r=await(await fetch('/api/hot/czmq/tags')).json();
+    if(r.success){ czmqTagMap={}; (Object.values(r.tags||{})).forEach(t=>{ czmqTagMap[czmqKey(t.code,t.date,t.concept)]=t; }); }
+  }catch(e){}
+}
+async function czmqRestoreResult(){
+  const stEl=document.getElementById('czmqStatus');
+  try{
+    const ctrl=new AbortController(); const to=setTimeout(()=>ctrl.abort(),60000);
+    const resp=await fetch('/api/hot/czmq/load',{signal:ctrl.signal}); clearTimeout(to);
+    const r=await resp.json();
+    if(r && r.success && r.result && r.result.days && r.result.days.length){
+      czmqResult=r.result; czmqCurDay=r.curDay || r.result.days[r.result.days.length-1];
+      if(stEl) stEl.textContent=`已恢复上次扫描 · ${r.result.days.length} 个交易日`;
+      return true;
+    }
+    if(stEl) stEl.textContent='无已保存的扫描结果, 请选择日期范围后点「开始」';
+  }catch(e){
+    if(stEl) stEl.innerHTML=`<span style="color:#ff9a9a;">恢复失败: ${escapeHtmlHT(e.message||e)}</span>`;
+  }
+  return false;
+}
+function czmqPersistResult(){
+  try{
+    fetch('/api/hot/czmq/save',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({result:czmqResult,curDay:czmqCurDay,ts:Date.now()})}).catch(()=>{});
+  }catch(e){}
 }
 </script>
 </body>

@@ -4359,6 +4359,49 @@ def _read_day_closes_batch(codes):
     return result
 
 
+def _read_day_ohlc_batch(codes):
+    """批量读通达信本地 .day 文件, 返回每只股票每日 {open, close}(单位元)。
+    供招财猫量化复盘判断"右上角/右下角"用: 涨看收盘 vs 100%线, 跌看开盘 vs 100%线。
+    .day 32字节记录: date(I) open(I*100) high(I*100) low(I*100) close(I*100) amount(f) vol(I) reserved(I)
+    返回 {code: {date_int_str: {'open':x, 'close':y}}}。
+    """
+    import struct
+    import os
+    try:
+        import tdx_source as _ts
+        base = os.path.join(_ts.TDX_INSTALL_DIR, 'Vipdoc')
+    except Exception:
+        return {}
+    sh_dir = os.path.join(base, 'sh', 'lday')
+    sz_dir = os.path.join(base, 'sz', 'lday')
+    if not (os.path.isdir(sh_dir) and os.path.isdir(sz_dir)):
+        return {}
+    result = {}
+    for code in codes:
+        if code.startswith('6') or code.startswith('9'):
+            fp = os.path.join(sh_dir, f'sh{code}.day')
+        else:
+            fp = os.path.join(sz_dir, f'sz{code}.day')
+        try:
+            with open(fp, 'rb') as f:
+                data = f.read()
+            ohlc = {}
+            for i in range(0, len(data), 32):
+                rec = data[i:i + 32]
+                if len(rec) < 32:
+                    break
+                d = struct.unpack('I', rec[:4])[0]
+                op = struct.unpack('I', rec[4:8])[0] / 100.0
+                cl = struct.unpack('I', rec[16:20])[0] / 100.0
+                if cl > 0:
+                    ohlc[str(d)] = {'open': op, 'close': cl}
+            if ohlc:
+                result[code] = ohlc
+        except Exception:
+            continue
+    return result
+
+
 def _read_lc1_minutes(code, date_int):
     """读通达信本地 .lc1 1分钟线文件, 提取指定日期的逐分钟价格。
     .lc1 每条记录32字节: date(I) time(I) open(f) high(f) low(f) close(f) amount(f) vol(I)
@@ -7190,6 +7233,574 @@ def api_caizhaomao_import():
                     json.dump(payload, f, ensure_ascii=False)
             merged['result'] = True
         return jsonify({'success': True, 'merged': merged})
+    except Exception as e:
+        return jsonify({'success': False, 'error': f'{type(e).__name__}: {e}'}), 500
+
+
+# ============================== 胜率统计(winrate) ==============================
+# 选股策略回测: 选定基准日 D, 取过去一个月有涨停(主板非ST非300/688)且 D 当天不涨停的股票作为候选池,
+# 勾选的股票以 D 日收盘价为买入价进入自选持仓; 切换日期时 K线延后、浮盈刷新; 卖出时以所选日收盘价
+# 锁定盈亏并计入胜率(盈利只数/已平仓总只数), 卖出后从持仓列表隐藏。
+# 持久化仿招财猫三段式: .winrate_picks.json + threading.Lock
+_WINRATE_FILE = '.winrate_picks.json'
+_winrate_picks = {}            # {pick_id: {code,name,buy_date,buy_price,sell_date,sell_price,status,pnl_pct,ts}}
+_winrate_lock = threading.Lock()
+
+
+def _load_winrate():
+    global _winrate_picks
+    try:
+        if os.path.exists(_WINRATE_FILE):
+            with open(_WINRATE_FILE, 'r', encoding='utf-8') as f:
+                _winrate_picks = json.load(f) or {}
+    except Exception as e:
+        print(f'[胜率统计] 载入持仓记录失败: {e}')
+        _winrate_picks = {}
+
+
+def _save_winrate():
+    try:
+        with _winrate_lock:
+            with open(_WINRATE_FILE, 'w', encoding='utf-8') as f:
+                json.dump(_winrate_picks, f, ensure_ascii=False)
+    except Exception as e:
+        print(f'[胜率统计] 保存持仓记录失败: {e}')
+
+
+_load_winrate()
+
+
+def _winrate_pick_id(code, buy_date):
+    return f'{code}_{buy_date}'
+
+
+@app.route('/api/hot/winrate/candidates', methods=['POST'])
+def api_winrate_candidates():
+    """生成胜率统计候选池。
+    参数: date(YYYYMMDD, 基准日 D)。
+    筛选: 主板(60/00, 排除300/688)非ST非退, 过去约一个月(22个交易日窗口)内任一日涨停,
+          且 D 当天不涨停。返回候选列表(含 D 日收盘价作为买入价 + D 日涨跌幅)。"""
+    data = request.get_json() or {}
+    date = str(data.get('date', '')).strip()
+    if not re.match(r'^\d{8}$', date):
+        return jsonify({'success': False, 'error': 'date 格式错误(需 YYYYMMDD)'}), 400
+    try:
+        import tdx_source as ts
+        # 过去约一个月: D 往前 35 自然日(覆盖 22 个交易日窗口)
+        ext_start = (datetime.strptime(date, '%Y%m%d') - timedelta(days=35)).strftime('%Y%m%d')
+        window = trading_days_in_range(ext_start, date)   # 含 D
+        if not window or window[-1] != date:
+            # D 不是交易日: 取窗口最后一日作为实际基准日
+            if not window:
+                return jsonify({'success': False, 'error': f'{date} 附近无交易日数据'}), 400
+        d_day = window[-1]
+        # 前一交易日(算 D 当天涨跌幅用)
+        prev_d = window[-2] if len(window) >= 2 else None
+        # 全市场股票+名称
+        names = {}
+        try:
+            lst = ts.stock_list('5', with_name=True) or []
+            names = {x['code']: x.get('name', '') for x in lst}
+        except Exception:
+            pass
+        # 过滤: 主板(60/00)非ST非退; 排除300/688
+        codes = []
+        for c in sorted(names.keys()):
+            if c.startswith(('300', '688')):    # 仅主板
+                continue
+            if not (c.startswith('60') or c.startswith('00')):
+                continue
+            nm = (names.get(c, '') or '').upper()
+            if 'ST' in nm or '退' in names.get(c, ''):
+                continue
+            codes.append(c)
+        if not codes:
+            return jsonify({'success': False, 'error': '未取到股票列表'}), 500
+        # 批量读收盘价
+        day_closes = _read_day_closes_batch(codes)   # {code: {date_int_str: close}}
+        candidates = []
+        for code in codes:
+            closes = day_closes.get(code)
+            if not closes:
+                continue
+            # 过去一个月内任一日涨停(涨跌幅 >= 阈值, 主板 9.8)
+            thr = _limit_threshold(code)
+            had_zt = False
+            for i in range(1, len(window)):
+                d = window[i]
+                p_day = window[i - 1]
+                c = closes.get(d)
+                p = closes.get(p_day)
+                if not c or not p or p <= 0:
+                    continue
+                if (c - p) / p * 100 >= thr:
+                    had_zt = True
+                    break
+            if not had_zt:
+                continue
+            # D 当天不涨停
+            c_d = closes.get(d_day)
+            p_d = closes.get(prev_d) if prev_d else None
+            if not c_d or c_d <= 0:
+                continue
+            pct_d = ((c_d - p_d) / p_d * 100) if (p_d and p_d > 0) else None
+            if pct_d is not None and pct_d >= thr:
+                continue   # D 当天涨停, 排除
+            candidates.append({
+                'code': code, 'name': names.get(code, code),
+                'buy_date': d_day, 'buy_price': round(c_d, 3),
+                'pct_on_d': round(pct_d, 2) if pct_d is not None else None,
+            })
+        # 按名称排序
+        candidates.sort(key=lambda x: x['name'])
+        # 计算下一个交易日(D+1), 供前端日期推进条起点
+        next_day = None
+        after = trading_days_in_range(d_day, (datetime.strptime(d_day, '%Y%m%d') + timedelta(days=10)).strftime('%Y%m%d'))
+        if len(after) >= 2:
+            next_day = after[1]
+        return jsonify({'success': True, 'date': d_day, 'next_day': next_day,
+                        'count': len(candidates), 'candidates': candidates})
+    except Exception as e:
+        return jsonify({'success': False, 'error': f'{type(e).__name__}: {e}'}), 500
+
+
+@app.route('/api/hot/winrate/pick', methods=['POST'])
+def api_winrate_pick():
+    """加入自选持仓(以 buy_date 收盘价为买入价)。
+    参数: code, name, buy_date(YYYYMMDD), buy_price。"""
+    data = request.get_json() or {}
+    code = str(data.get('code', '')).strip()
+    name = str(data.get('name', '')).strip()
+    buy_date = str(data.get('buy_date', '')).strip()
+    buy_price = data.get('buy_price')
+    if not re.match(r'^\d{6}$', code):
+        return jsonify({'success': False, 'error': 'code 格式错误'}), 400
+    if not re.match(r'^\d{8}$', buy_date):
+        return jsonify({'success': False, 'error': 'buy_date 格式错误'}), 400
+    try:
+        buy_price = round(float(buy_price), 3)
+    except Exception:
+        return jsonify({'success': False, 'error': 'buy_price 格式错误'}), 400
+    pid = _winrate_pick_id(code, buy_date)
+    with _winrate_lock:
+        _winrate_picks[pid] = {
+            'code': code, 'name': name, 'buy_date': buy_date, 'buy_price': buy_price,
+            'sell_date': None, 'sell_price': None, 'status': 'holding',
+            'pnl_pct': None, 'ts': time.time(),
+        }
+    _save_winrate()
+    return jsonify({'success': True, 'pick': _winrate_picks[pid]})
+
+
+@app.route('/api/hot/winrate/picks', methods=['GET'])
+def api_winrate_picks():
+    """返回持仓+已平仓记录。query: as_of=YYYYMMDD, 用于算每只持仓的当前浮盈。
+    status=closed 的记录 pnl_pct 已锁定, 直接返回。"""
+    as_of = str(request.args.get('as_of', '')).strip()
+    holding_codes = []
+    with _winrate_lock:
+        items = [dict(v) for v in _winrate_picks.values()]
+    for it in items:
+        if it.get('status') == 'holding':
+            holding_codes.append(it['code'])
+    # 批量取 as_of 日收盘价算浮盈
+    closes_map = {}
+    if as_of and re.match(r'^\d{8}$', as_of) and holding_codes:
+        closes_map = _read_day_closes_batch(holding_codes)
+    for it in items:
+        if it.get('status') == 'holding' and as_of:
+            closes = closes_map.get(it['code'], {})
+            cur = closes.get(as_of)
+            if cur and it.get('buy_price'):
+                it['cur_price'] = round(cur, 3)
+                it['pnl_pct'] = round((cur - it['buy_price']) / it['buy_price'] * 100, 2)
+            else:
+                it['cur_price'] = None
+                it['pnl_pct'] = None
+    # 持仓在前, 已平仓在后; 各组按买入日升序
+    items.sort(key=lambda x: (0 if x.get('status') == 'holding' else 1, x.get('buy_date', '')))
+    return jsonify({'success': True, 'picks': items, 'as_of': as_of})
+
+
+@app.route('/api/hot/winrate/sell', methods=['POST'])
+def api_winrate_sell():
+    """卖出: 以 sell_date 收盘价锁定盈亏, status 改 closed。
+    参数: code, buy_date(定位持仓), sell_date(YYYYMMDD)。"""
+    data = request.get_json() or {}
+    code = str(data.get('code', '')).strip()
+    buy_date = str(data.get('buy_date', '')).strip()
+    sell_date = str(data.get('sell_date', '')).strip()
+    if not re.match(r'^\d{6}$', code) or not re.match(r'^\d{8}$', buy_date) or not re.match(r'^\d{8}$', sell_date):
+        return jsonify({'success': False, 'error': '参数格式错误'}), 400
+    pid = _winrate_pick_id(code, buy_date)
+    with _winrate_lock:
+        pick = _winrate_picks.get(pid)
+        if not pick:
+            return jsonify({'success': False, 'error': '持仓不存在'}), 404
+        if pick.get('status') == 'closed':
+            return jsonify({'success': False, 'error': '该持仓已卖出'}), 400
+        # 取卖出日收盘价
+        closes = _read_day_closes_batch([code]).get(code, {})
+        sell_price = closes.get(sell_date)
+        if not sell_price or sell_price <= 0:
+            return jsonify({'success': False, 'error': f'{sell_date} 无收盘价数据(可能非交易日或本地无.day)'}), 400
+        buy_price = pick.get('buy_price')
+        pnl_pct = round((sell_price - buy_price) / buy_price * 100, 2) if buy_price else None
+        pick['sell_date'] = sell_date
+        pick['sell_price'] = round(sell_price, 3)
+        pick['pnl_pct'] = pnl_pct
+        pick['status'] = 'closed'
+        pick['ts'] = time.time()
+        out = dict(pick)
+    _save_winrate()
+    return jsonify({'success': True, 'pick': out})
+
+
+@app.route('/api/hot/winrate/stats', methods=['GET'])
+def api_winrate_stats():
+    """胜率统计: 已平仓记录中盈利只数 / 已平仓总只数。"""
+    with _winrate_lock:
+        closed = [v for v in _winrate_picks.values() if v.get('status') == 'closed']
+    total = len(closed)
+    wins = sum(1 for v in closed if (v.get('pnl_pct') or 0) > 0)
+    losses = total - wins
+    win_rate = round(wins / total * 100, 1) if total else 0.0
+    pnls = [v.get('pnl_pct') for v in closed if v.get('pnl_pct') is not None]
+    avg_pnl = round(sum(pnls) / len(pnls), 2) if pnls else 0.0
+    # 持仓数
+    with _winrate_lock:
+        holding = sum(1 for v in _winrate_picks.values() if v.get('status') == 'holding')
+    return jsonify({'success': True, 'total_closed': total, 'wins': wins, 'losses': losses,
+                    'win_rate': win_rate, 'avg_pnl': avg_pnl, 'holding': holding})
+
+
+@app.route('/api/hot/winrate/remove', methods=['POST'])
+def api_winrate_remove():
+    """移除一条持仓/平仓记录(误操作清理)。参数: code, buy_date。"""
+    data = request.get_json() or {}
+    code = str(data.get('code', '')).strip()
+    buy_date = str(data.get('buy_date', '')).strip()
+    pid = _winrate_pick_id(code, buy_date)
+    with _winrate_lock:
+        existed = pid in _winrate_picks
+        _winrate_picks.pop(pid, None)
+    if existed:
+        _save_winrate()
+    return jsonify({'success': True, 'removed': existed})
+
+
+# ============================== 招财猫量化复盘(czmq) ==============================
+# 8项分类: 右上角涨/右上角急涨/右下角涨/右下角急涨/右上角跌/右上角急跌/右下角跌/右下角急跌
+# 自动判定: 涨跌看当日涨跌幅; 右上/右下看当日收盘(涨)或开盘(跌) vs 100%线(baseClose*2, baseClose=近一年K线首日收盘)
+# 用户翻转: 态(涨↔急涨 / 跌↔急跌) + 角位(右上↔右下), 持久化到 .czmq_tags.json
+# 扫描范围: 仅主板(60/00)非ST非退, 阈值9.8
+CZMQ_LABELS = [
+    '右上角涨', '右上角急涨', '右下角涨', '右下角急涨',
+    '右上角跌', '右上角急跌', '右下角跌', '右下角急跌',
+]
+czmq_tasks = {}   # {task_id: {status,progress,processed,total,start,end,result,error}}
+
+# ---- tags 持久化(用户翻转标记) ----
+_CZMQ_TAGS_FILE = '.czmq_tags.json'
+_czmq_tags = {}              # {tag_id: {code,name,date,concept,urgent,corner_override,ts}}
+_czmq_tags_lock = threading.Lock()
+
+
+def _czmq_tag_id(code, date, concept):
+    return f'{code}_{date}_{concept}'
+
+
+def _load_czmq_tags():
+    global _czmq_tags
+    try:
+        if os.path.exists(_CZMQ_TAGS_FILE):
+            with open(_CZMQ_TAGS_FILE, 'r', encoding='utf-8') as f:
+                _czmq_tags = json.load(f) or {}
+    except Exception as e:
+        print(f'[招财猫量化] 载入翻转标记失败: {e}')
+        _czmq_tags = {}
+
+
+def _save_czmq_tags():
+    try:
+        with _czmq_tags_lock:
+            with open(_CZMQ_TAGS_FILE, 'w', encoding='utf-8') as f:
+                json.dump(_czmq_tags, f, ensure_ascii=False)
+    except Exception as e:
+        print(f'[招财猫量化] 保存翻转标记失败: {e}')
+
+
+_load_czmq_tags()
+
+# ---- result 持久化(扫描结果) ----
+_CZMQ_RESULT_FILE = '.czmq_result.json'
+_czmq_result_lock = threading.Lock()
+
+
+def czmq_scan_task(task_id, start8, end8):
+    """招财猫量化复盘扫描: 仅主板(60/00)非ST, 4榜(涨停/大涨/跌停/大跌), 每个event附带 base_close + open_d + close_d。"""
+    import tdx_source as ts
+    from collections import defaultdict
+    t = czmq_tasks[task_id]
+    t['status'] = 'running'
+    try:
+        if t.get('cancel_requested'):
+            t['status'] = 'cancelled'
+            return
+        days = trading_days_in_range(start8, end8)
+        if not days:
+            t['status'] = 'failed'
+            t['error'] = '区间内没有A股交易日'
+            return
+        concept_map = _load_concept_members()
+        if not concept_map:
+            t['status'] = 'failed'
+            t['error'] = '无概念成分股数据(请先在「数据同步」同步同花顺概念)'
+            return
+        code_to_concepts = defaultdict(set)
+        for con, codes in concept_map.items():
+            for c in codes:
+                code_to_concepts[c].add(con)
+        names = {}
+        try:
+            lst = ts.stock_list('5', with_name=True) or []
+            names = {x['code']: x.get('name', '') for x in lst}
+        except Exception:
+            pass
+        # 过滤: 仅主板(60/00), 非ST非退
+        all_codes = []
+        for c in sorted(code_to_concepts.keys()):
+            if not (c.startswith('60') or c.startswith('00')):
+                continue   # 仅主板, 排除300/688
+            nm = (names.get(c, '') or '').upper()
+            if 'ST' in nm or '退' in names.get(c, ''):
+                continue
+            all_codes.append(c)
+        total = len(all_codes)
+        t['total'] = total
+        # 前一交易日映射
+        ext_start = (datetime.strptime(start8, '%Y%m%d') - timedelta(days=15)).strftime('%Y%m%d')
+        cal = trading_days_in_range(ext_start, end8)
+        cal_pos = {d: i for i, d in enumerate(cal)}
+        prev_of = {}
+        for d in days:
+            i = cal_pos.get(d)
+            prev_of[d] = cal[i - 1] if (i is not None and i > 0) else None
+
+        events = []
+        t['progress'] = 5
+        # 批量读 OHLC(开盘+收盘), 一次拿全
+        day_ohlc = _read_day_ohlc_batch(all_codes)   # {code: {date_int_str: {open,close}}}
+        t['progress'] = 55
+        # 主板统一阈值 9.8
+        for i, code in enumerate(all_codes):
+            if t.get('cancel_requested'):
+                break
+            t['processed'] = i + 1
+            t['progress'] = 55 + int((i + 1) / max(total, 1) * 40)
+            ohlc = day_ohlc.get(code)
+            if not ohlc:
+                continue
+            thr = 9.8   # 仅主板
+            # base_close: 近一年K线首日收盘(与前端 /explosive/kline count=250 的 bars[0].close 一致)
+            # .day 文件按日期升序, 取最早一根的 close 作为 baseClose
+            sorted_dates = sorted(ohlc.keys())
+            if len(sorted_dates) < 2:
+                continue
+            # 取近约一年(250交易日)的首日: 若数据超250根取倒数第250根, 否则取首根
+            base_idx = max(0, len(sorted_dates) - 250)
+            base_close = ohlc[sorted_dates[base_idx]].get('close')
+            if not base_close or base_close <= 0:
+                continue
+            for d in days:
+                prev = prev_of.get(d)
+                if not prev:
+                    continue
+                cur = ohlc.get(d)
+                prv = ohlc.get(prev)
+                if not cur or not prv:
+                    continue
+                c = cur.get('close')
+                p = prv.get('close')
+                if not c or not p or p <= 0:
+                    continue
+                pct = (c - p) / p * 100
+                typ = _classify_pct(pct, thr)
+                if not typ:
+                    continue
+                ppos, plevel = _price_position({k: v['close'] for k, v in ohlc.items()}, d)
+                events.append({
+                    'code': code, 'name': names.get(code, code),
+                    'date': d, 'pct': round(pct, 2), 'type': typ,
+                    'pos': ppos, 'poslevel': plevel,
+                    'base_close': round(base_close, 3),
+                    'open_d': round(cur.get('open', 0), 3),
+                    'close_d': round(c, 3),
+                })
+        t['progress'] = 96
+        # 按(日期->概念)聚合
+        day_concept_events = defaultdict(lambda: defaultdict(list))
+        for ev in events:
+            for con in code_to_concepts.get(ev['code'], ()):
+                day_concept_events[ev['date']][con].append(ev)
+
+        def build_day_rank(con_map, count_type):
+            rising = count_type in ('limitup', 'up5')
+            scored = []
+            for con, evs in con_map.items():
+                kept = [e for e in evs if e['type'] == count_type]
+                if not kept:
+                    continue
+                kept = sorted(kept, key=lambda e: (-e['pct'] if rising else e['pct']))
+                scored.append({'concept': con, 'count': len(kept), 'stocks': kept})
+            scored.sort(key=lambda x: -x['count'])
+            return scored[:10]
+
+        by_day = []
+        for d in days:
+            con_map = day_concept_events.get(d, {})
+            by_day.append({
+                'date': d,
+                'rising': {'by_limitup': build_day_rank(con_map, 'limitup'),
+                           'by_up5': build_day_rank(con_map, 'up5')},
+                'falling': {'by_limitdown': build_day_rank(con_map, 'limitdown'),
+                            'by_down5': build_day_rank(con_map, 'down5')},
+            })
+        t['result'] = {'days': days, 'by_day': by_day, 'event_count': len(events)}
+        t['processed'] = total
+        t['progress'] = 100
+        t['status'] = 'cancelled' if t.get('cancel_requested') else 'completed'
+    except Exception as e:
+        t['status'] = 'failed'
+        t['error'] = f'{type(e).__name__}: {e}'
+
+
+@app.route('/api/hot/czmq/scan', methods=['POST'])
+def api_czmq_scan():
+    """启动招财猫量化复盘扫描。参数: start(YYYY-MM-DD), end(YYYY-MM-DD)。"""
+    data = request.get_json() or {}
+    start = str(data.get('start', '')).strip()
+    end = str(data.get('end', '')).strip()
+    try:
+        datetime.strptime(start, '%Y-%m-%d')
+        datetime.strptime(end, '%Y-%m-%d')
+    except ValueError:
+        return jsonify({'success': False, 'error': '日期格式错误, 请使用 YYYY-MM-DD'}), 400
+    start8 = start.replace('-', '')
+    end8 = end.replace('-', '')
+    if start8 > end8:
+        start8, end8 = end8, start8
+    import uuid
+    task_id = str(uuid.uuid4())[:8]
+    czmq_tasks[task_id] = {'status': 'pending', 'progress': 0, 'processed': 0, 'total': 0,
+                           'start': start8, 'end': end8, 'result': None, 'error': None}
+    threading.Thread(target=czmq_scan_task, args=(task_id, start8, end8), daemon=True).start()
+    return jsonify({'success': True, 'task_id': task_id, 'status_url': f'/api/hot/czmq/status/{task_id}'})
+
+
+@app.route('/api/hot/czmq/status/<task_id>')
+def api_czmq_status(task_id):
+    """查询扫描任务状态, 完成时返回 result + tags。"""
+    t = czmq_tasks.get(task_id)
+    if not t:
+        return jsonify({'success': False, 'error': '任务不存在'}), 404
+    resp = {'success': True, 'task_id': task_id, 'status': t['status'],
+            'progress': t.get('progress', 0), 'processed': t.get('processed', 0),
+            'total': t.get('total', 0), 'error': t.get('error')}
+    if t['status'] in ('completed', 'cancelled') and t.get('result'):
+        resp['result'] = t['result']
+        resp['event_count'] = t['result'].get('event_count', 0)
+        with _czmq_tags_lock:
+            resp['tags'] = dict(_czmq_tags)
+    return jsonify(resp)
+
+
+@app.route('/api/hot/czmq/cancel/<task_id>', methods=['POST'])
+def api_czmq_cancel(task_id):
+    """中断扫描任务。"""
+    t = czmq_tasks.get(task_id)
+    if not t:
+        return jsonify({'success': False, 'error': '任务不存在'}), 404
+    t['cancel_requested'] = True
+    return jsonify({'success': True, 'message': '已请求中断'})
+
+
+@app.route('/api/hot/czmq/tag', methods=['POST'])
+def api_czmq_tag():
+    """保存/更新翻转标记。参数: code, date, concept, urgent(bool), corner_override('up'/'dn'/null)。
+    urgent=true 表示翻转成急态; corner_override 覆盖自动角位判定。"""
+    data = request.get_json() or {}
+    code = str(data.get('code', '')).strip()
+    date = str(data.get('date', '')).strip()
+    concept = str(data.get('concept', '')).strip()
+    if not re.match(r'^\d{6}$', code) or not re.match(r'^\d{8}$', date) or not concept:
+        return jsonify({'success': False, 'error': '参数格式错误'}), 400
+    urgent = bool(data.get('urgent', False))
+    co = data.get('corner_override')
+    if co not in ('up', 'dn', None):
+        co = None
+    pid = _czmq_tag_id(code, date, concept)
+    with _czmq_tags_lock:
+        _czmq_tags[pid] = {
+            'code': code, 'name': str(data.get('name', '')).strip(), 'date': date, 'concept': concept,
+            'urgent': urgent, 'corner_override': co, 'ts': time.time(),
+        }
+    _save_czmq_tags()
+    return jsonify({'success': True, 'tag': _czmq_tags[pid]})
+
+
+@app.route('/api/hot/czmq/tags', methods=['GET'])
+def api_czmq_tags():
+    """返回全部翻转标记。"""
+    with _czmq_tags_lock:
+        return jsonify({'success': True, 'tags': dict(_czmq_tags), 'labels': CZMQ_LABELS})
+
+
+@app.route('/api/hot/czmq/tag/clear', methods=['POST'])
+def api_czmq_tag_clear():
+    """清除单只票的翻转标记(恢复自动判定)。参数: code, date, concept。"""
+    data = request.get_json() or {}
+    code = str(data.get('code', '')).strip()
+    date = str(data.get('date', '')).strip()
+    concept = str(data.get('concept', '')).strip()
+    pid = _czmq_tag_id(code, date, concept)
+    with _czmq_tags_lock:
+        existed = pid in _czmq_tags
+        _czmq_tags.pop(pid, None)
+    if existed:
+        _save_czmq_tags()
+    return jsonify({'success': True, 'removed': existed})
+
+
+@app.route('/api/hot/czmq/save', methods=['POST'])
+def api_czmq_save():
+    """保存扫描结果到服务端。"""
+    try:
+        data = request.get_json(force=True)
+        if not data or 'result' not in data:
+            return jsonify({'success': False, 'error': '缺少 result 字段'}), 400
+        payload = {'result': data['result'], 'curDay': data.get('curDay'),
+                   'ts': data.get('ts', int(time.time()))}
+        with _czmq_result_lock:
+            with open(_CZMQ_RESULT_FILE, 'w', encoding='utf-8') as f:
+                json.dump(payload, f, ensure_ascii=False)
+        return jsonify({'success': True, 'size': os.path.getsize(_CZMQ_RESULT_FILE)})
+    except Exception as e:
+        return jsonify({'success': False, 'error': f'{type(e).__name__}: {e}'}), 500
+
+
+@app.route('/api/hot/czmq/load', methods=['GET'])
+def api_czmq_load():
+    """加载上次保存的扫描结果。"""
+    try:
+        if not os.path.exists(_CZMQ_RESULT_FILE):
+            return jsonify({'success': False, 'error': '无已保存的扫描结果'})
+        with _czmq_result_lock:
+            with open(_CZMQ_RESULT_FILE, 'r', encoding='utf-8') as f:
+                payload = json.load(f)
+        if payload and payload.get('result', {}).get('days'):
+            return jsonify({'success': True, **payload})
+        return jsonify({'success': False, 'error': '扫描结果数据无效'})
     except Exception as e:
         return jsonify({'success': False, 'error': f'{type(e).__name__}: {e}'}), 500
 

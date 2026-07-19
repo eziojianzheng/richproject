@@ -79,6 +79,9 @@ _tqcenter_init.py
 .caizhaomao_locks.json
 .caizhaomao_result.json
 .caizhaomao_result_server.json
+.winrate_picks.json
+.czmq_tags.json
+.czmq_result.json
 
 # 测试脚本
 _test_*.py
