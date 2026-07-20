@@ -79,6 +79,9 @@ _tqcenter_init.py
 .caizhaomao_locks.json
 .caizhaomao_result.json
 .caizhaomao_result_server.json
+.winrate_picks.json
+.czmq_tags.json
+.czmq_result.json
 
 # 测试脚本
 _test_*.py
@@ -104,3 +107,9 @@ _session_alive.flag
 
 # 误创建的乱码文件
 ersADMINDesktopAI*
+
+# api_server.py 拆分的一次性临时脚本(注释已写明可删, 勿提交)
+_gen_bp.py
+_shot.py
+_split_helper.py
+_split_blocks.json
