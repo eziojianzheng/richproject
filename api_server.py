@@ -5080,10 +5080,36 @@ def hot_compute_task(task_id, start, end, with_price):
         # 瘦身: 裁剪 by_date 里非当天 track(前端只用 s.track[当天]), 减小体积~95%
         _slim_by_date_tracks(final)
         # 服务端持久化最近结果(供刷新恢复)
-        global hot_last
-        hot_last = {'start': start, 'end': end, 'price': with_price,
-                    'saved_at': time.time(), 'result': final}
-        _save_hot_last()
+        # 保护: 两种情况会"污染"缓存导致前端全是✗:
+        #   1) 行情源异常: with_price=True 但 track.pct 大面积为 None
+        #   2) 用户关闭涨幅: with_price=False 时 pct 本就是 None, 这种"空结果"
+        #      不应覆盖之前 with_price=True 的好缓存。仅当本次 truly 带涨幅且
+        #      数据完整时才持久化; 当次结果仍返回给发起者(不持久化)。
+        _skip_save = False
+        if not with_price:
+            _skip_save = True
+            _dlog(f'[{task_id}] 跳过保存缓存: with_price=False (未获取涨幅), 保留旧缓存', 'INFO')
+        else:
+            _total_p, _miss_p = 0, 0
+            for _day in final.get('by_date', []):
+                _dd = _day['date']
+                for _b in _day.get('blocks', []):
+                    for _s in _b.get('stocks', []):
+                        _tr = _s.get('track', {}).get(_dd, {})
+                        if _tr.get('suspended'):
+                            continue
+                        _total_p += 1
+                        if _tr.get('pct') is None:
+                            _miss_p += 1
+            if _total_p > 0 and _miss_p / _total_p > 0.5:
+                _skip_save = True
+                _dlog(f'[{task_id}] 跳过保存缓存: pct 缺失 {_miss_p}/{_total_p} '
+                      f'({ _miss_p*100//_total_p }%), 疑似行情源异常, 保留旧缓存', 'WARNING')
+        if not _skip_save:
+            global hot_last
+            hot_last = {'start': start, 'end': end, 'price': with_price,
+                        'saved_at': time.time(), 'result': final}
+            _save_hot_last()
     except Exception as e:
         _dlog(f'[{task_id}] 计算异常: {e}', 'ERROR')
         t['status'] = 'failed'
@@ -7498,6 +7524,9 @@ CZMQ_LABELS = [
     '右上角涨', '右上角急涨', '右下角涨', '右下角急涨',
     '右上角跌', '右上角急跌', '右下角跌', '右下角急跌',
 ]
+# 概念黑名单: 过于宽泛/与个股质地无关的笼统概念, 不参与榜单。
+# 子串匹配: 如"股权转让"可命中"股权转让(并购重组)"。
+CZMQ_CONCEPT_BLACKLIST = ('创投', '股权转让')
 czmq_tasks = {}   # {task_id: {status,progress,processed,total,start,end,result,error}}
 
 # ---- tags 持久化(用户翻转标记) ----
@@ -7532,6 +7561,39 @@ def _save_czmq_tags():
 
 _load_czmq_tags()
 
+# ---- locks 持久化(概念榜单锁定标记, 标记已操作) ----
+_CZMQ_LOCKS_FILE = '.czmq_locks.json'
+_czmq_locks = {}            # {"日期_side_bucket_概念": {date,concept,side,bucket,ts}}
+_czmq_locks_lock = threading.Lock()
+
+
+def _czmq_lock_key(date, concept, side, bucket):
+    """锁定key: 日期+side+bucket+概念(与招财猫传统版结构一致, 但独立存储)。"""
+    return f'{date}_{side}_{bucket}_{concept}' if (side and bucket) else f'{date}_{concept}'
+
+
+def _load_czmq_locks():
+    global _czmq_locks
+    try:
+        if os.path.exists(_CZMQ_LOCKS_FILE):
+            with open(_CZMQ_LOCKS_FILE, 'r', encoding='utf-8') as f:
+                _czmq_locks = json.load(f) or {}
+    except Exception as e:
+        print(f'[招财猫量化] 载入锁定标记失败: {e}')
+        _czmq_locks = {}
+
+
+def _save_czmq_locks():
+    try:
+        with _czmq_locks_lock:
+            with open(_CZMQ_LOCKS_FILE, 'w', encoding='utf-8') as f:
+                json.dump(_czmq_locks, f, ensure_ascii=False)
+    except Exception as e:
+        print(f'[招财猫量化] 保存锁定标记失败: {e}')
+
+
+_load_czmq_locks()
+
 # ---- result 持久化(扫描结果) ----
 _CZMQ_RESULT_FILE = '.czmq_result.json'
 _czmq_result_lock = threading.Lock()
@@ -7559,6 +7621,8 @@ def czmq_scan_task(task_id, start8, end8):
             return
         code_to_concepts = defaultdict(set)
         for con, codes in concept_map.items():
+            if any(bk in con for bk in CZMQ_CONCEPT_BLACKLIST):
+                continue   # 跳过黑名单概念(创投/股权转让等过于笼统)
             for c in codes:
                 code_to_concepts[c].add(con)
         names = {}
@@ -7712,6 +7776,8 @@ def api_czmq_status(task_id):
         resp['event_count'] = t['result'].get('event_count', 0)
         with _czmq_tags_lock:
             resp['tags'] = dict(_czmq_tags)
+        with _czmq_locks_lock:
+            resp['locks'] = dict(_czmq_locks)
     return jsonify(resp)
 
 
@@ -7753,7 +7819,8 @@ def api_czmq_tag():
 def api_czmq_tags():
     """返回全部翻转标记。"""
     with _czmq_tags_lock:
-        return jsonify({'success': True, 'tags': dict(_czmq_tags), 'labels': CZMQ_LABELS})
+        with _czmq_locks_lock:
+            return jsonify({'success': True, 'tags': dict(_czmq_tags), 'labels': CZMQ_LABELS, 'locks': dict(_czmq_locks)})
 
 
 @app.route('/api/hot/czmq/tag/clear', methods=['POST'])
@@ -7770,6 +7837,36 @@ def api_czmq_tag_clear():
     if existed:
         _save_czmq_tags()
     return jsonify({'success': True, 'removed': existed})
+
+
+@app.route('/api/hot/czmq/lock', methods=['POST'])
+def api_czmq_lock():
+    """锁定/解锁概念榜单(按 日期+side+bucket+概念)。用于标记该概念榜单是否已操作过。
+    参数: date(YYYYMMDD), concept, side(rise/fall), bucket(by_limitup/by_up5/by_limitdown/by_down5), locked(bool)。"""
+    data = request.get_json() or {}
+    date = str(data.get('date', '')).strip()
+    concept = str(data.get('concept', '')).strip()
+    side = str(data.get('side', '')).strip()
+    bucket = str(data.get('bucket', '')).strip()
+    locked = bool(data.get('locked', False))
+    if not re.match(r'^\d{8}$', date):
+        return jsonify({'success': False, 'error': 'date 格式错误'}), 400
+    if not concept:
+        return jsonify({'success': False, 'error': '缺少 concept'}), 400
+    key = _czmq_lock_key(date, concept, side, bucket)
+    with _czmq_locks_lock:
+        if locked:
+            _czmq_locks[key] = {'date': date, 'concept': concept, 'side': side, 'bucket': bucket, 'ts': time.time()}
+        else:
+            _czmq_locks.pop(key, None)
+    _save_czmq_locks()
+    return jsonify({'success': True, 'locked': locked})
+
+
+@app.route('/api/hot/czmq/locks', methods=['GET'])
+def api_czmq_locks():
+    """返回所有已保存的概念榜单锁定标记。"""
+    return jsonify({'success': True, 'locks': _czmq_locks})
 
 
 @app.route('/api/hot/czmq/save', methods=['POST'])
