@@ -4164,6 +4164,315 @@ def hot_track_page():
     return resp
 
 
+# ============== 模拟复盘页面 ==============
+
+@app.route('/simreplay', methods=['GET'])
+def simreplay_page():
+    """模拟复盘页面"""
+    resp = make_response(render_template('simreplay.html'))
+    resp.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
+    return resp
+
+
+@app.route('/api/simreplay/dates', methods=['GET'])
+def api_simreplay_dates():
+    """返回数据库中已入库的交易日列表(供日期按钮条)"""
+    try:
+        import hot_track as ht
+        dates = sorted(ht.list_db_dates(), reverse=True)
+        return jsonify({'success': True, 'dates': dates})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/simreplay/daily_stats', methods=['GET'])
+def api_simreplay_daily_stats():
+    """某日市场概况: 涨跌数/涨停/跌停/炸板/最高连板/成交额"""
+    date8 = request.args.get('date', '')
+    if not re.match(r'^\d{8}$', date8):
+        return jsonify({'success': False, 'error': 'date 需为 YYYYMMDD'}), 400
+    d = f"{date8[:4]}-{date8[4:6]}-{date8[6:8]}"
+    try:
+        import db as _db
+        import tdx_source as ts
+        import hot_track as ht
+        conn = _db.get_conn()
+        try:
+            with conn.cursor() as cur:
+                # zt_daily: 涨跌数/成交额
+                cur.execute("SELECT up_count, down_count, total_amount FROM zt_daily WHERE trade_date=%s", (d,))
+                row = cur.fetchone()
+                up_count = row[0] if row else None
+                down_count = row[1] if row else None
+                total_amount = float(row[2]) if row and row[2] else None
+                # zt_stocks: 涨停数/最高连板/涨停个股列表
+                cur.execute("SELECT code, name, lianban, last_time, reason, block FROM zt_stocks WHERE trade_date=%s", (d,))
+                zt_rows = cur.fetchall()
+        finally:
+            conn.close()
+
+        # 去重: 同一只股票可能属于多个板块, 取第一个板块
+        seen_codes = set()
+        unique_zt = []
+        for code, name, lianban, last_time, reason, block in zt_rows:
+            if code in seen_codes:
+                continue
+            seen_codes.add(code)
+            unique_zt.append((code, name, lianban, last_time, reason, block))
+        zt_rows = unique_zt
+
+        limitup_count = len(zt_rows)
+        max_lianban = 0
+        for r in zt_rows:
+            try:
+                lb = int(r[2]) if r[2] else 0
+            except Exception:
+                lb = 0
+            if lb > max_lianban:
+                max_lianban = lb
+
+        # 跌停数/炸板数: 读 .day 文件(主板全市场太大, 用涨停股反推不合适;
+        # 改用 czmq_result.json 的 by_day 汇总, 若无则跳过)
+        limitdown_count = None
+        zhaban_count = None
+        try:
+            import json as _json
+            czmq_path = '.czmq_result.json'
+            if os.path.exists(czmq_path):
+                with open(czmq_path, 'r', encoding='utf-8') as f:
+                    czmq = _json.load(f)
+                by_day = czmq.get('result', {}).get('by_day', [])
+                for day_data in by_day:
+                    if day_data.get('date') == date8:
+                        limitdown_count = sum(c.get('count', 0) for c in day_data.get('falling', {}).get('by_limitdown', []))
+                        break
+        except Exception:
+            pass
+
+        return jsonify({
+            'success': True, 'date': date8,
+            'up_count': up_count, 'down_count': down_count,
+            'total_amount': total_amount,
+            'limitup_count': limitup_count,
+            'limitdown_count': limitdown_count,
+            'zhaban_count': zhaban_count,
+            'max_lianban': max_lianban,
+        })
+    except Exception as e:
+        return jsonify({'success': False, 'error': f'{type(e).__name__}: {e}'}), 500
+
+
+@app.route('/api/simreplay/zt_top', methods=['GET'])
+def api_simreplay_zt_top():
+    """某日涨停 Top10 (按连板数降序)"""
+    date8 = request.args.get('date', '')
+    if not re.match(r'^\d{8}$', date8):
+        return jsonify({'success': False, 'error': 'date 需为 YYYYMMDD'}), 400
+    d = f"{date8[:4]}-{date8[4:6]}-{date8[6:8]}"
+    try:
+        import db as _db
+        conn = _db.get_conn()
+        try:
+            with conn.cursor() as cur:
+                # DISTINCT ON (code) 去重(同一股票多板块只取第一条)
+                cur.execute(
+                    "SELECT DISTINCT ON (code) code, name, lianban, last_time, reason, block "
+                    "FROM zt_stocks WHERE trade_date=%s "
+                    "ORDER BY code, CASE WHEN lianban ~ '^[0-9]+$' THEN lianban::int ELSE 0 END DESC NULLS LAST, id", (d,))
+                rows = cur.fetchall()
+        finally:
+            conn.close()
+        # 按连板数降序取前10
+        def _lb(r):
+            try: return int(r[2]) if r[2] else 0
+            except: return 0
+        rows = sorted(rows, key=_lb, reverse=True)[:10]
+        stocks = []
+        for code, name, lianban, last_time, reason, block in rows:
+            stocks.append({
+                'code': code, 'name': name, 'lianban': lianban or '1',
+                'last_time': last_time or '', 'reason': reason or '',
+                'block': block or ''
+            })
+        return jsonify({'success': True, 'date': date8, 'stocks': stocks})
+    except Exception as e:
+        return jsonify({'success': False, 'error': f'{type(e).__name__}: {e}'}), 500
+
+
+@app.route('/api/simreplay/scan', methods=['GET'])
+def api_simreplay_scan():
+    """条件选股: 从指定日期往前 lookback 个交易日内有涨停的主板个股(排除ST/300/688)
+    返回每只股票的近60日K线"""
+    import time as _time
+    date8 = request.args.get('date', '')
+    if not re.match(r'^\d{8}$', date8):
+        return jsonify({'success': False, 'error': 'date 需为 YYYYMMDD'}), 400
+    lookback = request.args.get('lookback', default=30, type=int)
+    lookback = max(5, min(lookback, 60))
+    limit = request.args.get('limit', default=50, type=int)
+    limit = max(10, min(limit, 100))
+    d = f"{date8[:4]}-{date8[4:6]}-{date8[6:8]}"
+    try:
+        import db as _db
+        import tdx_source as ts
+        conn = _db.get_conn()
+        try:
+            with conn.cursor() as cur:
+                # 查过去 lookback 天内(含 date8)有涨停的主板个股
+                cur.execute(
+                    "SELECT DISTINCT code, name, MAX(trade_date) as last_zt "
+                    "FROM zt_stocks WHERE trade_date <= %s "
+                    "AND trade_date >= (%s::date - interval '%s days')::date "
+                    "AND code ~ '^(00|60)' "
+                    "GROUP BY code, name ORDER BY MAX(trade_date) DESC", (d, d, lookback))
+                rows = cur.fetchall()
+        finally:
+            conn.close()
+
+        # 排除 ST, 按 last_zt 降序(最新涨停的优先), 限制数量
+        filtered = [(code, name, last_zt) for code, name, last_zt in rows
+                    if not (name and ('ST' in name or 'st' in name))]
+        total_candidates = len(filtered)
+        rows = filtered[:limit]
+
+        results = []
+        failed = []
+        for code, name, last_zt in rows:
+            try:
+                bars, source = ts.kline_daily(code, count=60, prefer_local=True)
+                if not bars:
+                    failed.append(code)
+                    continue
+                # 只保留 date8 及之前的 K线
+                bars = [b for b in bars if b['date'].replace('-', '') <= date8]
+                if len(bars) < 5:
+                    failed.append(code)
+                    continue
+                slim = [{'date': b['date'], 'open': b['open'], 'high': b['high'],
+                         'low': b['low'], 'close': b['close'], 'vol': b.get('vol', 0)} for b in bars]
+                results.append({
+                    'code': code, 'name': name or code,
+                    'last_zt_date': last_zt.strftime('%Y%m%d') if last_zt else '',
+                    'bars': slim
+                })
+            except Exception:
+                failed.append(code)
+            _time.sleep(0.03)
+        return jsonify({
+            'success': True, 'results': results, 'failed': failed,
+            'count': len(results), 'total_candidates': total_candidates, 'date': date8
+        })
+    except Exception as e:
+        return jsonify({'success': False, 'error': f'{type(e).__name__}: {e}'}), 500
+
+
+@app.route('/api/simreplay/watchlist', methods=['GET'])
+def api_simreplay_watchlist():
+    """自选股列表 + 5日结果判断 + 整体胜率"""
+    try:
+        import tdx_source as ts
+        # 读自选股
+        wl = _load_watchlist()
+        if not wl:
+            return jsonify({'success': True, 'stocks': [], 'win_rate': None, 'satisfied': 0, 'total': 0})
+
+        # 获取所有交易日(从 zt_daily)
+        import db as _db
+        conn = _db.get_conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT to_char(trade_date,'YYYYMMDD') FROM zt_daily ORDER BY trade_date")
+                trading_days = [r[0] for r in cur.fetchall()]
+        finally:
+            conn.close()
+        day_set = set(trading_days)
+        day_idx = {d: i for i, d in enumerate(trading_days)}
+
+        stocks = []
+        satisfied = 0
+        total_settled = 0
+        for item in wl:
+            code = item.get('code', '')
+            name = item.get('name', '')
+            added_at = item.get('added_at', 0)
+            # added_at 是 Unix 时间戳, 转成最近的交易日
+            from datetime import datetime
+            added_dt = datetime.fromtimestamp(added_at) if added_at else datetime.now()
+            added_date8 = added_dt.strftime('%Y%m%d')
+            # 找 <= added_date8 的最近交易日
+            added_trade_day = None
+            for d in sorted(day_set, reverse=True):
+                if d <= added_date8:
+                    added_trade_day = d
+                    break
+            if not added_trade_day:
+                added_trade_day = added_date8
+
+            result = 'pending'
+            detail = {}
+            pct_5d = None
+            has_zt = False
+
+            try:
+                bars, _ = ts.kline_daily(code, count=80, prefer_local=True)
+                if bars:
+                    bars_d8 = [b['date'].replace('-', '') for b in bars]
+                    bar_idx = {bd: i for i, bd in enumerate(bars_d8)}
+                    # 找添加日对应的 K线索引
+                    start_idx = None
+                    for bd in sorted(bar_idx.keys(), reverse=True):
+                        if bd <= added_trade_day:
+                            start_idx = bar_idx[bd]
+                            break
+                    if start_idx is not None:
+                        start_close = bars[start_idx]['close']
+                        # 向后看5个交易日
+                        end_idx = min(start_idx + 5, len(bars) - 1)
+                        window = bars[start_idx: end_idx + 1]
+                        if len(window) >= 6:  # 含添加日共6根=5个交易日
+                            end_close = window[-1]['close']
+                            pct_5d = round((end_close - start_close) / start_close * 100, 2)
+                            # 检查5日内是否有涨停
+                            for b in window[1:]:
+                                bi = bar_idx[b['date'].replace('-', '')]
+                                if bi > 0:
+                                    prev_close = bars[bi - 1]['close']
+                                    if prev_close > 0:
+                                        p = (b['close'] - prev_close) / prev_close * 100
+                                        if p >= 9.8:
+                                            has_zt = True
+                                            break
+                            # 判定
+                            if pct_5d >= 15 or has_zt:
+                                result = 'satisfied'
+                                satisfied += 1
+                            else:
+                                result = 'failed'
+                            total_settled += 1
+                        elif len(window) > 1:
+                            # 不足5日, 计算已有涨幅但标记 pending
+                            end_close = window[-1]['close']
+                            pct_5d = round((end_close - start_close) / start_close * 100, 2)
+                            result = 'pending'
+            except Exception:
+                pass
+
+            stocks.append({
+                'code': code, 'name': name,
+                'added_date': added_trade_day,
+                'result': result, 'pct_5d': pct_5d, 'has_zt': has_zt,
+            })
+
+        win_rate = round(satisfied / total_settled * 100, 1) if total_settled > 0 else None
+        return jsonify({
+            'success': True, 'stocks': stocks,
+            'win_rate': win_rate, 'satisfied': satisfied,
+            'total': total_settled, 'pending': len(stocks) - total_settled
+        })
+    except Exception as e:
+        return jsonify({'success': False, 'error': f'{type(e).__name__}: {e}'}), 500
+
+
 @app.route('/api/hot/track', methods=['GET'])
 def api_hot_track():
     """热门股追踪数据API"""

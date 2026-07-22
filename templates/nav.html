@@ -70,6 +70,9 @@
       <button class="nav-item" data-src="/monitor" onclick="nav(this)">
         <span class="ico">👁️</span><span>盯盘</span>
       </button>
+      <button class="nav-item" data-src="/simreplay" onclick="nav(this)">
+        <span class="ico">🎲</span><span>模拟复盘</span>
+      </button>
     </nav>
     <div class="side-footer">淘股吧数据服务 · v1.3.0</div>
   </aside>
@@ -80,7 +83,7 @@
 
 <script>
   // hash -> iframe src 映射
-  const TAB_MAP = { '#/update': '/update', '#/hot': '/hot', '#/monitor': '/monitor' };
+  const TAB_MAP = { '#/update': '/update', '#/hot': '/hot', '#/monitor': '/monitor', '#/simreplay': '/simreplay' };
   const DEFAULT_SRC = '/update';
 
   // 根据 hash 设置 iframe src 并高亮对应导航项
