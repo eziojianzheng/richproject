@@ -82,6 +82,7 @@ _tqcenter_init.py
 .winrate_picks.json
 .czmq_tags.json
 .czmq_result.json
+.czmq_locks.json
 
 # 测试脚本
 _test_*.py

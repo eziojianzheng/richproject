@@ -604,12 +604,19 @@ def fetch_range_tqcenter(code, start, end):
 
 def fetch_range_local_day(code, start, end):
     """读本地通达信 .day 日线文件(盘后数据, 无网络无锁, 几毫秒), 计算并缓存指标。
-    失败返回 False, 由调用方回退 tqcenter/mootdx。"""
+    失败返回 False, 由调用方回退 tqcenter/mootdx。
+    注意: 若 .day 最新日期 < end(如盘后数据未下载当天), 返回 False 触发回退,
+    否则会用缺失 end 日数据的结果污染缓存(导致该日显示✗/suspended)。"""
     try:
         import tdx_source as ts
         offset = _mootdx_offset(start)
         bars = ts.read_day_file(code, count=offset)
         if not bars or len(bars) < 2:
+            return False
+        latest = bars[-1]['date'].replace('-', '')
+        if latest < end:
+            # .day 数据未覆盖到 end, 不缓存(否则缺 end 日的 None 占位会阻止后续重取)
+            _ht_logger.debug(f'local_day {code}: .day最新{latest} < end{end}, 回退tqcenter')
             return False
         closes = [b['close'] for b in bars]
         opens = [b['open'] for b in bars]
@@ -682,12 +689,17 @@ def fetch_range_local_tdx(code, start, end):
 
 def fetch_range_local_day(code, start, end):
     """直接读本地通达信 .day 日线文件(最快, 纯文件IO无网络无锁)。
-    盘后数据, 不复权。需要通达信已下载日线数据。"""
+    盘后数据, 不复权。需要通达信已下载日线数据。
+    若 .day 最新日期 < end(如盘后数据未下载当天), 返回 False 触发回退 tqcenter/mootdx。"""
     try:
         import tdx_source as ts
         offset = _mootdx_offset(start)
         bars = ts.read_day_file(code, count=offset)
         if not bars or len(bars) < 5:
+            return False
+        latest = bars[-1]['date'].replace('-', '')
+        if latest < end:
+            _ht_logger.debug(f'local_day {code}: .day最新{latest} < end{end}, 回退tqcenter')
             return False
         closes = [b['close'] for b in bars]
         opens = [b['open'] for b in bars]

@@ -339,10 +339,10 @@
     border: 1px solid transparent; padding: 0 4px;
   }
   .stock-thumb:hover { border-color: #fff; }
-  .stock-thumb.new-tag::after {
-    content: '新'; position: absolute; top: -4px; right: -4px;
+  .stock-thumb .new-badge {
+    position: absolute; top: -4px; right: -4px;
     background: #ff8c00; color: #fff; font-size: 7px; padding: 1px 3px;
-    border-radius: 3px;
+    border-radius: 3px; z-index: 5; line-height: 1;
   }
   .stock-thumb .tag {
     font-size: 7px; background: #2563eb; color: #fff; padding: 1px 2px;
@@ -1752,13 +1752,14 @@ function renderRow(day, order){
       
       const isNew = s.first_date === day.date;
       const kcbTag = s.is_kcb_cyb ? '<span class="tag">创</span>' : '';
+      const newBadge = isNew ? '<span class="new-badge">新</span>' : '';
       const pctMark = isRemoved ? '' : (hasPct
-        ? '<span class="pct-ok" title="涨幅已获取">✓</span>'
-        : '<span class="pct-miss" title="无涨幅数据">✗</span>');
-      return `<div class="stock-thumb ${thumbClass}${isNew ? ' new-tag' : ''}" 
+          ? '<span class="pct-ok" title="涨幅已获取">✓</span>'
+          : '<span class="pct-miss" title="无涨幅数据">✗</span>');
+      return `<div class="stock-thumb ${thumbClass}"
                    data-code="${s.code}" data-block="${b.block}" data-date="${day.date}"
                    onclick="toggleExpand(this, event)">
-        ${s.code}${kcbTag}${pctMark}
+        ${s.code}${kcbTag}${pctMark}${newBadge}
       </div>`;
     }).join('');
     
@@ -2526,10 +2527,16 @@ function searchStock(){
 }
 
 // 从服务端恢复最近一次计算结果(大结果不受浏览器配额限制)
+// 注意: 跳过 price=false 的缓存 —— 那是"未获取涨幅"的空结果, 恢复后全是✗
 async function restoreServerResult(){
   try{
     const j = await (await fetch('/api/hot/last')).json();
     if(!j.success || !j.has || !j.result || !j.result.dates) return false;
+    if(j.price === false){
+      // 缓存是"未带涨幅"的空结果, 恢复会导致全是✗, 直接丢弃
+      console.log('[restoreServerResult] 跳过 price=false 的空结果缓存');
+      return false;
+    }
     DATA = j.result;
     const startSel = document.getElementById('start'), endSel = document.getElementById('end');
     if(j.start && [...startSel.options].some(o=>o.value===j.start)) startSel.value = j.start;
@@ -5277,12 +5284,16 @@ let _czmqLoaded = false;
 let czmqTaskId = null, czmqPollTimer = null;
 let czmqResult = null;            // {days, by_day:[...], event_count}
 let czmqTagMap = {};             // "code_date_concept" -> {urgent, corner_override,...}
+let czmqLockMap = {};            // "date_side_bucket_概念" -> {date,concept,side,bucket,ts} 已操作(锁定)的概念榜单
 let czmqCurDay = null;           // 当前选中交易日 YYYYMMDD
 let czmqCurConcept = null;       // {concept, side, bucket, stocks}
 const czmqStockCharts = {};      // domId -> echarts 实例
 const CZMQ_LABELS = ['右上角涨','右上角急涨','右下角涨','右下角急涨','右上角跌','右上角急跌','右下角跌','右下角急跌'];
 
 function czmqKey(code,date,concept){ return `${code}_${date}_${concept}`; }
+// 概念榜单锁定key: 日期+side+bucket+概念(与服务端 _czmq_lock_key 一致)
+function czmqLockKey(date,concept,side,bucket){ return `${date}_${side||''}_${bucket||''}_${concept}`; }
+function czmqIsLocked(date,concept,side,bucket){ return !!czmqLockMap[czmqLockKey(date,concept,side,bucket)]; }
 
 // 核心: 分类判定。返回 {side:'rise'/'fall', corner:'up'/'dn', urgent:bool, label:'右上角涨'...}
 // side: 涨跌看 pct; corner: 涨看收盘 vs 100%线, 跌看开盘 vs 100%线; urgent/corner 可被 tag 覆盖
@@ -5358,7 +5369,7 @@ function pollCzmq(){
       if(s.status==='completed'||s.status==='cancelled'||s.status==='failed'){
         clearInterval(czmqPollTimer); czmqPollTimer=null; czmqSetBusy(false);
         if(s.status==='failed'){ czmqSetProgress(0,'失败: '+(s.error||'')); return; }
-        czmqResult=s.result; czmqTagMap=s.tags||{};
+        czmqResult=s.result; czmqTagMap=s.tags||{}; czmqLockMap=s.locks||{};
         czmqSetProgress(100, `${s.status==='cancelled'?'已中断':'完成'} · 收集 ${s.result.event_count} 条`);
         document.getElementById('czmqProgressWrap').style.display='none';
         czmqPersistResult();
@@ -5407,9 +5418,12 @@ function renderCzmqDay(){
   if(!day){ box.innerHTML='<div class="czm-sub">该日无数据</div>'; return; }
   const conceptChips=(list, side, bucket)=> (list && list.length)
     ? `<div class="czm-concepts">` + list.map(c=>{
+        const locked=czmqIsLocked(day.date, c.concept, side, bucket);
         const arg=JSON.stringify({concept:c.concept,side,bucket}).replace(/'/g,"&#39;");
-        return `<span class="czm-concept ${side}" onclick='selectCzmqConcept(${arg})'>`
-          + `${escapeHtmlHT(c.concept)} <span class="cc-n">${c.count}</span></span>`;
+        const lArg=JSON.stringify({date:day.date,concept:c.concept,side,bucket}).replace(/'/g,"&#39;");
+        return `<span class="czm-concept ${side} ${locked?'locked':''}" onclick='selectCzmqConcept(${arg})'>
+          <span class="lockbtn" title="${locked?'已操作(点击解锁)':'标记为已操作'}" onclick='event.stopPropagation();czmqToggleLock(${lArg})'>${locked?'🔒':'🔓'}</span>
+          ${escapeHtmlHT(c.concept)} <span class="cc-n">${c.count}</span></span>`;
       }).join('') + `</div>`
     : `<div class="czm-sub">无</div>`;
   box.innerHTML = `
@@ -5437,6 +5451,20 @@ function selectCzmqConcept(opts){
   renderCzmqDay();
   renderCzmqStocks();
   renderCzmqCats();
+}
+
+// 锁定/解锁概念榜单(标记已操作)。乐观更新+立即重绘, 网络失败保持乐观状态。
+async function czmqToggleLock(opts){
+  const {date, concept, side, bucket} = opts || {};
+  const key=czmqLockKey(date, concept, side, bucket);
+  const willLock=!czmqLockMap[key];
+  if(willLock) czmqLockMap[key]={date, concept, side, bucket, ts:Date.now()};
+  else delete czmqLockMap[key];
+  renderCzmqDay();
+  try{
+    await fetch('/api/hot/czmq/lock',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({date, concept, side, bucket, locked:willLock})});
+  }catch(e){ /* 网络失败保持乐观状态 */ }
 }
 
 // 渲染个股卡片: K线 + 当前分类标签 + 两个翻转按钮(态/角位)
@@ -5591,7 +5619,10 @@ function czmqRenderKline(dom, domId, bars, s, source, fq){
 async function czmqLoadPersisted(){
   try{
     const r=await(await fetch('/api/hot/czmq/tags')).json();
-    if(r.success){ czmqTagMap={}; (Object.values(r.tags||{})).forEach(t=>{ czmqTagMap[czmqKey(t.code,t.date,t.concept)]=t; }); }
+    if(r.success){
+      czmqTagMap={}; (Object.values(r.tags||{})).forEach(t=>{ czmqTagMap[czmqKey(t.code,t.date,t.concept)]=t; });
+      czmqLockMap=r.locks||{};
+    }
   }catch(e){}
 }
 async function czmqRestoreResult(){
