@@ -436,6 +436,9 @@
   .chart-card h5 .zoom-hint { font-size:9px; color:var(--text-muted); font-weight:normal; }
   .chart-zoom { cursor:pointer; border-radius:6px; transition:background .15s; padding:2px; }
   .chart-zoom:hover { background:var(--bg-hover, rgba(255,255,255,.06)); }
+  .chart-overlay-btns { display:flex; gap:6px; margin-top:8px; }
+  .overlay-btn { font-size:10px; padding:3px 10px; border-radius:4px; border:1px solid var(--border-color); background:var(--bg-input,rgba(255,255,255,.06)); color:var(--text-secondary); cursor:pointer; transition:all .15s; }
+  .overlay-btn:hover { border-color:#4a9eff; color:#4a9eff; }
   .legend { display:flex; flex-wrap:wrap; gap:6px; margin-top:6px; }
   .legend span { font-size:9px; color:var(--text-secondary); display:flex; align-items:center; gap:3px; }
   .legend i { width:9px; height:3px; display:inline-block; border-radius:2px; }
@@ -1616,19 +1619,21 @@ function trackCell(d, cell, isKcbCyb){
 }
 
 // 取某板块在当前窗口下的指标值(field: 'times'=出现次数 / 'total'=入选票数)。
-// curWindow=0: 全区间累计(走 by_date 原值); >0: 近N交易日增量 = 窗口末值 - 窗口前一日累计值
-// 旧数据(无 times_series/total_series)回退全区间标量, 避免全0导致字典序错乱
+// curWindow=0: 全区间累计; >0: 近N交易日增量 = 窗口末值 - 窗口前一日累计值
+// asOfDate: 传入时返回截至该日的累计(逐日卡片用); 不传时返回全区间最终值(排序用)
+// 优先用 blocks_summary 的逐日序列(total_series/times_series), 旧数据回退 by_date 标量
 let _windowSeriesMissing = false;   // render 时复位, 标记本轮是否命中旧数据
-function blockMetric(blk, field){
+function blockMetric(blk, field, asOfDate){
   field = field || (curSort === 'total' ? 'total' : 'times');
   const dates = DATA.dates || [];
+  const sum = (DATA.blocks_summary || []).find(s => s.block === blk) || {};
+  const series = (field === 'total') ? sum.total_series : sum.times_series;
+
   if (curWindow > 0 && dates.length) {
     // 窗口: 最后 curWindow 个交易日; 增量 = 末日累计 - 窗口前一日的累计
     const winEnd = dates[dates.length - 1];
     const winStartIdx = Math.max(0, dates.length - curWindow);
     const winPrev = winStartIdx > 0 ? dates[winStartIdx - 1] : null;
-    const sum = (DATA.blocks_summary || []).find(s => s.block === blk) || {};
-    const series = (field === 'total') ? sum.total_series : sum.times_series;
     if (!series) { _windowSeriesMissing = true; }   // 旧数据: 落到下面的全区间取值
     else {
       const end = series[winEnd];
@@ -1639,7 +1644,15 @@ function blockMetric(blk, field){
       _windowSeriesMissing = true;
     }
   }
-  // 全区间(或旧数据回退): 取 by_date 里的累计标量
+
+  // 全区间: 优先用逐日序列取截至 asOfDate(或末日)的累计值
+  if (series) {
+    const targetDate = asOfDate || dates[dates.length - 1];
+    if (targetDate && series[targetDate] != null) return series[targetDate];
+  }
+
+  // 旧数据回退: 取 by_date 里的累计标量(注意: total_count 被后端回填为全区间最终值,
+  // 故旧数据在全区间下仍正确, 但逐日卡片会显示全区间值而非截至当日)
   let v = 0;
   for (const day of (DATA.by_date || [])) {
     for (const b of day.blocks) {
@@ -1651,9 +1664,10 @@ function blockMetric(blk, field){
 
 // 板块统计文案: 全区间显示"累计X次 Y票", 近N日显示"近N日 +X次 +Y票"
 // 旧数据(_windowSeriesMissing)无逐日序列时, 近N日退化为全区间累计文案
-function blockStatLabel(blk){
-  const t = blockMetric(blk, 'times');
-  const tot = blockMetric(blk, 'total');
+// asOfDate: 传入时显示截至该日的累计(逐日卡片用); 不传时显示全区间最终值(排序/汇总用)
+function blockStatLabel(blk, asOfDate){
+  const t = blockMetric(blk, 'times', asOfDate);
+  const tot = blockMetric(blk, 'total', asOfDate);
   if (curWindow > 0 && !_windowSeriesMissing) {
     return `近${curWindow}日 +${t}次 +${tot}票`;
   }
@@ -1786,7 +1800,7 @@ function renderRow(day, order){
       <div class="${blockClass}" data-block="${b.block}">
         <div class="block-head">
           <div class="bname">${b.block}</div>
-          <div class="bstat">跟踪 ${b.active_count} 票${b.new_count?` (+${b.new_count})`:''}${b.removed_today&&b.removed_today.length?` <span style="color:#9aa0a6;">(-${b.removed_today.length}移除)</span>`:''}${blockStatus}<br>${blockStatLabel(b.block)}</div>
+          <div class="bstat">跟踪 ${b.active_count} 票${b.new_count?` (+${b.new_count})`:''}${b.removed_today&&b.removed_today.length?` <span style="color:#9aa0a6;">(-${b.removed_today.length}移除)</span>`:''}${blockStatus}<br>${blockStatLabel(b.block, day.date)}</div>
           <button class="sync-btn" onclick="syncBlockStocks(this, '${day.date}', ${JSON.stringify(allCodes).replace(/"/g, '&quot;')})">同步</button>
         </div>
         <div class="stock-grid">${thumbs}</div>
@@ -2286,6 +2300,10 @@ function renderCharts(){
         <div class="chart-zoom" onclick="zoomChart('warn','${blk}')">${countBarChart(dates, warn, false, globalMaxWarn)}</div>
         <h5>④ 跌破10日线 / 第三日收回(个数) <span class="zoom-hint">🔍点击放大</span></h5>
         <div class="chart-zoom" onclick="zoomChart('recover','${blk}')">${recoverLineChart(dates, recover, false, warn)}</div>
+        <div class="chart-overlay-btns">
+          <button class="overlay-btn" onclick="showOverlayChart('${blk}')">📈 叠加走势</button>
+          <button class="overlay-btn" onclick="showKlineGrid('${blk}')">📊 K线网格</button>
+        </div>
       </div>`;
   }).join('');
 
@@ -2354,7 +2372,217 @@ function syncScroll(){
   cs.addEventListener('scroll',()=>{ tops.forEach(t=>t.scrollLeft=cs.scrollLeft); });
 }
 
-// 同步板块股票涨幅数据
+// ============== 板块叠加走势图 + K线网格 ==============
+let _hnrOverlayChart = null;       // 叠加图 ECharts 实例
+let _hnrKlineGridCharts = [];      // K线网格 ECharts 实例数组
+
+/** 收集某板块所有入选个股(去重), 返回 [{code,name,first_date,is_kcb_cyb}, ...] */
+function _collectBlockStocks(blk){
+  const map = {};  // code -> {code,name,first_date,is_kcb_cyb,present_days}
+  (DATA.by_date||[]).forEach(day=>{
+    (day.blocks||[]).forEach(b=>{
+      if(b.block !== blk) return;
+      (b.stocks||[]).forEach(s=>{
+        if(!map[s.code]){
+          map[s.code] = {code:s.code, name:s.name||s.code, first_date:s.first_date||day.date,
+                         is_kcb_cyb:s.is_kcb_cyb||false, present_days:0};
+        }
+        const tr = s.track && s.track[day.date];
+        if(tr && tr.present) map[s.code].present_days++;
+      });
+    });
+  });
+  // 按出现天数降序, 最多取20只
+  return Object.values(map).sort((a,b)=>b.present_days-a.present_days).slice(0,20);
+}
+
+/** 弹出大图 modal (复用 chartZoomModal) */
+function _ensureOverlayModal(){
+  let modal=document.getElementById('chartZoomModal');
+  if(!modal){
+    modal=document.createElement('div');
+    modal.id='chartZoomModal';
+    modal.className='compute-modal';
+    modal.innerHTML=`<div class="compute-box" style="width:min(1100px,96vw);max-height:92vh;overflow:auto;">
+      <div class="compute-head"><span id="chartZoomTitle"></span><button class="compute-close" onclick="closeOverlayModal()" style="display:inline-block;">关闭</button></div>
+      <div id="chartZoomBody" style="padding:8px 4px;"></div>
+    </div>`;
+    document.body.appendChild(modal);
+  }
+  return modal;
+}
+
+function closeOverlayModal(){
+  const modal=document.getElementById('chartZoomModal');
+  if(modal) modal.classList.remove('show');
+  // 释放 ECharts 实例
+  if(_hnrOverlayChart){ try{_hnrOverlayChart.dispose();}catch(e){} _hnrOverlayChart=null; }
+  _hnrKlineGridCharts.forEach(c=>{try{c.dispose();}catch(e){}});
+  _hnrKlineGridCharts=[];
+}
+
+/** 批量拉取板块个股K线 */
+async function _fetchBatchKlines(stocks){
+  const codes = stocks.map(s=>s.code).join(',');
+  const names = stocks.map(s=>s.name).join(',');
+  const start = DATA.dates[0], end = DATA.dates[DATA.dates.length-1];
+  const resp = await fetch(`/api/hot/track/kline_batch?codes=${codes}&start=${start}&end=${end}&fq=front&names=${encodeURIComponent(names)}`);
+  return await resp.json();
+}
+
+/** 归一化价格曲线叠加图 */
+async function showOverlayChart(blk){
+  const stocks = _collectBlockStocks(blk);
+  if(!stocks.length){ alert('该板块无个股数据'); return; }
+
+  const modal = _ensureOverlayModal();
+  document.getElementById('chartZoomTitle').textContent = `${blk} · 叠加走势 (归一化=100%)`;
+  const body = document.getElementById('chartZoomBody');
+  body.innerHTML = '<div style="color:#6b7280;font-size:12px;padding:20px;text-align:center;">⏳ 加载K线数据中...</div>';
+  modal.classList.add('show');
+
+  try{
+    const data = await _fetchBatchKlines(stocks);
+    if(!data.success || !data.results || !data.results.length){
+      body.innerHTML = '<div style="color:#666;padding:20px;">无K线数据</div>'; return;
+    }
+    // 合并所有日期作为X轴
+    const allDates = new Set();
+    data.results.forEach(r=>r.bars.forEach(b=>allDates.add(b.date)));
+    const dates = [...allDates].sort();
+    const dateIdx = {}; dates.forEach((d,i)=>dateIdx[d]=i);
+
+    // 构建 series: 每只股票一条归一化曲线
+    const series = data.results.map(r=>{
+      const bars = r.bars;
+      if(!bars.length) return null;
+      const baseClose = bars[0].close;  // 以该股区间首日为基准
+      const vals = new Array(dates.length).fill(null);
+      bars.forEach(b=>{
+        const idx = dateIdx[b.date];
+        if(idx !== undefined) vals[idx] = +((b.close / baseClose) * 100).toFixed(2);
+      });
+      // 入榜日 markArea
+      const firstDate8 = (r.first_date||'').replace(/-/g,'');
+      const fd = stocks.find(s=>s.code===r.code);
+      const fd8 = (fd && fd.first_date) || '';
+      let markArea;
+      if(fd8){
+        const fdStr = `${fd8.slice(0,4)}-${fd8.slice(4,6)}-${fd8.slice(6,8)}`;
+        markArea = { silent:true, itemStyle:{color:'rgba(255,180,0,0.08)'},
+          data:[[{xAxis:fdStr},{xAxis:fdStr}]] };
+      }
+      return {
+        name: `${r.code} ${r.name||''}`,
+        type:'line', data:vals, smooth:true, symbol:'none', lineWidth:1.5,
+        markArea: markArea, z:3
+      };
+    }).filter(Boolean);
+
+    // 入榜日竖线(所有股票的 first_date 去重)
+    const firstDates = [...new Set(stocks.map(s=>s.first_date).filter(Boolean))];
+    const markLines = firstDates.map(fd=>{
+      const fdStr = `${fd.slice(0,4)}-${fd.slice(4,6)}-${fd.slice(6,8)}`;
+      return { xAxis:fdStr, lineStyle:{color:'rgba(255,180,0,0.3)',type:'dashed'}, label:{show:false} };
+    });
+
+    if(_hnrOverlayChart){ try{_hnrOverlayChart.dispose();}catch(e){} }
+    body.innerHTML = '<div id="overlayChart" style="width:100%;height:520px;"></div>';
+    _hnrOverlayChart = echarts.init(document.getElementById('overlayChart'), 'dark');
+    // markLine 只挂在第一条 series 上, 避免重复竖线
+    if(series.length){
+      series[0].markLine = { silent:true, symbol:'none', data:markLines };
+    }
+    _hnrOverlayChart.setOption({
+      backgroundColor:'transparent',
+      tooltip:{ trigger:'axis', axisPointer:{type:'cross'}, formatter:function(params){
+        let s = params[0].axisValueLabel + '<br/>';
+        params.filter(p=>p.value!==null).sort((a,b)=>b.value-a.value).forEach(p=>{
+          const pct = (p.value - 100).toFixed(1);
+          const color = p.value >= 100 ? '#ef5350' : '#26a69a';
+          s += `${p.marker}${p.seriesName}: <span style="color:${color};font-weight:600">${pct>=0?'+':''}${pct}%</span><br/>`;
+        });
+        return s;
+      }},
+      legend:{ type:'scroll', bottom:0, textStyle:{fontSize:10}, pageTextStyle:{color:'#888'} },
+      grid:{ left:'3%', right:'3%', top:'5%', bottom:'15%' },
+      xAxis:{ type:'category', data:dates, axisLabel:{fontSize:9, formatter:v=>v.slice(5)} },
+      yAxis:{ type:'value', name:'归一化%', axisLabel:{fontSize:9, formatter:v=>v.toFixed(0)} },
+      series: series
+    });
+    _hnrOverlayChart.resize();
+  }catch(e){
+    body.innerHTML = `<div style="color:#f87171;padding:20px;">加载失败: ${e.message}</div>`;
+  }
+}
+
+/** K线网格 */
+async function showKlineGrid(blk){
+  const stocks = _collectBlockStocks(blk);
+  if(!stocks.length){ alert('该板块无个股数据'); return; }
+
+  const modal = _ensureOverlayModal();
+  document.getElementById('chartZoomTitle').textContent = `${blk} · K线网格`;
+  const body = document.getElementById('chartZoomBody');
+  body.innerHTML = '<div style="color:#6b7280;font-size:12px;padding:20px;text-align:center;">⏳ 加载K线数据中...</div>';
+  modal.classList.add('show');
+
+  try{
+    const data = await _fetchBatchKlines(stocks);
+    if(!data.success || !data.results || !data.results.length){
+      body.innerHTML = '<div style="color:#666;padding:20px;">无K线数据</div>'; return;
+    }
+    // 释放旧实例
+    _hnrKlineGridCharts.forEach(c=>{try{c.dispose();}catch(e){}});
+    _hnrKlineGridCharts = [];
+
+    // 构建网格 HTML
+    const cols = Math.min(4, data.results.length);
+    body.innerHTML = `<div id="klineGrid" style="display:grid;grid-template-columns:repeat(${cols},1fr);gap:8px;"></div>`;
+    const grid = document.getElementById('klineGrid');
+
+    data.results.forEach(r=>{
+      const cell = document.createElement('div');
+      cell.style.cssText = 'border:1px solid var(--border-light);border-radius:6px;overflow:hidden;';
+      const stockInfo = stocks.find(s=>s.code===r.code);
+      const fd8 = (stockInfo && stockInfo.first_date) || '';
+      const fdStr = fd8 ? `${fd8.slice(0,4)}-${fd8.slice(4,6)}-${fd8.slice(6,8)}` : '';
+      cell.innerHTML = `<div style="font-size:10px;padding:3px 6px;color:var(--text-secondary);background:var(--bg-card);">
+        <b>${r.code}</b> ${r.name||''} ${fd8?`<span style="color:#ffb400;">入榜${fd8.slice(4)}</span>`:''}
+      </div><div id="kg_${r.code}" style="width:100%;height:150px;"></div>`;
+      grid.appendChild(cell);
+
+      const dom = cell.querySelector(`#kg_${r.code}`);
+      const chart = echarts.init(dom, 'dark');
+      _hnrKlineGridCharts.push(chart);
+      const bars = r.bars;
+      const dates = bars.map(b=>b.date);
+      const ohlc = bars.map(b=>[b.open, b.close, b.low, b.high]);
+      // MA5
+      const ma5 = bars.map((b,i)=>{ if(i<4) return '-'; let s=0; for(let j=i-4;j<=i;j++) s+=bars[j].close; return +(s/5).toFixed(2); });
+
+      const markArea = fdStr ? { silent:true, itemStyle:{color:'rgba(255,180,0,0.12)'},
+        data:[[{xAxis:fdStr},{xAxis:fdStr}]] } : undefined;
+
+      chart.setOption({
+        backgroundColor:'transparent',
+        tooltip:{ trigger:'axis', axisPointer:{type:'cross'} },
+        grid:{ left:'8%', right:'3%', top:'5%', bottom:'12%' },
+        xAxis:{ type:'category', data:dates, axisLabel:{show:false} },
+        yAxis:{ scale:true, axisLabel:{fontSize:8} },
+        series:[
+          { type:'candlestick', data:ohlc, itemStyle:{color:'#ef5350',color0:'#26a69a',borderColor:'#ef5350',borderColor0:'#26a69a'},
+            markArea:markArea },
+          { name:'MA5', type:'line', data:ma5, smooth:true, symbol:'none', lineStyle:{width:1,color:'#ffb74d'}, z:5 }
+        ],
+        dataZoom:[{type:'inside', start:0, end:100}]
+      });
+      chart.resize();
+    });
+  }catch(e){
+    body.innerHTML = `<div style="color:#f87171;padding:20px;">加载失败: ${e.message}</div>`;
+  }
+}
 async function syncBlockStocks(btn, date, codes) {
   if (!codes || codes.length === 0) {
     alert('没有需要同步的股票');

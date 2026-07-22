@@ -5728,7 +5728,70 @@ def api_explosive_kline():
         return jsonify({'success': False, 'error': f'{type(e).__name__}: {e}'}), 500
 
 
-# ============== 复盘: 每日概念热力(今天在炒啥) ==============
+@app.route('/api/hot/track/kline_batch', methods=['GET'])
+def api_hot_track_kline_batch():
+    """批量获取多只个股的日K线(前复权), 截取 start~end 范围。
+    供「湖南人涨停复盘」板块叠加图/K线网格使用。
+    参数: codes=001258,600744,...  start=20260701  end=20260722  fq=front(默认)
+    返回: {success, results: [{code, name, bars: [{date,open,high,low,close,vol}]}], failed: [code,...]}
+    """
+    import time as _time
+    codes_raw = request.args.get('codes', '')
+    codes = [c.strip() for c in codes_raw.split(',') if re.match(r'^\d{6}$', c.strip())]
+    if not codes:
+        return jsonify({'success': False, 'error': 'codes 需为逗号分隔的6位数字代码'}), 400
+    if len(codes) > 25:
+        codes = codes[:25]
+    start = request.args.get('start', '')
+    end = request.args.get('end', '')
+    if not re.match(r'^\d{8}$', start) or not re.match(r'^\d{8}$', end):
+        return jsonify({'success': False, 'error': 'start/end 需为 YYYYMMDD'}), 400
+    fq = (request.args.get('fq', 'front') or 'front').lower()
+    if fq not in ('front', 'back', 'none'):
+        fq = 'front'
+    # names: 可选, 逗号分隔的股票名称(与 codes 一一对应)
+    names_raw = request.args.get('names', '')
+    names = names_raw.split(',') if names_raw else []
+
+    today8 = datetime.now().strftime('%Y%m%d')
+    need = len(trading_days_in_range(start, today8)) + 30
+    need = max(60, min(need, 1400))
+
+    results = []
+    failed = []
+    try:
+        import tdx_source as ts
+        for i, code in enumerate(codes):
+            name = names[i] if i < len(names) else ''
+            try:
+                if fq == 'none':
+                    bars, source = ts.kline_daily(code, count=need, prefer_local=True)
+                else:
+                    if not ts.is_available():
+                        failed.append(code)
+                        continue
+                    bars = ts.kline(code, count=need, period='1d', dividend_type=fq)
+                    source = 'tqcenter'
+                if not bars:
+                    failed.append(code)
+                    continue
+                # 截取 start~end 范围
+                bars = [b for b in bars if _bar_date8(b) >= start and _bar_date8(b) <= end]
+                if not bars:
+                    failed.append(code)
+                    continue
+                # 只保留画图需要的字段, 减小响应体积
+                slim = [{'date': b['date'], 'open': b['open'], 'high': b['high'],
+                         'low': b['low'], 'close': b['close'], 'vol': b.get('vol', 0)} for b in bars]
+                results.append({'code': code, 'name': name, 'bars': slim})
+            except Exception as e:
+                _dlog(f'kline_batch {code} 失败: {e}')
+                failed.append(code)
+            _time.sleep(0.05)  # 轻微限流
+    except Exception as e:
+        return jsonify({'success': False, 'error': f'{type(e).__name__}: {e}'}), 500
+
+    return jsonify({'success': True, 'results': results, 'failed': failed, 'count': len(results)})
 
 # ===== 概念成员每日收盘缓存(供"当日在涨谁/在杀谁"统计) =====
 _MEMBER_CLOSES_FILE = '.member_closes.json'
