@@ -85,6 +85,10 @@
   // hash -> iframe src 映射
   const TAB_MAP = { '#/update': '/update', '#/hot': '/hot', '#/monitor': '/monitor', '#/simreplay': '/simreplay' };
   const DEFAULT_SRC = '/update';
+  // 显式跟踪当前已加载的 src, 不依赖 frame.getAttribute('src') ——
+  // 后者在 src="" 时浏览器会解析为当前文档 URL, 与传入的相对路径比较结果不可靠,
+  // 会导致"切换了还在前一个页面"(比较误判为相同而跳过 frame.src 赋值)。
+  let _loadedSrc = null;
 
   // 根据 hash 设置 iframe src 并高亮对应导航项
   function applyHash() {
@@ -98,7 +102,8 @@
     try { localStorage.setItem('nav_page', hash); } catch(e) {}
     const frame = document.getElementById('frame');
     // src 未变时不重设, 避免 iframe 无谓重载丢失页面状态
-    if (frame.getAttribute('src') !== src) {
+    if (_loadedSrc !== src) {
+      _loadedSrc = src;
       frame.src = src;
     }
     // 高亮对应导航项
@@ -111,10 +116,13 @@
     if (el.classList.contains('disabled')) return;
     const src = el.dataset.src;
     const hash = Object.keys(TAB_MAP).find(k => TAB_MAP[k] === src) || '#/update';
+    // 始终走 applyHash: 即便 hash 未变, 也保证 iframe src 与高亮状态正确
+    // (修复"点击当前 Tab / 刷新后点击却停在旧页面"的问题)
     if (location.hash !== hash) {
-      location.hash = hash;  // 触发 hashchange → applyHash
+      location.hash = hash;  // 触发 hashchange -> applyHash
+    } else {
+      applyHash();
     }
-    // hash 未变时无需任何操作(iframe 已加载该页), 不再强制重载
   }
 
   // 启动时恢复 tab + 监听浏览器前进/后退

@@ -114,3 +114,6 @@ _gen_bp.py
 _shot.py
 _split_helper.py
 _split_blocks.json
+
+# tokensave 本地语义索引库(每个开发者各自构建, 不提交)
+.tokensave/
