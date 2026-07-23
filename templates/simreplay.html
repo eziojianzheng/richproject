@@ -32,7 +32,10 @@
   .section-title{font-size:13px;font-weight:700;color:var(--text);margin-bottom:8px;display:flex;align-items:center;gap:6px}
   .section-title .st-num{display:inline-block;width:18px;height:18px;border-radius:4px;background:var(--orange);color:#fff;text-align:center;line-height:18px;font-size:11px}
   /* ① 市场概况 */
-  .market-header{display:flex;gap:12px;flex-wrap:wrap}
+  .market-header{display:flex;gap:12px;flex-wrap:wrap;padding:8px;border-radius:8px;transition:background .25s}
+  /* 市场概况整栏底色: 下跌远多于上涨(冰点)=绿, 上涨远多于下跌(高潮)=红 */
+  .market-header.bg-ice{background:rgba(34,197,94,.10)}
+  .market-header.bg-hot{background:rgba(239,83,80,.10)}
   .stat-chip{background:var(--bg-card);border:1px solid var(--border-light);border-radius:8px;padding:6px 14px;text-align:center;min-width:80px}
   .stat-chip .sc-label{font-size:10px;color:var(--text-3)}
   .stat-chip .sc-val{font-size:18px;font-weight:700;margin-top:2px}
@@ -49,6 +52,32 @@
   .concept-rank.top3{color:var(--orange)}
   .concept-stocks{color:var(--text-2);font-size:11px;line-height:1.5}
   .dup-stock{display:inline-block;padding:0 4px;border-radius:3px;margin:1px 0;line-height:15px}
+  .concept-toggle{display:inline-block;margin-left:6px;padding:0 6px;border-radius:3px;font-size:10px;cursor:pointer;color:var(--blue);background:rgba(74,158,255,.1);border:1px solid rgba(74,158,255,.25);user-select:none;white-space:nowrap}
+  .concept-toggle:hover{background:rgba(74,158,255,.2)}
+  .concept-stocks .cs-extra{display:none}
+  .concept-stocks.expanded .cs-extra{display:inline}
+  .concept-stocks.expanded .cs-more{display:none}
+  .concept-freq{display:inline-block;margin-left:6px;padding:1px 6px;border-radius:9px;font-size:10px;font-weight:600;color:var(--yellow);background:rgba(255,214,10,.12);border:1px solid rgba(255,214,10,.25);white-space:nowrap}
+  /* ②b Top20概念跌停(复用 concept-table, 跌停数用绿色, 重复个股用绿色高亮) */
+  .concept-bottom .concept-table th:nth-child(3),
+  .concept-bottom .dt-count{color:var(--green)!important}
+  .concept-bottom .dup-stock{background:rgba(34,197,94,.32)!important}
+  .concept-bottom .concept-freq{color:var(--green);background:rgba(34,197,94,.12);border-color:rgba(34,197,94,.25)}
+  /* 晋级失败区块 + 涨幅颜色(湖南人9档) */
+  .broken-table{width:100%;border-collapse:collapse}
+  .broken-table th{text-align:left;padding:6px 10px;font-size:11px;color:var(--text-3);border-bottom:1px solid var(--border);font-weight:600}
+  .broken-table td{padding:6px 10px;font-size:12px;border-bottom:1px solid var(--border-light);vertical-align:top}
+  .broken-table tr:hover{background:rgba(255,255,255,.03)}
+  .pct-tag{display:inline-block;padding:1px 6px;border-radius:3px;font-size:11px;font-weight:600;min-width:42px;text-align:center}
+  .pct-tag.gold{background:rgba(255,214,10,.3);color:#ffd60a}
+  .pct-tag.purple{background:rgba(168,85,247,.3);color:#a855f7}
+  .pct-tag.red-deep{background:rgba(255,30,30,.25);color:#ff1e1e}
+  .pct-tag.red-mid{background:rgba(255,107,53,.25);color:#ff6b35}
+  .pct-tag.red-light{background:rgba(255,154,154,.25);color:#ff9a9a}
+  .pct-tag.green-deep{background:rgba(27,94,32,.25);color:#1b5e20}
+  .pct-tag.green-mid{background:rgba(76,175,80,.25);color:#4caf50}
+  .pct-tag.green-light{background:rgba(155,227,160,.25);color:#9be3a0}
+  .pct-tag.gray{background:rgba(80,80,80,.3);color:#888}
   /* ③ 连板梯队 */
   .ladder-grid{display:flex;gap:10px;overflow-x:auto}
   .ladder-col{flex:0 0 200px;background:var(--bg-card);border:1px solid var(--border-light);border-radius:8px;padding:8px}
@@ -143,10 +172,22 @@
   <div id="conceptTopContainer"><div class="empty">选择日期后显示</div></div>
 </div>
 
+<!-- ②b Top20概念跌停 -->
+<div class="section">
+  <div class="section-title"><span class="st-num">2</span>Top20 概念跌停</div>
+  <div id="conceptBottomContainer"><div class="empty">选择日期后显示</div></div>
+</div>
+
 <!-- ③ 连板梯队 -->
 <div class="section">
   <div class="section-title"><span class="st-num">3</span>连板梯队(≥2板)</div>
   <div id="ladderContainer"><div class="empty">选择日期后显示</div></div>
+</div>
+
+<!-- ③b 晋级失败(3板+断板) -->
+<div class="section">
+  <div class="section-title"><span class="st-num">3</span>晋级失败(昨日3板+今日断板)</div>
+  <div id="brokenContainer"><div class="empty">选择日期后显示</div></div>
 </div>
 
 <!-- ④ 条件选股 -->
@@ -203,8 +244,10 @@
 <script>
 let _simDates = [];
 let _simCurDate = null;
-let _scanCharts = [];
-let _syncingZoom = false;  // dataZoom联动防重入
+let _scanCharts = [];          // K线图实例(联动dataZoom)
+let _scanMinuteCharts = [];    // 分时图实例(独立联动dataZoom)
+let _syncingZoom = false;      // K线 dataZoom联动防重入
+let _syncingMinZoom = false;   // 分时 dataZoom联动防重入
 let _scanResults = [];     // 当前扫描结果(分页用)
 let _scanPage = 0;         // 当前页
 const _SCAN_PER_PAGE = 4;  // 每屏4只
@@ -320,10 +363,12 @@ async function loadDaySub(d){
 async function selectDay(d){
   _simCurDate = d;
   updateDayBarActive();
-  // 并行加载5个区块(互不依赖, 加快响应)
+  // 并行加载区块(互不依赖, 加快响应)
   loadDailyStats(d);
   loadConceptTop(d);
+  loadConceptBottom(d);
   loadLadder(d);
+  loadBroken(d);
 }
 
 // ===== ① 市场概况 =====
@@ -334,10 +379,18 @@ async function loadDailyStats(d){
     const data = await resp.json();
     if(!data.success){
       hdr.style.display='flex';
+      hdr.classList.remove('bg-ice','bg-hot');
       hdr.innerHTML = '<div class="stat-chip"><div class="sc-label">提示</div><div class="sc-val" style="font-size:13px;color:var(--red)">'+(data.error||'加载失败')+'</div></div>';
       return;
     }
     hdr.style.display = 'flex';
+    // 整栏底色: 按 up/down_count 比例判断市场情绪(下跌远多于上涨=冰点绿, 上涨远多于下跌=高潮红)
+    hdr.classList.remove('bg-ice','bg-hot');
+    const up = data.up_count, dn = data.down_count;
+    if(up!=null && dn!=null && up>=0 && dn>=0 && (up+dn)>0){
+      if(dn > up * 2) hdr.classList.add('bg-ice');       // 例如 1000涨/3000跌 -> 冰点绿
+      else if(up > dn * 2) hdr.classList.add('bg-hot');  // 例如 3000涨/1000跌 -> 高潮红
+    }
     const chips = [
       {label:'上涨', val:data.up_count??'-', cls:'red'},
       {label:'下跌', val:data.down_count??'-', cls:'green'},
@@ -351,6 +404,7 @@ async function loadDailyStats(d){
     ).join('');
   }catch(e){
     hdr.style.display='flex';
+    hdr.classList.remove('bg-ice','bg-hot');
     hdr.innerHTML = '<div class="stat-chip"><div class="sc-label">提示</div><div class="sc-val" style="font-size:13px;color:var(--red)">加载失败,请重试</div></div>';
   }
 }
@@ -380,34 +434,133 @@ async function loadConceptTop(d){
     });
     const maxCount = Math.max(1, ...Object.values(stockCount));
 
+    // 并行拉取近10日上榜次数(失败则不显示, 不阻塞主表)
+    let freqMap = {};
+    try{
+      const fr = await fetch(`/api/simreplay/concept_top_freq?date=${d}&days=10`);
+      const fd = await fr.json();
+      if(fd.success) freqMap = fd.freq || {};
+    }catch(_){}
+
+    // 个股 span 生成(共用)
+    function stockSpan(s){
+      const cnt = stockCount[s.code] || 1;
+      if(cnt < 2) return `<span class="kline-stock" data-code="${s.code}" data-name="${s.name}" data-theme="gold" title="悬停查看日K线">${s.name}</span>`;
+      const alpha = (0.12 + 0.4 * (cnt - 2) / Math.max(1, maxCount - 2)).toFixed(2);
+      const fsize = cnt >= 3 ? 700 : 600;
+      return `<span class="dup-stock kline-stock" data-code="${s.code}" data-name="${s.name}" data-theme="gold" style="background:rgba(239,83,80,${alpha});color:#fff;font-weight:${fsize}" title="在Top20中重复${cnt}次·悬停看K线">${s.name}${cnt>2?'×'+cnt:''}</span>`;
+    }
+
     let html = '<table class="concept-table"><thead><tr>'+
       '<th style="width:30px">#</th><th>概念</th><th style="width:50px">涨停数</th><th>涨停个股</th>'+
       '</tr></thead><tbody>';
     data.concepts.forEach((c,i)=>{
       const rankCls = i<3 ? ' top3' : '';
-      const stocksStr = c.stocks.slice(0,8).map(s=>{
-        const cnt = stockCount[s.code] || 1;
-        if(cnt < 2) return s.name;
-        // 重复次数越多 alpha 越高, 2次=淡红, maxCount次=深红
-        const alpha = (0.12 + 0.4 * (cnt - 2) / Math.max(1, maxCount - 2)).toFixed(2);
-        const fsize = cnt >= 3 ? 700 : 600;
-        return `<span class="dup-stock" style="background:rgba(239,83,80,${alpha});color:#fff;font-weight:${fsize}" title="在Top20中重复${cnt}次">${s.name}${cnt>2?'×'+cnt:''}</span>`;
-      }).join('、') +
-        (c.stocks.length>8 ? ` 等${c.stocks.length}只` : '');
+      const stocks = c.stocks;
+      const SHOW = 8;
+      // 前 SHOW 只:始终显示; 超过的部分包在 .cs-extra 里默认隐藏
+      const head = stocks.slice(0, SHOW).map(stockSpan).join('、');
+      const tail = stocks.slice(SHOW);
+      const tailHtml = tail.length ? '、' + tail.map(stockSpan).join('、') : '';
+      const moreTxt = tail.length ? `等${stocks.length}只` : '';
+      const toggle = tail.length
+        ? `<span class="concept-toggle" onclick="toggleConceptStocks(this)">展开 +${tail.length}</span>` : '';
+      // 近10日上榜次数标签
+      const fc = freqMap[c.concept] || 0;
+      const freqTag = fc > 0
+        ? `<span class="concept-freq" title="近10个交易日进入Top20 ${fc}次">近10日${fc}次</span>` : '';
       html += `<tr>
         <td><span class="concept-rank${rankCls}">${i+1}</span></td>
-        <td>${c.concept}</td>
+        <td>${c.concept}${freqTag}</td>
         <td style="color:var(--orange);font-weight:700">${c.zt_count}</td>
-        <td class="concept-stocks">${stocksStr}</td>
+        <td class="concept-stocks">${head}<span class="cs-extra">${tailHtml}</span><span class="cs-more"> ${moreTxt}</span>${toggle}</td>
       </tr>`;
     });
     html += '</tbody></table>';
     container.innerHTML = html;
+    bindKlineHover(container);
   }catch(e){
     container.innerHTML = '<div class="empty">加载失败: '+e.message+'</div>';
   }
 }
+// 展开/收缩个股
+function toggleConceptStocks(btn){
+  const cell = btn.closest('.concept-stocks');
+  const expanded = cell.classList.toggle('expanded');
+  btn.textContent = expanded
+    ? btn.textContent.replace('展开 +', '收起 -')
+    : btn.textContent.replace('收起 -', '展开 +');
+}
 let _conceptRankMap = {};
+
+// ===== ②b Top20概念跌停 =====
+async function loadConceptBottom(d){
+  const container = document.getElementById('conceptBottomContainer');
+  try{
+    const resp = await fetch(`/api/simreplay/concept_bottom?date=${d}`);
+    const data = await resp.json();
+    if(!data.success){
+      container.innerHTML = '<div class="empty">'+(data.error||'当日无跌停数据')+'</div>';
+      return;
+    }
+    if(!data.concepts.length){
+      container.innerHTML = '<div class="empty">当日无概念跌停数据</div>';
+      return;
+    }
+    // 统计每只股票在 Top20 跌停概念中出现的次数(重复越多绿越深)
+    const stockCount = {};
+    data.concepts.forEach(c=>{
+      c.stocks.forEach(s=>{
+        stockCount[s.code] = (stockCount[s.code] || 0) + 1;
+      });
+    });
+    const maxCount = Math.max(1, ...Object.values(stockCount));
+
+    // 并行拉取近10日跌停上榜次数
+    let freqMap = {};
+    try{
+      const fr = await fetch(`/api/simreplay/concept_bottom_freq?date=${d}&days=10`);
+      const fd = await fr.json();
+      if(fd.success) freqMap = fd.freq || {};
+    }catch(_){}
+
+    function stockSpan(s){
+      const cnt = stockCount[s.code] || 1;
+      if(cnt < 2) return `<span class="kline-stock" data-code="${s.code}" data-name="${s.name}" title="悬停查看日K线">${s.name}</span>`;
+      const fsize = cnt >= 3 ? 700 : 600;
+      return `<span class="dup-stock kline-stock" data-code="${s.code}" data-name="${s.name}" style="color:#fff;font-weight:${fsize}" title="在Top20跌停中重复${cnt}次·悬停看K线">${s.name}${cnt>2?'×'+cnt:''}</span>`;
+    }
+
+    let html = '<div class="concept-bottom"><table class="concept-table"><thead><tr>'+
+      '<th style="width:30px">#</th><th>概念</th><th style="width:50px">跌停数</th><th>跌停个股</th>'+
+      '</tr></thead><tbody>';
+    data.concepts.forEach((c,i)=>{
+      const rankCls = i<3 ? ' top3' : '';
+      const stocks = c.stocks;
+      const SHOW = 8;
+      const head = stocks.slice(0, SHOW).map(stockSpan).join('、');
+      const tail = stocks.slice(SHOW);
+      const tailHtml = tail.length ? '、' + tail.map(stockSpan).join('、') : '';
+      const moreTxt = tail.length ? `等${stocks.length}只` : '';
+      const toggle = tail.length
+        ? `<span class="concept-toggle" onclick="toggleConceptStocks(this)">展开 +${tail.length}</span>` : '';
+      const fc = freqMap[c.concept] || 0;
+      const freqTag = fc > 0
+        ? `<span class="concept-freq" title="近10个交易日进入跌停Top20 ${fc}次">近10日${fc}次</span>` : '';
+      html += `<tr>
+        <td><span class="concept-rank${rankCls}">${i+1}</span></td>
+        <td>${c.concept}${freqTag}</td>
+        <td class="dt-count" style="font-weight:700">${c.dt_count}</td>
+        <td class="concept-stocks">${head}<span class="cs-extra">${tailHtml}</span><span class="cs-more"> ${moreTxt}</span>${toggle}</td>
+      </tr>`;
+    });
+    html += '</tbody></table></div>';
+    container.innerHTML = html;
+    bindKlineHover(container);
+  }catch(e){
+    container.innerHTML = '<div class="empty">加载失败: '+e.message+'</div>';
+  }
+}
 
 // ===== ③ 连板梯队 =====
 async function loadLadder(d){
@@ -427,7 +580,10 @@ async function loadLadder(d){
       html += `<div class="ladder-col">
         <div class="ladder-col-head"><span class="lc-lb ${lbCls}">${lb}板</span> <span style="color:var(--text-3);font-size:11px">${stocks.length}只</span></div>`;
       stocks.forEach(s=>{
-        const conceptsStr = s.concepts && s.concepts.length ? s.concepts.slice(0,3).join('、')+(s.concepts.length>3?` 等${s.concepts.length}`:'') : '';
+        // concepts: [{name, rank}], rank 有值表示在 Top20, 显示 XX(排名)
+        const conceptsStr = s.concepts && s.concepts.length
+          ? s.concepts.slice(0,3).map(c => c.rank!=null ? `${c.name}(${c.rank})` : c.name).join('、')+(s.concepts.length>3?` 等${s.concepts.length}`:'')
+          : '';
         // 涨停时间: 9:25 = 一字板(开盘即封死), 其他显示时间
         const isYizi = s.zt_time === '9:25';
         const ztTime = s.zt_time ? (isYizi
@@ -450,7 +606,49 @@ async function loadLadder(d){
     });
     html += '</div>';
     container.innerHTML = html;
-    bindLadderHover();
+    bindKlineHover(container);
+  }catch(e){
+    container.innerHTML = '<div class="empty">加载失败: '+e.message+'</div>';
+  }
+}
+
+// ===== ③b 晋级失败(3板+断板) =====
+async function loadBroken(d){
+  const container = document.getElementById('brokenContainer');
+  try{
+    const resp = await fetch(`/api/simreplay/broken_promote?date=${d}`);
+    const data = await resp.json();
+    if(!data.success){
+      container.innerHTML = '<div class="empty">'+(data.error||'加载失败')+'</div>';
+      return;
+    }
+    if(!data.stocks.length){
+      container.innerHTML = '<div class="empty">昨日3板+个股今日全部晋级成功,无断板</div>';
+      return;
+    }
+    let html = '<table class="broken-table"><thead><tr>'+
+      '<th>股票</th><th>昨连板</th><th>概念</th><th>断板日涨幅</th><th>断板后1天</th><th>2天</th><th>3天</th>'+
+      '</tr></thead><tbody>';
+    data.stocks.forEach(s=>{
+      const conceptsStr = s.concepts && s.concepts.length
+        ? s.concepts.map(c=>c.rank!=null?`${c.name}(${c.rank})`:c.name).join('、') : '-';
+      const breakPct = s.break_pct!=null ? s.break_pct+'%' : '-';
+      const afterCells = [1,2,3].map(day=>{
+        const a = (s.after_pct||[]).find(x=>x.day===day);
+        if(!a || a.pct==null) return '<td>-</td>';
+        return `<td><span class="pct-tag ${a.cls}">${a.pct}%</span></td>`;
+      }).join('');
+      html += `<tr>
+        <td><span class="ladder-stock kline-stock" data-code="${s.code}" data-name="${s.name}" style="color:var(--text);font-weight:600;cursor:pointer" title="悬停查看日K线">${s.name}</span> <span class="ls-code">${s.code}</span></td>
+        <td><span style="color:var(--orange);font-weight:700">${s.prev_lianban}板</span></td>
+        <td style="color:var(--blue);font-size:11px">${conceptsStr}</td>
+        <td><span class="pct-tag ${s.break_cls}">${breakPct}</span></td>
+        ${afterCells}
+      </tr>`;
+    });
+    html += '</tbody></table>';
+    container.innerHTML = html;
+    bindKlineHover(container);
   }catch(e){
     container.innerHTML = '<div class="empty">加载失败: '+e.message+'</div>';
   }
@@ -462,16 +660,19 @@ let _ladderHoverTimer = null;
 let _ladderHoverCache = {};   // code -> bars
 let _ladderHoverLoading = null; // 正在请求的 code, 防并发
 
-function bindLadderHover(){
+function bindKlineHover(scope){
   const tip = document.getElementById('ladderHoverTip');
   if(!tip) return;
-  document.querySelectorAll('.ladder-stock').forEach(el=>{
+  const root = scope || document;
+  // 同时匹配连板梯队(.ladder-stock)与涨停/跌停概念(.kline-stock)
+  root.querySelectorAll('.ladder-stock, .kline-stock').forEach(el=>{
     el.addEventListener('mouseenter', ()=>{
       const code = el.getAttribute('data-code');
       const name = el.getAttribute('data-name') || '';
+      const theme = el.getAttribute('data-theme') || '';
       clearTimeout(_ladderHoverTimer);
       // 延迟 250ms 显示, 避免鼠标快速划过时频繁请求
-      _ladderHoverTimer = setTimeout(()=>showLadderHover(code, name, el), 250);
+      _ladderHoverTimer = setTimeout(()=>showLadderHover(code, name, el, theme), 250);
     });
     el.addEventListener('mouseleave', ()=>{
       clearTimeout(_ladderHoverTimer);
@@ -494,7 +695,7 @@ function positionLadderHover(anchorEl){
   tip.style.top = y + 'px';
 }
 
-async function showLadderHover(code, name, anchorEl){
+async function showLadderHover(code, name, anchorEl, theme){
   const tip = document.getElementById('ladderHoverTip');
   if(!tip) return;
   positionLadderHover(anchorEl);
@@ -502,7 +703,7 @@ async function showLadderHover(code, name, anchorEl){
 
   // 命中缓存直接渲染
   if(_ladderHoverCache[code]){
-    renderLadderHoverChart(code, name, _ladderHoverCache[code]);
+    renderLadderHoverChart(code, name, _ladderHoverCache[code], theme);
     return;
   }
   // 占位
@@ -517,7 +718,7 @@ async function showLadderHover(code, name, anchorEl){
     const wait = setInterval(()=>{
       if(_ladderHoverLoading !== code){
         clearInterval(wait);
-        if(_ladderHoverCache[code]) renderLadderHoverChart(code, name, _ladderHoverCache[code]);
+        if(_ladderHoverCache[code]) renderLadderHoverChart(code, name, _ladderHoverCache[code], theme);
       }
     }, 80);
     return;
@@ -528,7 +729,7 @@ async function showLadderHover(code, name, anchorEl){
     const data = await resp.json();
     if(data.success && data.bars && data.bars.length){
       _ladderHoverCache[code] = data.bars;
-      renderLadderHoverChart(code, name, data.bars);
+      renderLadderHoverChart(code, name, data.bars, theme);
     }else{
       tip.querySelector('.lht-head').textContent = `${code} ${name}`;
       tip.querySelector('.lht-tip').textContent = '无日K数据';
@@ -543,7 +744,66 @@ async function showLadderHover(code, name, anchorEl){
   }
 }
 
-function renderLadderHoverChart(code, name, bars){
+// ===== 通用 K线 option 构建(hover 浮窗 / K线网格共用) =====
+// 统一规则: 涨停日金色, 涨红跌绿, 量柱按收vs昨收红绿/平灰, 日期轴, 50/100/200/300%涨幅线
+const _KLINE = {
+  GOLD:'#ffd54f', PURPLE:'#a855f7', UP:'#ef5350', DOWN:'#26a69a', FLAT:'#6b7280', MA5:'#ffb74d', MA20:'#4a9eff', VOL_DEF:'#3a4049'
+};
+function _lastCloses(bars){
+  return bars.map((b,i)=> b.last_close!=null ? b.last_close : (i>0 ? bars[i-1].close : bars.open));
+}
+function _isZT(b, lc){
+  return lc > 0 && b.close >= lc * 1.095;
+}
+function _isDT(b, lc){
+  return lc > 0 && b.close <= lc * 0.905;
+}
+// 构建蜡烛 data: 涨停金色/跌停紫色(覆盖涨跌), 否则按开收判涨红跌绿
+function _buildOhlc(bars, lastCloses, markSpecial){
+  return bars.map((b,i)=>{
+    const lc = lastCloses[i];
+    const item = [b.open, b.close, b.low, b.high];
+    if(markSpecial){
+      if(_isZT(b, lc)){
+        return {value:item, itemStyle:{color:_KLINE.GOLD, color0:_KLINE.GOLD, borderColor:_KLINE.GOLD, borderColor0:_KLINE.GOLD}};
+      }
+      if(_isDT(b, lc)){
+        return {value:item, itemStyle:{color:_KLINE.PURPLE, color0:_KLINE.PURPLE, borderColor:_KLINE.PURPLE, borderColor0:_KLINE.PURPLE}};
+      }
+    }
+    return item;
+  });
+}
+// 量柱 data: 收>昨收红, 收<昨收绿, 平灰
+function _buildVols(bars, lastCloses){
+  return bars.map((b,i)=>{
+    const lc = lastCloses[i];
+    let c = _KLINE.VOL_DEF;
+    if(lc > 0){
+      if(b.close > lc) c = _KLINE.UP;
+      else if(b.close < lc) c = _KLINE.DOWN;
+      else c = _KLINE.FLAT;
+    }
+    return {value:b.vol, itemStyle:{color:c}};
+  });
+}
+// 涨幅线: 以最后涨停日收盘价为基准 +50/+100/+200/+300%
+function _buildMarkLines(bars, lastCloses){
+  let ztIdx = -1;
+  for(let i=bars.length-1;i>=0;i--){ if(_isZT(bars[i], lastCloses[i])){ ztIdx=i; break; } }
+  const ml = [];
+  if(ztIdx >= 0){
+    const base = bars[ztIdx].close;
+    if(base > 0){
+      [{pct:50,c:'#26a69a'},{pct:100,c:'#ffd60a'},{pct:200,c:'#ef5350'},{pct:300,c:'#b388ff'}].forEach(({pct,c})=>{
+        ml.push({yAxis:+(base*(1+pct/100)).toFixed(2), lineStyle:{color:c,type:'dashed',width:1}, label:{formatter:'+'+pct+'%',color:c,fontSize:9,position:'insideEndTop'}});
+      });
+    }
+  }
+  return ml;
+}
+
+function renderLadderHoverChart(code, name, bars, theme){
   const tip = document.getElementById('ladderHoverTip');
   if(!tip || tip.style.display === 'none') return;
   tip.querySelector('.lht-head').textContent = `${code} ${name} (近${bars.length}日)`;
@@ -553,35 +813,39 @@ function renderLadderHoverChart(code, name, bars){
   if(_ladderHoverChart){ try{ _ladderHoverChart.dispose(); }catch(e){} }
   _ladderHoverChart = echarts.init(chartDiv, 'dark');
   const dates = bars.map(b=>b.date);
-  const ohlc = bars.map(b=>[b.open, b.close, b.low, b.high]);
-  const vols = bars.map(b=>b.vol);
+  const lastCloses = _lastCloses(bars);
+  const ohlc = _buildOhlc(bars, lastCloses, true);  // 涨停金/跌停紫始终标记
+  const vols = _buildVols(bars, lastCloses);
   const ma5 = bars.map((b,i)=>{ if(i<4) return '-'; let s=0; for(let j=i-4;j<=i;j++) s+=bars[j].close; return +(s/5).toFixed(2); });
+  const markLines = _buildMarkLines(bars, lastCloses);
+  const dzStart = Math.max(0, 100-60/bars.length*100);
   _ladderHoverChart.setOption({
     backgroundColor:'transparent',
     tooltip:{ trigger:'axis', axisPointer:{type:'cross'} },
     legend:{show:false},
     grid:[
-      {left:'8%', right:'3%', top:'6%', height:'58%'},
-      {left:'8%', right:'3%', top:'70%', height:'24%'}
+      {left:'8%', right:'3%', top:'6%', height:'52%'},
+      {left:'8%', right:'3%', top:'62%', height:'20%'}
     ],
     xAxis:[
       {type:'category', data:dates, gridIndex:0, axisLabel:{show:false}, boundaryGap:true},
-      {type:'category', data:dates, gridIndex:1, axisLabel:{show:false}}
+      {type:'category', data:dates, gridIndex:1, axisLabel:{fontSize:9, color:'#9aa0a6', formatter:v=>v?v.slice(5):''}, axisTick:{show:false}}
     ],
     yAxis:[
       {scale:true, gridIndex:0, axisLabel:{fontSize:9, color:'#9aa0a6'}, splitLine:{lineStyle:{color:'#252a33'}}},
       {gridIndex:1, axisLabel:{show:false}, splitLine:{show:false}}
     ],
     dataZoom:[
-      {type:'inside', xAxisIndex:[0,1], start:Math.max(0,100-60/bars.length*100), end:100}
+      {type:'inside', xAxisIndex:[0,1], start:dzStart, end:100}
     ],
     series:[
       {
         type:'candlestick', data:ohlc, xAxisIndex:0, yAxisIndex:0,
-        itemStyle:{color:'#ef5350',color0:'#26a69a',borderColor:'#ef5350',borderColor0:'#26a69a'}
+        itemStyle:{color:_KLINE.UP, color0:_KLINE.DOWN, borderColor:_KLINE.UP, borderColor0:_KLINE.DOWN},
+        markLine:{symbol:'none', silent:true, data:markLines}
       },
-      {name:'MA5', type:'line', data:ma5, xAxisIndex:0, yAxisIndex:0, smooth:true, symbol:'none', lineStyle:{width:1,color:'#ffb74d'}},
-      {name:'成交量', type:'bar', data:vols, xAxisIndex:1, yAxisIndex:1, itemStyle:{color:'#3a4049'}}
+      {name:'MA5', type:'line', data:ma5, xAxisIndex:0, yAxisIndex:0, smooth:true, symbol:'none', lineStyle:{width:1, color:_KLINE.MA5}},
+      {name:'成交量', type:'bar', data:vols, xAxisIndex:1, yAxisIndex:1}
     ]
   });
   _ladderHoverChart.resize();
@@ -757,6 +1021,8 @@ async function doScan(){
   // 释放旧图表
   _scanCharts.forEach(c=>{try{c.dispose();}catch(e){}});
   _scanCharts = [];
+  _scanMinuteCharts.forEach(c=>{try{c.dispose();}catch(e){}});
+  _scanMinuteCharts = [];
   document.getElementById('scanResults').innerHTML = '<div class="loading">加载K线数据中(250根/只, 可能需要数秒)...</div>';
 
   try{
@@ -791,6 +1057,8 @@ function renderScanPage(){
   // 释放旧chart实例
   _scanCharts.forEach(c=>{ try{c.dispose();}catch(e){} });
   _scanCharts = [];
+  _scanMinuteCharts.forEach(c=>{ try{c.dispose();}catch(e){} });
+  _scanMinuteCharts = [];
 
   const results = _scanResults;
   const totalPages = Math.ceil(results.length / _SCAN_PER_PAGE);
@@ -843,9 +1111,9 @@ function renderScanPage(){
     const dom = cell.querySelector(`#sc_${r.code}`);
     const chart = echarts.init(dom, 'dark');
     _scanCharts.push(chart);
-    renderKlineChart(chart, r);
+    renderKlineChart(chart, r, r.code, r.name, `mn_${r.code}`);
 
-    // 右侧分时(仅当日有数据)
+    // 右侧分时(默认选中日)
     loadCellMinute(r.code, r.name, `mn_${r.code}`);
   });
 }
@@ -858,107 +1126,220 @@ function nextScanPage(){
   if(_scanPage < totalPages - 1){ _scanPage++; renderScanPage(); }
 }
 
-// 加载cell右侧分时(仅当日)
-async function loadCellMinute(code, name, divId){
+// ===== 分时图(固定全天轴 + 量红绿 + 大盘叠加 + 无缩放) =====
+// 固定全天时间轴: 9:30-11:29(120) + 13:00-14:59(120) = 240点, 与后端 _minute_time_axis 一致
+const _SR_FULL_DAY = (function(){
+  const pad = n => String(n).padStart(2,'0');
+  const a = [];
+  for(let m=30;m<=59;m++) a.push(`09:${pad(m)}`);
+  for(let m=0;m<=59;m++) a.push(`10:${pad(m)}`);
+  for(let m=0;m<=29;m++) a.push(`11:${pad(m)}`);
+  for(let m=0;m<=59;m++) a.push(`13:${pad(m)}`);
+  for(let m=0;m<=59;m++) a.push(`14:${pad(m)}`);
+  return a;
+})();
+const _SR_AXIS_IDX = {}; _SR_FULL_DAY.forEach((t,i)=>_SR_AXIS_IDX[t]=i);
+// 大盘(上证)分时缓存: date8 -> points[]
+let _srIndexMinCache = {};
+
+async function _srLoadIndexMinute(date8){
+  if(_srIndexMinCache[date8]) return _srIndexMinCache[date8];
+  try{
+    const r = await fetch(`/api/monitor/index/minutes?date=${date8}`);
+    const d = await r.json();
+    if(d.success && d.points && d.points.length){
+      _srIndexMinCache[date8] = d.points;
+      return d.points;
+    }
+  }catch(e){}
+  _srIndexMinCache[date8] = null;
+  return null;
+}
+
+// 加载cell右侧分时(指定日期, 默认选中日)
+async function loadCellMinute(code, name, divId, minuteDate){
   const div = document.getElementById(divId);
   if(!div) return;
-  // 仅当日可看分时
-  const today = new Date();
-  const todayStr = today.getFullYear()+''+String(today.getMonth()+1).padStart(2,'0')+''+String(today.getDate()).padStart(2,'0');
-  if(_simCurDate !== todayStr){
-    div.innerHTML = '<span class="km-tip">⚠️ 仅当日<br>可看分时</span>';
-    return;
-  }
+  const mdate = minuteDate || _simCurDate;
+  div.innerHTML = `<span class="km-tip">加载 ${mdate.slice(4,6)}-${mdate.slice(6,8)} 分时...</span>`;
   try{
-    const resp = await fetch(`/api/monitor/stock/minute?code=${code}`);
-    const data = await resp.json();
-    if(!data.success || !data.points || !data.points.length){
-      div.innerHTML = '<span class="km-tip">无分时数据</span>';
+    // 并发拉个股 + 大盘分时
+    const [stkResp, idxPoints] = await Promise.all([
+      fetch(`/api/monitor/stock/minutes?code=${code}&date=${mdate}`).then(r=>r.json()),
+      _srLoadIndexMinute(mdate)
+    ]);
+    if(!stkResp.success || !stkResp.points || !stkResp.points.length){
+      div.innerHTML = `<span class="km-tip">无 ${mdate.slice(4,6)}-${mdate.slice(6,8)} 分时数据</span>`;
       return;
     }
     div.innerHTML = '';
+    div.dataset.curMinuteDate = mdate;
+    // 释放该div旧实例(若有)
+    const old = echarts.getInstanceByDom(div);
+    if(old){
+      old.dispose();
+      // 从分时数组移除旧实例
+      const oi = _scanMinuteCharts.indexOf(old);
+      if(oi>=0) _scanMinuteCharts.splice(oi,1);
+    }
     const chart = echarts.init(div, 'dark');
-    _scanCharts.push(chart);
-    const times = data.points.map(p=>p.time);
-    const prices = data.points.map(p=>p.price);
-    const vols = data.points.map(p=>p.vol);
-    const lastClose = data.last_close || prices[0] || 0;
+    _scanMinuteCharts.push(chart);
+
+    // 个股数据对齐到固定全天轴
+    const sPrices = new Array(_SR_FULL_DAY.length).fill(null);
+    const sVols = new Array(_SR_FULL_DAY.length).fill(null);
+    stkResp.points.forEach(p=>{
+      const i = _SR_AXIS_IDX[p.time];
+      if(i!=null){ sPrices[i]=p.price; sVols[i]=p.vol; }
+    });
+    // 昨收基准(后端补, 无则用第一个有效点)
+    let basePrice = stkResp.last_close || 0;
+    if(!basePrice || basePrice<=0){
+      const f = sPrices.find(p=>p!=null);
+      basePrice = f!=null ? f : 0;
+    }
+    // 涨停幅度: 创业板300/301、科创688 = 20%, 主板 = 10%
+    const isKcb = code.startsWith('688')||code.startsWith('300')||code.startsWith('301');
+    const limitRate = isKcb ? 0.2 : 0.1;
+    const limitDev = basePrice * limitRate;
+
+    // 个股量红绿柱: 本分钟 vs 上一分钟收盘价
+    const sVolsColor = sVols.map((v,i)=>{
+      if(v==null) return {value:null};
+      let c;
+      if(i===0 || sPrices[i-1]==null) c='rgba(158,158,158,0.5)';
+      else if(sPrices[i]>sPrices[i-1]) c='rgba(239,83,80,0.6)';
+      else if(sPrices[i]<sPrices[i-1]) c='rgba(38,166,154,0.6)';
+      else c='rgba(158,158,158,0.5)';
+      return {value:v, itemStyle:{color:c}};
+    });
+
+    // 个股均价线(VWAP)
+    let cumAmt=0, cumVol=0;
+    const sAvg = sPrices.map((p,i)=>{
+      const v=sVols[i];
+      if(p!=null && v!=null){ cumAmt+=p*v; cumVol+=v; }
+      return cumVol>0 ? +(cumAmt/cumVol).toFixed(2) : null;
+    });
+
+    // 大盘数据对齐到固定轴(右隐藏轴叠加)
+    const hasIdx = !!(idxPoints && idxPoints.length);
+    const idxPrices = new Array(_SR_FULL_DAY.length).fill(null);
+    if(hasIdx){
+      idxPoints.forEach(p=>{
+        const i=_SR_AXIS_IDX[p.time];
+        if(i!=null) idxPrices[i]=p.price;
+      });
+    }
+
+    const dateLabel = (stkResp.date||mdate).slice(5);
+    const seriesList = [
+      // 个股分时线(红)
+      {name:'个股', type:'line', data:sPrices, symbol:'none', connectNulls:false,
+       yAxisIndex:0, lineStyle:{color:'#e63946', width:1.3},
+       markLine:{symbol:'none',silent:true, data:[
+         {yAxis:basePrice+limitDev, lineStyle:{color:'#ef5350',type:'dashed',width:1},
+          label:{show:true,position:'insideEndTop',color:'#ef5350',fontSize:8,formatter:'涨停'}},
+         {yAxis:basePrice, lineStyle:{color:'#9aa0a6',type:'dashed',width:1},
+          label:{show:true,position:'insideEndTop',color:'#9aa0a6',fontSize:8,formatter:'昨收'}},
+         {yAxis:basePrice-limitDev, lineStyle:{color:'#26a69a',type:'dashed',width:1},
+          label:{show:true,position:'insideEndBottom',color:'#26a69a',fontSize:8,formatter:'跌停'}},
+       ]}},
+      // 个股均价(黄)
+      {name:'均价', type:'line', data:sAvg, symbol:'none', connectNulls:false,
+       yAxisIndex:0, lineStyle:{color:'#facc15',width:1}},
+      // 个股量(红绿柱)
+      {name:'量', type:'bar', data:sVolsColor, yAxisIndex:1, barCategoryGap:'20%'}
+    ];
+    if(hasIdx){
+      seriesList.push({name:'大盘', type:'line', data:idxPrices, symbol:'none', connectNulls:false,
+        yAxisIndex:2, lineStyle:{color:'rgba(255,255,255,0.4)',width:1,type:'dashed'}});
+    }
+
     chart.setOption({
       backgroundColor:'transparent',
-      tooltip:{trigger:'axis'},
-      grid:{left:'8%',right:'3%',top:'5%',height:'65%',bottom:'30%'},
-      xAxis:{type:'category',data:times,axisLabel:{fontSize:8,color:'#9aa0a6',interval:30}},
-      yAxis:{scale:true,axisLabel:{fontSize:8,color:'#9aa0a6'},splitLine:{lineStyle:{color:'#252a33'}}},
-      series:[
-        {type:'line',data:prices,smooth:true,symbol:'none',lineStyle:{width:1.2,color:'#4a9eff'},
-          markLine:{symbol:'none',silent:true,data:[{yAxis:lastClose,lineStyle:{color:'#9aa0a6',type:'dashed',width:1}}]}},
-        {type:'bar',data:vols,xAxisIndex:0,yAxisIndex:0,itemStyle:{color:'#3a4049'},xAxisIndex:0}
-      ]
+      animation:false,
+      title:{text:dateLabel+' 分时'+(hasIdx?' +大盘':''), left:'center', top:2,
+        textStyle:{fontSize:10, color:'#9aa0a6'}},
+      tooltip:{trigger:'axis', backgroundColor:'rgba(20,23,29,0.95)', borderColor:'#2c313a',
+        textStyle:{color:'#e6e6e6'},
+        formatter:function(ps){
+          let s = ps[0].axisValue+'<br/>';
+          ps.forEach(p=>{
+            if(p.value==null||p.value==='-') return;
+            if(p.seriesName==='量') return;
+            let base=0;
+            if(p.seriesName==='个股'||p.seriesName==='均价') base=basePrice;
+            if(base>0 && p.seriesName!=='大盘'){
+              const pct=((p.value-base)/base*100); const sign=pct>=0?'+':'';
+              const col=pct>=0?'#ef5350':'#26a69a';
+              s+=`${p.marker}${p.seriesName}: <b>${p.value}</b> <span style="color:${col}">${sign}${pct.toFixed(2)}%</span><br/>`;
+            }else{
+              s+=`${p.marker}${p.seriesName}: <b>${p.value}</b><br/>`;
+            }
+          });
+          return s;
+        }},
+      legend:{show:false},
+      grid:{left:'14%',right:hasIdx?'10%':'4%',top:'16%',height:'46%',bottom:'30%'},
+      xAxis:{type:'category', data:_SR_FULL_DAY, boundaryGap:false,
+        axisLine:{lineStyle:{color:'#2c313a'}},
+        axisLabel:{color:'#9aa0a6', fontSize:8, interval:29}},
+      yAxis:[
+        // 0 个股价(左, 涨跌停尺度, 显示涨幅%)
+        {scale:true, min:basePrice-limitDev, max:basePrice+limitDev,
+         splitLine:{lineStyle:{color:'#252a33'}},
+         axisLabel:{fontSize:8, formatter:function(v){
+           if(basePrice<=0) return v.toFixed(2);
+           const pct=(v-basePrice)/basePrice*100; const sign=pct>=0?'+':'';
+           const col=pct>=0?'#ef5350':'#26a69a';
+           return `{p|${v.toFixed(2)}}{${pct>=0?'up':'down'}|${sign}${pct.toFixed(1)}%}`;
+         }, rich:{p:{color:'#9aa0a6',fontSize:8},up:{color:'#ef5350',fontSize:8},down:{color:'#26a69a',fontSize:8}}}},
+        // 1 个股量(隐藏)
+        {gridIndex:0, splitLine:{show:false}, axisLabel:{show:false}},
+        // 2 大盘(右隐藏, 仅画线)
+        {scale:true, position:'right', splitLine:{show:false}, axisLabel:{show:false}}
+      ],
+      dataZoom:[
+        {type:'inside', xAxisIndex:0, start:0, end:100, minValueSpan:12},
+        {type:'slider', xAxisIndex:0, bottom:4, height:12, start:0, end:100,
+          borderColor:'#2c313a', fillerColor:'rgba(74,158,255,0.12)', handleStyle:{color:'#4a9eff'}}
+      ],
+      series:seriesList
     });
     chart.resize();
+
+    // 分时 dataZoom 联动(独立于K线联动)
+    chart.off('datazoom');
+    chart.on('datazoom', function(params){
+      if(_syncingMinZoom) return;
+      _syncingMinZoom = true;
+      try{
+        const opt = chart.getOption();
+        const dz = opt.dataZoom[0];
+        _scanMinuteCharts.forEach(function(c){
+          if(c !== chart && !c.isDisposed()){
+            c.setOption({dataZoom:[{start:dz.start, end:dz.end}, {start:dz.start, end:dz.end}]});
+          }
+        });
+      }catch(e){}
+      _syncingMinZoom = false;
+    });
   }catch(e){
     div.innerHTML = '<span class="km-tip">分时加载失败</span>';
   }
 }
 
-function renderKlineChart(chart, r){
+function renderKlineChart(chart, r, kcode, kname, minuteDivId){
   const bars = r.bars;
   const dates = bars.map(b=>b.date);
-  const ohlc = bars.map(b=>[b.open, b.close, b.low, b.high]);
-  const vols = bars.map(b=>b.vol);
-  // last_close 数组(供涨跌/涨停判断)
-  const lastCloses = bars.map((b,i)=> b.last_close != null ? b.last_close : (i>0 ? bars[i-1].close : bars[i].open));
+  const lastCloses = _lastCloses(bars);
+  const ohlc = _buildOhlc(bars, lastCloses, true);   // 网格也标涨停金色
+  const vols = _buildVols(bars, lastCloses);          // 量柱红绿/平灰
+  const markLines = _buildMarkLines(bars, lastCloses); // 50/100/200/300% 涨幅线
   // MA5/MA20
   const ma5 = bars.map((b,i)=>{ if(i<4) return '-'; let s=0; for(let j=i-4;j<=i;j++) s+=bars[j].close; return +(s/5).toFixed(2); });
   const ma20 = bars.map((b,i)=>{ if(i<19) return '-'; let s=0; for(let j=i-19;j<=i;j++) s+=bars[j].close; return +(s/20).toFixed(2); });
-
-  // 找最后涨停日位置(用于涨幅线基准)
-  let ztIdx = -1;
-  if(r.last_zt_date){
-    const ztStr = r.last_zt_date.replace(/-/g,'');
-    for(let i=bars.length-1;i>=0;i--){
-      if(bars[i].date.replace(/-/g,'') === ztStr){ ztIdx=i; break; }
-    }
-  }
-  // 涨幅线: 以最后涨停日收盘价为基准的 +50%/+100%/+200%
-  const markLines = [];
-  if(ztIdx >= 0){
-    const base = bars[ztIdx].close;
-    if(base > 0){
-      [
-        {pct:50, color:'#26a69a'},
-        {pct:100, color:'#ffd60a'},
-        {pct:200, color:'#ef5350'},
-      ].forEach(({pct,color})=>{
-        const val = +(base * (1 + pct/100)).toFixed(2);
-        markLines.push({
-          yAxis: val,
-          lineStyle:{color, type:'dashed', width:1},
-          label:{formatter:'+'+pct+'%', color, fontSize:9, position:'insideEndTop'},
-        });
-      });
-    }
-  }
-
-  // 需求4: 涨停日K线标黄 (收盘涨幅>=9.8%)
-  const ZT_YELLOW = '#ffd60a';
-  const UP_RED = '#ef5350';
-  const DOWN_GREEN = '#26a69a';
-  const candleColors = bars.map((b,i)=>{
-    const lc = lastCloses[i];
-    if(lc > 0){
-      const pct = (b.close - lc) / lc * 100;
-      if(pct >= 9.8) return ZT_YELLOW;  // 涨停
-    }
-    return b.close >= b.open ? UP_RED : DOWN_GREEN;
-  });
-
-  // 需求2: 成交量涨红跌绿
-  const volColors = bars.map((b,i)=>{
-    const lc = lastCloses[i];
-    if(lc > 0 && b.close >= lc) return UP_RED;
-    return DOWN_GREEN;
-  });
 
   const dzStart = Math.max(0, 100 - 60 / bars.length * 100);
 
@@ -967,12 +1348,12 @@ function renderKlineChart(chart, r){
     tooltip:{ trigger:'axis', axisPointer:{type:'cross'} },
     legend:{show:false},
     grid:[
-      {left:'8%', right:'3%', top:'5%', height:'62%'},
-      {left:'8%', right:'3%', top:'72%', height:'22%'}
+      {left:'8%', right:'3%', top:'5%', height:'55%'},
+      {left:'8%', right:'3%', top:'66%', height:'20%'}
     ],
     xAxis:[
       {type:'category', data:dates, gridIndex:0, axisLabel:{show:false}, boundaryGap:true},
-      {type:'category', data:dates, gridIndex:1, axisLabel:{show:false}}
+      {type:'category', data:dates, gridIndex:1, axisLabel:{fontSize:9, color:'#9aa0a6', formatter:v=>v?v.slice(5):''}, axisTick:{show:false}}
     ],
     yAxis:[
       {scale:true, gridIndex:0, axisLabel:{fontSize:9, color:'#9aa0a6'}, splitLine:{lineStyle:{color:'#252a33'}}},
@@ -985,21 +1366,33 @@ function renderKlineChart(chart, r){
     series:[
       {
         type:'candlestick', data:ohlc, xAxisIndex:0, yAxisIndex:0,
-        itemStyle:{
-          color: function(p){ return candleColors[p.dataIndex] || UP_RED; },
-          color0: function(p){ return candleColors[p.dataIndex] || DOWN_GREEN; },
-          borderColor: function(p){ return candleColors[p.dataIndex] || UP_RED; },
-          borderColor0: function(p){ return candleColors[p.dataIndex] || DOWN_GREEN; },
-        },
+        itemStyle:{color:_KLINE.UP, color0:_KLINE.DOWN, borderColor:_KLINE.UP, borderColor0:_KLINE.DOWN},
         markLine:{symbol:'none', silent:true, data:markLines}
       },
-      {name:'MA5', type:'line', data:ma5, xAxisIndex:0, yAxisIndex:0, smooth:true, symbol:'none', lineStyle:{width:1,color:'#ffb74d'}},
-      {name:'MA20', type:'line', data:ma20, xAxisIndex:0, yAxisIndex:0, smooth:true, symbol:'none', lineStyle:{width:1,color:'#4a9eff'}},
-      {name:'成交量', type:'bar', data:vols, xAxisIndex:1, yAxisIndex:1,
-        itemStyle:{color: function(p){ return volColors[p.dataIndex] || '#3a4049'; }}}
+      {name:'MA5', type:'line', data:ma5, xAxisIndex:0, yAxisIndex:0, smooth:true, symbol:'none', lineStyle:{width:1,color:_KLINE.MA5}},
+      {name:'MA20', type:'line', data:ma20, xAxisIndex:0, yAxisIndex:0, smooth:true, symbol:'none', lineStyle:{width:1,color:_KLINE.MA20}},
+      {name:'成交量', type:'bar', data:vols, xAxisIndex:1, yAxisIndex:1}
     ]
   });
   chart.resize();
+
+  // 双击K线图任意位置 -> 根据鼠标x坐标定位日期, 加载该日右侧分时
+  if(kcode && minuteDivId){
+    chart.off('dblclick');
+    chart.on('dblclick', function(params){
+      // 用鼠标x像素反推category索引(不依赖点到蜡烛实体)
+      let idx = params.dataIndex;
+      if(idx==null && params.event){
+        const px = (params.event.offsetX!=null) ? params.event.offsetX : (params.event.event&&params.event.event.offsetX);
+        if(px!=null){
+          try{ idx = Math.round(chart.convertFromPixel({xAxisIndex:0}, [px, 0])[0]); }catch(e){}
+        }
+      }
+      if(idx==null || idx<0 || idx>=dates.length || !dates[idx]) return;
+      const d8 = dates[idx].replace(/-/g,'');
+      loadCellMinute(kcode, kname, minuteDivId, d8);
+    });
+  }
 
   // 需求5: dataZoom 联动 - 滑一只全部同步
   chart.on('datazoom', function(params){

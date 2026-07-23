@@ -2522,8 +2522,26 @@ def monitor_stock_minutes():
                 'price': round(float(row['price']), 2),
                 'vol': float(row['vol']),
             })
+        # 前一交易日收盘(昨收基准): 取 date 之前最近一根日K的 close
+        last_close = 0.0
+        try:
+            import tdx_source as ts
+            bars, _src = ts.kline_daily(code, count=60, prefer_local=True)
+            if bars:
+                d_iso = f'{date[:4]}-{date[4:6]}-{date[6:8]}'
+                prev_close = None
+                for b in bars:
+                    if b['date'] < d_iso:
+                        prev_close = b['close']
+                if prev_close is None and bars:
+                    prev_close = bars[0]['close']
+                if prev_close:
+                    last_close = round(float(prev_close), 2)
+        except Exception:
+            pass
         date_fmt = f'{date[:4]}-{date[4:6]}-{date[6:8]}'
-        return jsonify({'success': True, 'points': points, 'date': date_fmt, 'source': 'mootdx'})
+        return jsonify({'success': True, 'points': points, 'date': date_fmt,
+                        'last_close': last_close, 'source': 'mootdx'})
     except Exception as e:
         return jsonify({'success': False, 'error': f'{type(e).__name__}: {e}'}), 500
 
@@ -4348,6 +4366,161 @@ def api_simreplay_concept_top():
         return jsonify({'success': False, 'error': f'{type(e).__name__}: {e}'}), 500
 
 
+@app.route('/api/simreplay/concept_top_freq', methods=['GET'])
+def api_simreplay_concept_top_freq():
+    """近 N 个交易日(含 date)每个概念进入当日 Top20 的次数。
+    复用 api_simreplay_concept_top 的聚合口径(同花顺概念 + concept_chain 黑名单过滤 +
+    按 zt_count 降序取 Top20), 只统计"上榜"与否, 不关心名次。
+    返回: {success, freq: {concept: 次数}, days: N, date: date8}"""
+    date8 = request.args.get('date', '')
+    if not re.match(r'^\d{8}$', date8):
+        return jsonify({'success': False, 'error': 'date 需为 YYYYMMDD'}), 400
+    try:
+        n = int(request.args.get('days', '10'))
+    except ValueError:
+        n = 10
+    if n < 1 or n > 60:
+        n = 10
+    d = f"{date8[:4]}-{date8[4:6]}-{date8[6:8]}"
+    try:
+        import db as _db
+        import concept_chain as _cc
+        from collections import OrderedDict
+        conn = _db.get_conn()
+        try:
+            with conn.cursor() as cur:
+                # 取 ≤ d 的最近 n 个有涨停数据的交易日(降序)
+                cur.execute(
+                    "SELECT DISTINCT trade_date FROM zt_stocks "
+                    "WHERE trade_date <= %s ORDER BY trade_date DESC LIMIT %s", (d, n))
+                days = [r[0] for r in cur.fetchall()]
+            if not days:
+                return jsonify({'success': True, 'freq': {}, 'days': 0, 'date': date8})
+            # 逐日聚合 Top20 概念(复用主接口口径)
+            freq = {}
+            for day in days:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT cm.concept, zs.code FROM zt_stocks zs "
+                        "JOIN ths.concept_member cm ON cm.stock_code = zs.code "
+                        "WHERE zs.trade_date = %s "
+                        "GROUP BY cm.concept, zs.code", (day,))
+                    rows = cur.fetchall()
+                groups = {}
+                for concept, code in rows:
+                    if not _cc.concept_to_chain(concept) or _cc.is_blocked(concept):
+                        continue
+                    groups.setdefault(concept, []).append(code)
+                top_concepts = sorted(groups.keys(), key=lambda k: -len(groups[k]))[:20]
+                for c in top_concepts:
+                    freq[c] = freq.get(c, 0) + 1
+        finally:
+            conn.close()
+        return jsonify({'success': True, 'freq': freq, 'days': len(days), 'date': date8})
+    except Exception as e:
+        return jsonify({'success': False, 'error': f'{type(e).__name__}: {e}'}), 500
+
+
+def _load_czmq_limitdown(date8):
+    """从 .czmq_result.json 读取某日跌停概念分组。
+    返回: [{concept, dt_count, stocks:[{code,name,pct}]}] (已按 concept_chain 过滤噪音标签),
+    找不到返回 None。"""
+    import json as _json
+    czmq_path = '.czmq_result.json'
+    if not os.path.exists(czmq_path):
+        return None
+    try:
+        import concept_chain as _cc
+        with open(czmq_path, 'r', encoding='utf-8') as f:
+            czmq = _json.load(f)
+        by_day = czmq.get('result', {}).get('by_day', [])
+        groups = {}
+        for day_data in by_day:
+            if day_data.get('date') != date8:
+                continue
+            for g in day_data.get('falling', {}).get('by_limitdown', []):
+                concept = g.get('concept')
+                if not concept or not _cc.concept_to_chain(concept) or _cc.is_blocked(concept):
+                    continue
+                for s in g.get('stocks', []):
+                    code = s.get('code')
+                    if not code:
+                        continue
+                    groups.setdefault(concept, {})[code] = {
+                        'code': code, 'name': s.get('name') or code, 'pct': s.get('pct')
+                    }
+            break
+        return [{'concept': k, 'dt_count': len(v), 'stocks': list(v.values())}
+                for k, v in groups.items()]
+    except Exception:
+        return None
+
+
+@app.route('/api/simreplay/concept_bottom', methods=['GET'])
+def api_simreplay_concept_bottom():
+    """某日 Top20 概念跌停统计(数据源: .czmq_result.json 的 by_limitdown,
+    按 concept 聚合 + concept_chain 黑名单过滤, 按跌停数降序取 Top20)。
+    返回: {success, concepts: [{concept, dt_count, stocks:[{code,name,pct}]}], date}"""
+    date8 = request.args.get('date', '')
+    if not re.match(r'^\d{8}$', date8):
+        return jsonify({'success': False, 'error': 'date 需为 YYYYMMDD'}), 400
+    try:
+        groups = _load_czmq_limitdown(date8)
+        if groups is None:
+            return jsonify({'success': False, 'error': 'czmq_result.json 不存在, 无法计算跌停'}), 500
+        if not groups:
+            return jsonify({'success': True, 'concepts': [], 'date': date8})
+        concepts = sorted(groups, key=lambda x: -x['dt_count'])[:20]
+        return jsonify({'success': True, 'concepts': concepts, 'date': date8})
+    except Exception as e:
+        return jsonify({'success': False, 'error': f'{type(e).__name__}: {e}'}), 500
+
+
+@app.route('/api/simreplay/concept_bottom_freq', methods=['GET'])
+def api_simreplay_concept_bottom_freq():
+    """近 N 个交易日(含 date)每个概念进入当日跌停 Top20 的次数。
+    数据源: .czmq_result.json。复用 _load_czmq_limitdown + 黑名单过滤 + Top20 口径。
+    返回: {success, freq: {concept: 次数}, days: N, date}"""
+    date8 = request.args.get('date', '')
+    if not re.match(r'^\d{8}$', date8):
+        return jsonify({'success': False, 'error': 'date 需为 YYYYMMDD'}), 400
+    try:
+        n = int(request.args.get('days', '10'))
+    except ValueError:
+        n = 10
+    if n < 1 or n > 60:
+        n = 10
+    try:
+        import json as _json
+        import concept_chain as _cc
+        czmq_path = '.czmq_result.json'
+        if not os.path.exists(czmq_path):
+            return jsonify({'success': False, 'error': 'czmq_result.json 不存在'}), 500
+        with open(czmq_path, 'r', encoding='utf-8') as f:
+            czmq = _json.load(f)
+        by_day = czmq.get('result', {}).get('by_day', [])
+        # 取 ≤ date8 的最近 n 天(按 date 字符串降序)
+        days = sorted([dd.get('date') for dd in by_day if dd.get('date', '') <= date8], reverse=True)[:n]
+        freq = {}
+        for day in days:
+            groups = {}
+            for dd in by_day:
+                if dd.get('date') != day:
+                    continue
+                for g in dd.get('falling', {}).get('by_limitdown', []):
+                    concept = g.get('concept')
+                    if not concept or not _cc.concept_to_chain(concept) or _cc.is_blocked(concept):
+                        continue
+                    groups[concept] = len(g.get('stocks', []))
+                break
+            top = sorted(groups.keys(), key=lambda k: -groups[k])[:20]
+            for c in top:
+                freq[c] = freq.get(c, 0) + 1
+        return jsonify({'success': True, 'freq': freq, 'days': len(days), 'date': date8})
+    except Exception as e:
+        return jsonify({'success': False, 'error': f'{type(e).__name__}: {e}'}), 500
+
+
 @app.route('/api/simreplay/ladder', methods=['GET'])
 @app.route('/api/simreplay/ladder', methods=['GET'])
 @app.route('/api/simreplay/ladder', methods=['GET'])
@@ -4394,8 +4567,31 @@ def api_simreplay_ladder():
                         "ORDER BY code, trade_date DESC, CASE WHEN lianban ~ '^[0-9]+$' THEN lianban::int ELSE 0 END DESC", (d, codes))
                     for code, plb, plt in cur.fetchall():
                         prev_map[code] = (plb, plt)
+                # 计算当日 Top20 概念涨停排名(复用 concept_top 口径), 供连板股票概念标注排名
+                # top20_rank: {concept: 排名(1-based)}; top20_chain_best: {chain_id: (排名,概念)} 用于"最贴切"匹配
+                cur.execute(
+                    "SELECT cm.concept, zs.code FROM zt_stocks zs "
+                    "JOIN ths.concept_member cm ON cm.stock_code = zs.code "
+                    "WHERE zs.trade_date = %s "
+                    "GROUP BY cm.concept, zs.code", (d,))
+                top_rows = cur.fetchall()
         finally:
             conn.close()
+
+        top20_rank = {}
+        top20_chain_best = {}
+        top_groups = {}
+        for concept, code in top_rows:
+            if not _cc.concept_to_chain(concept) or _cc.is_blocked(concept):
+                continue
+            top_groups.setdefault(concept, []).append(code)
+        for i, c in enumerate(sorted(top_groups.keys(), key=lambda k: -len(top_groups[k]))[:20]):
+            top20_rank[c] = i + 1
+            ci = _cc.concept_to_chain(c)
+            if ci:
+                cid = ci.get('chain_id')
+                if cid and (cid not in top20_chain_best or top20_rank[c] < top20_chain_best[cid][0]):
+                    top20_chain_best[cid] = (top20_rank[c], c)
 
         def _zt_to_minutes(t):
             """'9:30' -> 570 (分钟数), 解析失败返回 None"""
@@ -4420,6 +4616,33 @@ def api_simreplay_ladder():
                 c for c in raw_concepts
                 if _cc.concept_to_chain(c) and not _cc.is_blocked(c)
             ))
+
+            # 概念标注 Top20 排名: 在 Top20 的带 (排名), 都不在则选最贴切的(同产业链)
+            # 返回 [{name, rank}] 列表, rank 为 None 表示非 Top20
+            display_concepts = []
+            in_top = [(c, top20_rank[c]) for c in filtered_concepts if c in top20_rank]
+            if in_top:
+                # 有在 Top20 的: 按排名升序, 全部带排名
+                in_top.sort(key=lambda x: x[1])
+                display_concepts = [{'name': c, 'rank': r} for c, r in in_top]
+            elif filtered_concepts and top20_chain_best:
+                # 都不在 Top20: 找该股票概念里与某 Top20 概念同产业链的, 选排名最靠前的
+                best = None  # (rank, top_concept)
+                for c in filtered_concepts:
+                    ci = _cc.concept_to_chain(c)
+                    if not ci:
+                        continue
+                    hit = top20_chain_best.get(ci.get('chain_id'))
+                    if hit and (best is None or hit[0] < best[0]):
+                        best = hit
+                if best:
+                    # 最贴切的 Top20 概念放第一个(带排名), 后面跟该股自己的概念(无排名)
+                    display_concepts = [{'name': best[1], 'rank': best[0]}] + \
+                        [{'name': c, 'rank': None} for c in filtered_concepts[:2]]
+                else:
+                    display_concepts = [{'name': c, 'rank': None} for c in filtered_concepts[:3]]
+            else:
+                display_concepts = [{'name': c, 'rank': None} for c in filtered_concepts[:3]]
 
             # ===== 量能判断: 当日量 vs 前5日均量 =====
             vol_ratio = None
@@ -4465,7 +4688,7 @@ def api_simreplay_ladder():
 
             boards.setdefault(lb, []).append({
                 'code': code, 'name': name or code,
-                'concepts': filtered_concepts,
+                'concepts': display_concepts,
                 'reason': reason or '',
                 'zt_time': last_time or '',
                 'vol_ratio': vol_ratio,
@@ -4474,6 +4697,141 @@ def api_simreplay_ladder():
         # 按板高降序
         boards = {k: boards[k] for k in sorted(boards.keys(), reverse=True)}
         return jsonify({'success': True, 'boards': boards, 'date': date8})
+    except Exception as e:
+        return jsonify({'success': False, 'error': f'{type(e).__name__}: {e}'}), 500
+
+
+def _pct_color_class(pct):
+    """涨幅颜色class(参考湖南人复盘9档): 涨停金/跌停紫/涨3档红/跌3档绿/平灰。
+    主板10%涨停阈值(9.8~10.6), 创业板科创板20%不在此复盘范围(主板为主)。"""
+    if pct is None:
+        return 'gray'
+    if 9.8 <= pct <= 10.6:
+        return 'gold'
+    if -10.6 <= pct <= -9.8:
+        return 'purple'
+    a = abs(pct)
+    if pct > 0:
+        if a >= 7: return 'red-deep'
+        if a >= 5: return 'red-mid'
+        return 'red-light'
+    if pct < 0:
+        if a >= 7: return 'green-deep'
+        if a >= 5: return 'green-mid'
+        return 'green-light'
+    return 'gray'
+
+
+@app.route('/api/simreplay/broken_promote', methods=['GET'])
+def api_simreplay_broken_promote():
+    """3板以上晋级失败(断板)统计。
+    取 date 前一交易日连板数>=3 的股票, 判断 date 当日是否仍涨停:
+    - 仍涨停 = 晋级成功(不返回)
+    - 未涨停 = 晋级失败/断板(返回)
+    每只断板股附带: 昨日连板数/概念(Top20排名)/断板日涨幅/断板后1~3天涨幅(含颜色class)。
+    返回: {success, stocks:[{code,name,prev_lianban,concepts,break_pct,after_pct:[{day,pct,cls}]}], date}"""
+    date8 = request.args.get('date', '')
+    if not re.match(r'^\d{8}$', date8):
+        return jsonify({'success': False, 'error': 'date 需为 YYYYMMDD'}), 400
+    d = f"{date8[:4]}-{date8[4:6]}-{date8[6:8]}"
+    try:
+        import db as _db
+        import concept_chain as _cc
+        import tdx_source as ts
+        conn = _db.get_conn()
+        try:
+            with conn.cursor() as cur:
+                # 前一交易日
+                cur.execute(
+                    "SELECT DISTINCT trade_date FROM zt_stocks WHERE trade_date < %s "
+                    "ORDER BY trade_date DESC LIMIT 1", (d,))
+                prev_row = cur.fetchone()
+                if not prev_row:
+                    return jsonify({'success': True, 'stocks': [], 'date': date8})
+                prev_d = prev_row[0]
+                # 前一日 3板+ 股票(DISTINCT ON code 去重, 取连板最高)
+                cur.execute(
+                    "SELECT DISTINCT ON (code) code, name, lianban FROM zt_stocks "
+                    "WHERE trade_date = %s AND lianban ~ '^[3-9]$|^[1-9][0-9]+$' "
+                    "ORDER BY code, CASE WHEN lianban ~ '^[0-9]+$' THEN lianban::int ELSE 0 END DESC", (prev_d,))
+                high_board = cur.fetchall()
+                if not high_board:
+                    return jsonify({'success': True, 'stocks': [], 'date': date8})
+                codes = [r[0] for r in high_board]
+                # date 当日仍涨停的(晋级成功)
+                cur.execute(
+                    "SELECT code FROM zt_stocks WHERE trade_date = %s AND code = ANY(%s)", (d, codes))
+                success_codes = set(r[0] for r in cur.fetchall())
+                # 断板股 = 不在 success_codes 里
+                broken = [(c, n, lb) for c, n, lb in high_board if c not in success_codes]
+                if not broken:
+                    return jsonify({'success': True, 'stocks': [], 'date': date8})
+                # 断板股的概念(带Top20排名)
+                broken_codes = [r[0] for r in broken]
+                cur.execute(
+                    "SELECT stock_code, concept FROM ths.concept_member WHERE stock_code = ANY(%s)", (broken_codes,))
+                concept_map = {}
+                for code, concept in cur.fetchall():
+                    concept_map.setdefault(code, []).append(concept)
+                # 计算当日 Top20 概念排名(复用口径)
+                cur.execute(
+                    "SELECT cm.concept, zs.code FROM zt_stocks zs "
+                    "JOIN ths.concept_member cm ON cm.stock_code = zs.code "
+                    "WHERE zs.trade_date = %s GROUP BY cm.concept, zs.code", (d,))
+                top_rows = cur.fetchall()
+        finally:
+            conn.close()
+
+        top_groups = {}
+        for concept, code in top_rows:
+            if not _cc.concept_to_chain(concept) or _cc.is_blocked(concept):
+                continue
+            top_groups.setdefault(concept, []).append(code)
+        top20_rank = {}
+        for i, c in enumerate(sorted(top_groups.keys(), key=lambda k: -len(top_groups[k]))[:20]):
+            top20_rank[c] = i + 1
+
+        stocks_out = []
+        for code, name, prev_lb in broken:
+            # 概念标注Top20排名
+            raw = sorted(set(c for c in concept_map.get(code, [])
+                             if _cc.concept_to_chain(c) and not _cc.is_blocked(c)))
+            concepts = [{'name': c, 'rank': top20_rank.get(c)} for c in raw[:3]]
+            # 取K线: 断板日(date)及之后最多4根, 算涨幅
+            break_pct = None
+            after_pct = []
+            try:
+                bars, _src = ts.kline_daily(code, count=30, prefer_local=True)
+                if bars:
+                    # 找断板日位置
+                    idx = -1
+                    for i, b in enumerate(bars):
+                        if b['date'] == d:
+                            idx = i; break
+                    if idx >= 0:
+                        lc = bars[idx].get('last_close') or (bars[idx-1]['close'] if idx > 0 else bars[idx]['open'])
+                        if lc > 0:
+                            break_pct = round((bars[idx]['close'] - lc) / lc * 100, 2)
+                        # 断板后1~3天涨幅(相对断板日收盘)
+                        base_close = bars[idx]['close']
+                        for day_off in (1, 2, 3):
+                            if idx + day_off < len(bars):
+                                nb = bars[idx + day_off]
+                                pct = round((nb['close'] - base_close) / base_close * 100, 2) if base_close > 0 else None
+                                after_pct.append({'day': day_off, 'pct': pct, 'cls': _pct_color_class(pct)})
+            except Exception:
+                pass
+            stocks_out.append({
+                'code': code, 'name': name or code,
+                'prev_lianban': int(prev_lb) if str(prev_lb).isdigit() else 0,
+                'concepts': concepts,
+                'break_pct': break_pct,
+                'break_cls': _pct_color_class(break_pct),
+                'after_pct': after_pct,
+            })
+        # 按昨日连板数降序
+        stocks_out.sort(key=lambda x: -x['prev_lianban'])
+        return jsonify({'success': True, 'stocks': stocks_out, 'date': date8})
     except Exception as e:
         return jsonify({'success': False, 'error': f'{type(e).__name__}: {e}'}), 500
 
