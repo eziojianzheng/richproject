@@ -91,8 +91,11 @@
   .pr-con-toggle{display:flex;align-items:center;gap:6px;padding:5px 8px;cursor:pointer;font-size:12px;transition:background .1s}
   .pr-con-toggle:hover{background:rgba(74,158,255,.1)}
   .pr-con-chev{font-size:10px;color:var(--text-3);transition:transform .12s}
-  .pr-con-name{font-weight:600;color:var(--text);flex:1}
-  .pr-con-cnt{font-size:11px;color:var(--text-3);background:rgba(255,255,255,.05);padding:1px 6px;border-radius:8px}
+  .pr-con-name{font-weight:600;color:var(--text)}
+  .pr-rank-tags{display:inline-flex;gap:3px;flex-wrap:wrap}
+  .pr-rank-tag{font-size:10px;padding:1px 5px;border-radius:3px;background:rgba(74,158,255,.12);color:var(--blue);white-space:nowrap}
+  .pr-rank-tag.pr-rank-gray{background:rgba(128,128,128,.12);color:var(--text-3)}
+  .pr-con-cnt{font-size:11px;color:var(--text-3);background:rgba(255,255,255,.05);padding:1px 6px;border-radius:8px;margin-left:auto}
   .pr-con-body{padding:6px 8px;border-top:1px solid var(--border-light);background:rgba(0,0,0,.1)}
   .pr-stock{display:inline-block;margin:2px 4px 2px 0;padding:2px 6px;border-radius:4px;font-size:11px;cursor:pointer;white-space:nowrap;transition:background .1s}
   .pr-stock:hover{background:rgba(74,158,255,.18)}
@@ -817,6 +820,21 @@ function renderPeriodRank(d, period){
   if(!topCons.length && !botCons.length){
     container.innerHTML = '<div class="empty">无上榜个股</div>'; return;
   }
+  // 构建概念 -> 各周期排名映射(涨幅/跌幅分开), 供概念行显示跨周期排名标签
+  // rankMap: {t: {5:{概念:rank}, 10:{...}, ...}, b: {...}}  rank从1开始, >20或不存在视为灰
+  const _PERIODS = ['5','10','20','60'];
+  function buildRankMap(conceptsByPeriod){
+    const m = {};
+    _PERIODS.forEach(p=>{
+      m[p] = {};
+      const arr = conceptsByPeriod[p] || [];
+      arr.forEach((item, i)=>{ m[p][item.concept] = i + 1; });
+    });
+    return m;
+  }
+  const allPeriods = cache.periods;
+  const topRankMap = buildRankMap(Object.fromEntries(_PERIODS.map(p=>[p, (allPeriods[p]||{}).top_concepts||[]])));
+  const botRankMap = buildRankMap(Object.fromEntries(_PERIODS.map(p=>[p, (allPeriods[p]||{}).bottom_concepts||[]])));
   // 渲染单侧(涨幅/跌幅)的概念分组列表(概念列表分页: 每页_PR_CON_PAGE_SIZE个)
   // concepts: [{concept, stocks}] 有序列表(后端已按个股数降序)
   function conceptSection(concepts, noCon, isUp){
@@ -824,6 +842,7 @@ function renderPeriodRank(d, period){
     const arrow = isUp ? '▲' : '▼';
     const col = isUp ? 'var(--red)' : 'var(--green)';
     const side = isUp ? 't' : 'b';
+    const rankMap = isUp ? topRankMap : botRankMap;
     // 含"其他"的总概念数(用于分页计数)
     const totalCons = concepts.length + (noCon.length ? 1 : 0);
     const totalPages = Math.max(1, Math.ceil(totalCons / _PR_CON_PAGE_SIZE));
@@ -840,7 +859,7 @@ function renderPeriodRank(d, period){
       const key = side+'_'+con;
       const pg = _prConPage[key]||0;
       const expanded = _prExpanded[key]||false;
-      h += renderPrConceptRow(con, stocks, key, pg, isUp, expanded);
+      h += renderPrConceptRow(con, stocks, key, pg, isUp, expanded, rankMap);
     });
     // "其他"行: 只在包含它的那一页显示(排在所有概念之后)
     if(noCon.length){
@@ -849,7 +868,7 @@ function renderPeriodRank(d, period){
         const key = side+'_其他';
         const pg = _prConPage[key]||0;
         const expanded = _prExpanded[key]||false;
-        h += renderPrConceptRow('其他(无产业链概念)', noCon, key, pg, isUp, expanded);
+        h += renderPrConceptRow('其他(无产业链概念)', noCon, key, pg, isUp, expanded, rankMap);
       }
     }
     // 概念列表翻页控件
@@ -871,17 +890,32 @@ function renderPeriodRank(d, period){
 }
 
 // 渲染单个概念行(可折叠, 展开后个股分页)。expanded控制初始展开状态(翻页后保持)
-function renderPrConceptRow(concept, stocks, key, page, isUp, expanded){
+// rankMap: {5:{概念:rank},10:{...},20:{...},60:{...}} 各周期排名, 用于显示跨周期排名标签
+function renderPrConceptRow(concept, stocks, key, page, isUp, expanded, rankMap){
   const totalPages = Math.max(1, Math.ceil(stocks.length / _PR_PAGE_SIZE));
   if(page >= totalPages) page = totalPages - 1;
   const start = page * _PR_PAGE_SIZE;
   const pageStocks = stocks.slice(start, start + _PR_PAGE_SIZE);
   const openCls = expanded ? 'block' : 'none';
   const chevChar = expanded ? '▼' : '▶';
+  // 跨周期排名标签: 5/10/20/60日各显示排名, >20或未上榜显示灰色(括号)
+  let rankTags = '';
+  if(rankMap && concept !== '其他(无产业链概念)'){
+    const _PERIODS = ['5','10','20','60'];
+    rankTags = '<span class="pr-rank-tags">';
+    _PERIODS.forEach(p=>{
+      const rk = rankMap[p] ? rankMap[p][concept] : undefined;
+      if(rk == null) return;  // 该周期未上榜不显示
+      const gray = rk > 20;
+      rankTags += `<span class="pr-rank-tag${gray?' pr-rank-gray':''}" title="${p}日${isUp?'涨':'跌'}幅榜排名">${p}日${gray?'('+rk+')':rk}</span>`;
+    });
+    rankTags += '</span>';
+  }
   let h = `<div class="pr-con-row">`;
   h += `<div class="pr-con-toggle" onclick="togglePrConcept('${key}')">`+
     `<span class="pr-con-chev" id="chev_${key}">${chevChar}</span>`+
     `<span class="pr-con-name">${concept}</span>`+
+    rankTags+
     `<span class="pr-con-cnt">${stocks.length}只</span></div>`;
   h += `<div class="pr-con-body" id="body_${key}" style="display:${openCls}">`;
   // 分页个股
@@ -935,11 +969,24 @@ function prPage(key, delta){
   page = Math.max(0, Math.min(page, totalPages-1));
   _prConPage[key] = page;
   const expanded = _prExpanded[key]||false;  // 翻页后保持展开状态
+  // 重建rankMap(与renderPeriodRank同逻辑)供概念行显示跨周期排名
+  const _PERIODS = ['5','10','20','60'];
+  const allP = cache.periods;
+  function _buildRM(side){
+    const m = {};
+    _PERIODS.forEach(p=>{
+      m[p] = {};
+      const arr = side==='t' ? (allP[p]||{}).top_concepts||[] : (allP[p]||{}).bottom_concepts||[];
+      arr.forEach((item, i)=>{ m[p][item.concept] = i + 1; });
+    });
+    return m;
+  }
+  const rankMap = _buildRM(isUp?'t':'b');
   // 替换该概念行DOM
   const row = document.querySelector(`.pr-con-toggle[onclick*="${key}"]`)?.closest('.pr-con-row');
   if(row){
     const tmp = document.createElement('div');
-    tmp.innerHTML = renderPrConceptRow(conName==='其他'?'其他(无产业链概念)':conName, stocks, key, page, isUp, expanded);
+    tmp.innerHTML = renderPrConceptRow(conName==='其他'?'其他(无产业链概念)':conName, stocks, key, page, isUp, expanded, rankMap);
     row.replaceWith(tmp.firstChild);
     bindKlineHover(tmp);
   }
