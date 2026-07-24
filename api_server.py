@@ -4836,6 +4836,486 @@ def api_simreplay_broken_promote():
         return jsonify({'success': False, 'error': f'{type(e).__name__}: {e}'}), 500
 
 
+@app.route('/api/simreplay/period_rank', methods=['GET'])
+def api_simreplay_period_rank():
+    """区间涨跌幅排序(5/10/20/60日)前100名 + 概念分组。
+    以 date 为终点, 往前 N 个交易日算累计涨跌幅。
+    全市场A股(排除ST/退市/北交所), 批量读本地 .day 文件(约2秒), 无网络依赖。
+    返回: {success, date, periods:{
+        "5": {top:[{code,name,pct,cls}], bottom:[...],
+              top_concepts:[{concept,stocks:[{code,name,pct,cls}]}],  # 按个股数降序
+              bottom_concepts:[...], top_no_concept:[...], bottom_no_concept:[...]},
+        "10": {...}, "20": {...}, "60": {...}
+    }}
+    概念分组: 每只上榜个股按 ths.concept_member 归属(取有产业链映射且非黑名单的概念),
+    按概念内个股数降序排列(有序列表, 避免jsonify打乱dict键序), 一只股可属于多概念。
+    """
+    date8 = request.args.get('date', '')
+    if not re.match(r'^\d{8}$', date8):
+        return jsonify({'success': False, 'error': 'date 需为 YYYYMMDD'}), 400
+    try:
+        import db as _db
+        import concept_chain as _cc
+        import tdx_source as ts
+        # 1. 全市场A股(含名称), 过滤ST/退市/北交所
+        lst = ts.stock_list('5', with_name=True) or []
+        universe = []
+        for it in lst:
+            code = str(it.get('code', '')).strip()
+            name = str(it.get('name', '') or '').strip()
+            if not re.match(r'^\d{6}$', code):
+                continue
+            if code.startswith(('4', '8')):  # 跳过北交所/三板
+                continue
+            up = name.upper()
+            if 'ST' in up or '退' in name:  # 跳过ST/退市
+                continue
+            universe.append((code, name))
+        if not universe:
+            return jsonify({'success': True, 'date': date8, 'periods': {}})
+
+        # 2. 批量读本地 .day 日线尾部, 只取每只股票 <= date8 的最近 65 个交易日收盘价
+        # (覆盖60日周期基准, 不解析全历史, 约5000只1秒内完成)
+        # 本地.day缺失的股票直接跳过(多为新股/北交所, 涨跌幅前100榜单不受影响)。
+        # 不做网络回退: 逐只 ts.kline() 每只0.3s+, 几百只会让接口拖到十几秒。
+        import struct as _struct
+        try:
+            _base = os.path.join(ts.TDX_INSTALL_DIR, 'Vipdoc')
+            _sh_lday = os.path.join(_base, 'sh', 'lday')
+            _sz_lday = os.path.join(_base, 'sz', 'lday')
+        except Exception:
+            _sh_lday = _sz_lday = ''
+        target = int(date8)
+        _NEED = 65  # 60日周期 + 余量
+        day_closes = {}
+        for code, _name in universe:
+            if code.startswith('6') or code.startswith('9'):
+                fp = os.path.join(_sh_lday, f'sh{code}.day')
+            else:
+                fp = os.path.join(_sz_lday, f'sz{code}.day')
+            try:
+                fsize = os.path.getsize(fp)
+            except OSError:
+                continue
+            n_rec = fsize // 32
+            if n_rec <= 0:
+                continue
+            # .day 按日期升序, 倒序读尾部, 收集 <= target 的最近 _NEED 条
+            closes = {}
+            got = 0
+            with open(fp, 'rb') as f:
+                for i in range(n_rec - 1, -1, -1):
+                    f.seek(i * 32)
+                    rec = f.read(32)
+                    if len(rec) < 32:
+                        break
+                    d = _struct.unpack('I', rec[:4])[0]
+                    if d > target:
+                        continue
+                    c = _struct.unpack('I', rec[16:20])[0] / 100.0
+                    if c > 0:
+                        closes[str(d)] = c
+                    got += 1
+                    if got >= _NEED:
+                        break
+            if closes:
+                day_closes[code] = closes
+
+        # 3. 计算每个周期涨跌幅: 终点=date8, 起点往前 N 个交易日
+        periods_cfg = [('5', 5), ('10', 10), ('20', 20), ('60', 60)]
+        # 先收集所有周期需要的起点日期(每只股票各自的交易日序列里取)
+        # per code: sorted date list -> 找 <= target 的位置, 往前 N 个交易日
+        period_results = {p: [] for p, _ in periods_cfg}  # {period: [(code, name, pct)]}
+        for code, name in universe:
+            closes = day_closes.get(code)
+            if not closes:
+                continue
+            # 只保留 <= date8 的日期, 排序
+            dkeys = sorted(k for k in closes.keys() if int(k) <= target)
+            if len(dkeys) < 2:
+                continue
+            end_close = closes[dkeys[-1]]
+            if end_close <= 0:
+                continue
+            for pstr, n in periods_cfg:
+                # 需要至少 n+1 个交易日(含起点前一日做基准, 这里用第 -n-1 个的次日为基准更稳)
+                # 定义: 往前N个交易日的累计涨跌幅 = end_close / closes[dkeys[-(n+1)]] - 1
+                # 即以第 -(n+1) 个交易日的收盘为基准, 涨到 end_close
+                if len(dkeys) <= n:
+                    # 数据不足, 用最早的可用日做基准
+                    base_close = closes[dkeys[0]]
+                else:
+                    base_close = closes[dkeys[-(n + 1)]]
+                if base_close <= 0:
+                    continue
+                pct = round((end_close - base_close) / base_close * 100, 2)
+                period_results[pstr].append((code, name, pct))
+
+        # 4. 每个周期取涨幅Top100 + 跌幅Top100
+        # 收集所有上榜 code, 一次性查概念归属
+        ranked_codes = set()
+        per_period_ranked = {}
+        for pstr, _ in periods_cfg:
+            arr = period_results[pstr]
+            # 涨幅降序取前100
+            top = sorted(arr, key=lambda x: -x[2])[:100]
+            # 跌幅升序取前100
+            bottom = sorted(arr, key=lambda x: x[2])[:100]
+            per_period_ranked[pstr] = (top, bottom)
+            for code, _, _ in top + bottom:
+                ranked_codes.add(code)
+
+        # 5. 查概念归属(ths.concept_member), 过滤无产业链映射/黑名单概念
+        concept_map = {}  # {code: [concept,...]}
+        if ranked_codes:
+            conn = _db.get_conn()
+            try:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT stock_code, concept FROM ths.concept_member "
+                        "WHERE stock_code = ANY(%s)", (list(ranked_codes),))
+                    for code, concept in cur.fetchall():
+                        # 只保留有产业链映射且非黑名单的概念(噪音概念不参与分组)
+                        if _cc.concept_to_chain(concept) and not _cc.is_blocked(concept):
+                            concept_map.setdefault(code, []).append(concept)
+            finally:
+                conn.close()
+
+        # 6. 组装返回: 每周期 {top, bottom, concepts:{概念:[{code,name,pct}]}}
+        periods_out = {}
+        for pstr, _ in periods_cfg:
+            top, bottom = per_period_ranked[pstr]
+            top_out = [{'code': c, 'name': n, 'pct': p, 'cls': _pct_color_class(p)} for c, n, p in top]
+            bottom_out = [{'code': c, 'name': n, 'pct': p, 'cls': _pct_color_class(p)} for c, n, p in bottom]
+            # 涨幅榜/跌幅榜分别按概念归组(涨跌分开算)
+            def _group_by_concept(rank_list):
+                groups = {}
+                no_con = []
+                for c, n, p in rank_list:
+                    cons = concept_map.get(c)
+                    if not cons:
+                        no_con.append({'code': c, 'name': n, 'pct': p, 'cls': _pct_color_class(p)})
+                        continue
+                    item = {'code': c, 'name': n, 'pct': p, 'cls': _pct_color_class(p)}
+                    for con in sorted(set(cons)):
+                        groups.setdefault(con, []).append(item)
+                # 概念组按个股数降序, 返回有序列表(避免jsonify打乱dict键顺序)
+                ranked = sorted(groups.items(), key=lambda kv: -len(kv[1]))
+                out = [{'concept': con, 'stocks': stocks} for con, stocks in ranked]
+                return out, no_con
+            top_concepts, top_no = _group_by_concept(top)
+            bottom_concepts, bottom_no = _group_by_concept(bottom)
+            periods_out[pstr] = {
+                'top': top_out,
+                'bottom': bottom_out,
+                'top_concepts': top_concepts,
+                'bottom_concepts': bottom_concepts,
+                'top_no_concept': top_no,
+                'bottom_no_concept': bottom_no,
+            }
+        return jsonify({'success': True, 'date': date8, 'periods': periods_out})
+    except Exception as e:
+        return jsonify({'success': False, 'error': f'{type(e).__name__}: {e}'}), 500
+
+
+@app.route('/api/simreplay/concept_members', methods=['GET'])
+def api_simreplay_concept_members():
+    """某概念的成员股列表 + 当日涨跌幅(供历史产业链点开概念看成员)。
+    参数: concept=概念名, date=YYYYMMDD(复盘日)。
+    涨跌幅用成员收盘缓存(.member_closes.json), 缓存未构建则 pct=None。
+    返回: {success, concept, members:[{code,name,pct,cls}]}"""
+    concept = request.args.get('concept', '').strip()
+    date8 = request.args.get('date', '')
+    if not concept:
+        return jsonify({'success': False, 'error': 'concept 必填'}), 400
+    if not re.match(r'^\d{8}$', date8):
+        return jsonify({'success': False, 'error': 'date 需为 YYYYMMDD'}), 400
+    try:
+        import db as _db
+        import concept_chain as _cc
+        import tdx_source as ts
+        conn = _db.get_conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT stock_code FROM ths.concept_member WHERE concept = %s", (concept,))
+                codes = [r[0] for r in cur.fetchall()]
+        finally:
+            conn.close()
+        if not codes:
+            return jsonify({'success': True, 'concept': concept, 'members': []})
+        # 名称(用 stock_list 缓存或逐只取, 这里用 zt_stocks 的 name 兜底 + tqcenter)
+        # 复盘场景优先用 zt_stocks 已知名称, 缺失的用 tqcenter stock_list
+        conn = _db.get_conn()
+        name_map = {}
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT DISTINCT ON (code) code, name FROM zt_stocks WHERE code = ANY(%s)", (codes,))
+                for c, n in cur.fetchall():
+                    name_map[c] = n
+        finally:
+            conn.close()
+        # 缺名称的用 stock_list
+        missing = [c for c in codes if c not in name_map]
+        if missing:
+            lst = ts.stock_list('5', with_name=True) or []
+            for it in lst:
+                if it.get('code') in missing:
+                    name_map[it['code']] = it.get('name', '') or it['code']
+        # 涨跌幅(成员收盘缓存)
+        prev = None
+        # 算前一交易日: 从 zt_stocks 取 date8 前一交易日
+        d = f"{date8[:4]}-{date8[4:6]}-{date8[6:8]}"
+        members_out = []
+        for code in codes:
+            name = name_map.get(code, code)
+            pct = _member_pct(code, date8, None)  # 先尝试同日(需要 prev)
+            members_out.append({'code': code, 'name': name, 'pct': None, 'cls': 'gray'})
+        # 若有成员收盘缓存, 算相对前一交易日的涨跌幅
+        if _member_closes:
+            conn = _db.get_conn()
+            try:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT DISTINCT trade_date FROM zt_stocks WHERE trade_date < %s "
+                        "ORDER BY trade_date DESC LIMIT 1", (d,))
+                    pr = cur.fetchone()
+                    if pr:
+                        prev = pr[0].strftime('%Y%m%d')
+            finally:
+                conn.close()
+            if prev:
+                for m in members_out:
+                    p = _member_pct(m['code'], date8, prev)
+                    if p is not None:
+                        p = round(p, 2)
+                        m['pct'] = p
+                        m['cls'] = _pct_color_class(p)
+        # 按涨跌幅降序(None 在后)
+        members_out.sort(key=lambda x: (x['pct'] is None, -(x['pct'] or 0)))
+        return jsonify({'success': True, 'concept': concept, 'members': members_out})
+    except Exception as e:
+        return jsonify({'success': False, 'error': f'{type(e).__name__}: {e}'}), 500
+
+
+@app.route('/api/simreplay/hist_chain', methods=['GET'])
+def api_simreplay_hist_chain():
+    """历史产业链近N日聚合: 以 date 为终点, 往前 N 个交易日内, 各产业链(上下游分层)
+    的累计涨停股数 + 涨停概念分布; 同时给出每个概念在复盘日当天的均涨幅/涨停/红家数/领涨股(仿盯盘)。
+    另返回全局涨停数排名Top20(zt_ranking) + 跌停数排名Top20(dt_ranking, 源.czmq_result.json)。
+    参数: date=YYYYMMDD, days=5/10/20/60。
+    返回: {success, date, days, price_ready, chains:[{
+        id,name,zt,days_active,avg,limitup,up,up5,tiers:[{
+        tier,pos,concepts:[{concept,zt,avg,limitup,up,up5,top:[{code,name,pct}]}]}]}],
+        zt_ranking:[{concept,zt,chain}], dt_ranking:[{concept,dt,chain}], dt_days:N}
+    chains 按 zt 降序; 概念块含复盘日实时指标(无收盘缓存则 avg/up 为0, 仅涨停)。"""
+    date8 = request.args.get('date', '')
+    if not re.match(r'^\d{8}$', date8):
+        return jsonify({'success': False, 'error': 'date 需为 YYYYMMDD'}), 400
+    days = request.args.get('days', default=5, type=int)
+    days = max(1, min(days, 120))
+    d = f"{date8[:4]}-{date8[4:6]}-{date8[6:8]}"
+    try:
+        import db as _db
+        import concept_chain as _cc
+        import tdx_source as ts
+        from collections import defaultdict
+        conn = _db.get_conn()
+        prev = None
+        try:
+            with conn.cursor() as cur:
+                # 取以 date 为终点的最近 N 个交易日
+                cur.execute(
+                    "SELECT DISTINCT trade_date FROM zt_stocks WHERE trade_date <= %s "
+                    "ORDER BY trade_date DESC LIMIT %s", (d, days))
+                trade_dates = [r[0] for r in cur.fetchall()]
+                if not trade_dates:
+                    return jsonify({'success': True, 'date': date8, 'days': days, 'chains': []})
+                # 近N日涨停股 -> 概念
+                cur.execute(
+                    "SELECT zs.code, cm.concept, zs.trade_date FROM zt_stocks zs "
+                    "JOIN ths.concept_member cm ON cm.stock_code = zs.code "
+                    "WHERE zs.trade_date = ANY(%s)", (trade_dates,))
+                rows = cur.fetchall()
+                # 复盘日(date8)涨停股集合(用于概念块 limitup)
+                cur.execute("SELECT code FROM zt_stocks WHERE trade_date = %s", (d,))
+                zt_today = set(r[0] for r in cur.fetchall())
+                # 复盘日涨停股名称
+                cur.execute("SELECT code, name FROM zt_stocks WHERE trade_date = %s", (d,))
+                zt_name = {c: n for c, n in cur.fetchall()}
+                # 前一交易日(算涨跌幅基准)
+                cur.execute(
+                    "SELECT DISTINCT trade_date FROM zt_stocks WHERE trade_date < %s "
+                    "ORDER BY trade_date DESC LIMIT 1", (d,))
+                pr = cur.fetchone()
+                if pr:
+                    prev = pr[0].strftime('%Y%m%d')
+                # 概念成员映射(1小时缓存)
+                con_members = _get_daymap_members(cur)
+        finally:
+            conn.close()
+
+        # price_ready: 缓存非空且确实覆盖复盘日(抽查一只涨停股是否有该日收盘)
+        _has_date = False
+        if _member_closes and prev:
+            for code in list(zt_today)[:20]:
+                if _member_closes.get(code, {}).get(date8):
+                    _has_date = True
+                    break
+        price_ready = _has_date
+
+        # 概念 -> 近N日涨停股集合(跨日去重)
+        concept_zt_codes = defaultdict(set)
+        for code, con, _td in rows:
+            if not _cc.concept_to_chain(con) or _cc.is_blocked(con):
+                continue
+            concept_zt_codes[con].add(code)
+
+        # 名称兜底: 用 stock_list
+        all_need_names = set()
+        for codes in concept_zt_codes.values():
+            all_need_names |= codes
+        name_map = dict(zt_name)
+        missing_names = [c for c in all_need_names if c not in name_map]
+        if missing_names:
+            lst = ts.stock_list('5', with_name=True) or []
+            for it in lst:
+                if it.get('code') in missing_names:
+                    name_map[it['code']] = it.get('name', '') or it['code']
+
+        def con_day_metrics(con):
+            """复盘日当天概念指标: avg均涨幅/limitup涨停/up红家数/up5涨>5%数/top领涨股3只。
+            top 领涨股用当日涨停股(涨幅显示涨停阈值), 不依赖收盘缓存。"""
+            members = con_members.get(con, set())
+            pcts = []
+            top_list = []
+            limitup = 0
+            up = 0
+            up5 = 0
+            for code in members:
+                is_zt = code in zt_today
+                nm = name_map.get(code, code)
+                if is_zt:
+                    limitup += 1
+                    # 涨停股作为领涨股, 涨幅用涨停阈值
+                    top_list.append({'code': code, 'name': nm, 'pct': _limit_threshold(code)})
+                if price_ready:
+                    pct = _member_pct(code, date8, prev)
+                    if pct is not None:
+                        pcts.append(pct)
+                        if pct > 0:
+                            up += 1
+                        if pct > 5:
+                            up5 += 1
+            avg = round(sum(pcts) / len(pcts), 2) if pcts else 0
+            top_list.sort(key=lambda x: -x['pct'])
+            return {'avg': avg, 'limitup': limitup, 'up': up, 'up5': up5, 'top': top_list[:3]}
+
+        info = _cc.chain_info()
+        chains = []
+        for cid, c in info.items():
+            agg_zt = set()
+            agg_pcts = []
+            agg_limitup = agg_up = agg_up5 = 0
+            n_tiers = len(c['tiers'])
+            tiers = []
+            for i, t in enumerate(c['tiers']):
+                pos = ('中游' if n_tiers == 1 else
+                       '上游' if i == 0 else '下游' if i == n_tiers - 1 else '中游')
+                cons = []
+                for con in t['concepts']:
+                    zt_codes = concept_zt_codes.get(con)
+                    if not zt_codes:
+                        continue
+                    agg_zt |= zt_codes
+                    m = con_day_metrics(con)
+                    agg_limitup += m['limitup']
+                    agg_up += m['up']
+                    agg_up5 += m['up5']
+                    # 概念均涨幅(成员加权, 这里用简单聚合)
+                    members = con_members.get(con, set())
+                    if price_ready and members:
+                        for code in members:
+                            p = _member_pct(code, date8, prev)
+                            if p is not None:
+                                agg_pcts.append(p)
+                    cons.append({'concept': con, 'zt': len(zt_codes),
+                                 'avg': m['avg'], 'limitup': m['limitup'],
+                                 'up': m['up'], 'up5': m['up5'], 'top': m['top']})
+                cons.sort(key=lambda x: -(x['limitup'] * 100 + x['up5'] * 10 + x['zt']))
+                if cons:
+                    tiers.append({'tier': t['tier'], 'pos': pos, 'concepts': cons})
+            chain_avg = round(sum(agg_pcts) / len(agg_pcts), 2) if agg_pcts else 0
+            if agg_zt or tiers:
+                chains.append({'id': cid, 'name': c['name'],
+                               'zt': len(agg_zt), 'days_active': len(trade_dates),
+                               'avg': chain_avg, 'limitup': agg_limitup,
+                               'up': agg_up, 'up5': agg_up5, 'tiers': tiers})
+        chains.sort(key=lambda x: -x['zt'])
+
+        # 全局涨停数排名 Top20(近N日跨日去重个股数, 按概念)
+        zt_ranking = []
+        for con, codes in concept_zt_codes.items():
+            ci = _cc.concept_to_chain(con)
+            zt_ranking.append({'concept': con, 'zt': len(codes),
+                               'chain': ci['chain_name'] if ci else ''})
+        zt_ranking.sort(key=lambda x: -x['zt'])
+        zt_ranking = zt_ranking[:20]
+
+        # 全局跌停数排名 Top20(数据源: .czmq_result.json 的 falling.by_limitdown,
+        # 取 ≤ date8 的最近 days 个有跌停数据的交易日, 按概念聚合跨日去重跌停股)
+        dt_ranking = []
+        dt_days = 0
+        czmq_path = '.czmq_result.json'
+        if os.path.exists(czmq_path):
+            try:
+                import json as _json4
+                with open(czmq_path, 'r', encoding='utf-8') as f:
+                    czmq = _json4.load(f)
+                by_day = czmq.get('result', {}).get('by_day', [])
+                # 筛 ≤ date8 的日期, 按降序取最近 days 个有跌停数据的
+                cand_days = sorted([dd.get('date', '') for dd in by_day
+                                    if dd.get('date', '') <= date8], reverse=True)
+                con_dt_codes = defaultdict(set)
+                checked = 0
+                for day_str in cand_days:
+                    if checked >= days:
+                        break
+                    for dd in by_day:
+                        if dd.get('date') != day_str:
+                            continue
+                        ld_groups = dd.get('falling', {}).get('by_limitdown', [])
+                        if not ld_groups:
+                            continue  # 该日无跌停数据, 跳过不计入dt_days
+                        dt_days += 1
+                        checked += 1
+                        for g in ld_groups:
+                            concept = g.get('concept')
+                            if not concept or not _cc.concept_to_chain(concept) or _cc.is_blocked(concept):
+                                continue
+                            for s in g.get('stocks', []):
+                                code = s.get('code')
+                                if code:
+                                    con_dt_codes[concept].add(code)
+                        break
+                for con, codes in con_dt_codes.items():
+                    ci = _cc.concept_to_chain(con)
+                    dt_ranking.append({'concept': con, 'dt': len(codes),
+                                       'chain': ci['chain_name'] if ci else ''})
+                dt_ranking.sort(key=lambda x: -x['dt'])
+                dt_ranking = dt_ranking[:20]
+            except Exception:
+                dt_ranking = []
+
+        return jsonify({'success': True, 'date': date8, 'days': days,
+                        'price_ready': price_ready, 'chains': chains,
+                        'zt_ranking': zt_ranking, 'dt_ranking': dt_ranking,
+                        'dt_days': dt_days})
+    except Exception as e:
+        return jsonify({'success': False, 'error': f'{type(e).__name__}: {e}'}), 500
+
+
 @app.route('/api/simreplay/stock_kline', methods=['GET'])
 def api_simreplay_stock_kline():
     """个股日K线(连板梯队hover用) - 优先本地 .day 直读(毫秒级), 失败回退网络。
